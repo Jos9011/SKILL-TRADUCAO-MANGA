@@ -237,8 +237,45 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
         fallback_lines.extend(textwrap.wrap(p, width=14))
     return font, fallback_lines
 
+import urllib.request
+
+def check_ollama_available():
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=2) as response:
+            if response.status == 200:
+                # Retorna o primeiro modelo disponível como padrão
+                data = json.loads(response.read().decode('utf-8'))
+                models = data.get("models", [])
+                if models:
+                    return True, models[0]["name"]
+        return True, "llama3" # fallback de nome se falhar o parse
+    except Exception:
+        return False, None
+
+def translate_with_ollama(text, model_name):
+    url = "http://localhost:11434/api/generate"
+    prompt = f"Você é um tradutor profissional de mangás. Traduza o seguinte texto estrangeiro para o português do Brasil (PT-BR) de forma natural, mantendo gírias e o tom coloquial da história. Responda APENAS com a tradução final, sem notas, sem aspas e sem explicações extras.\n\nTexto: {text}\nTradução:"
+    
+    data = {
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.3
+        }
+    }
+    
+    try:
+        req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            return result.get("response", "").strip()
+    except Exception:
+        return None
+
 def translate_batch_texts(text_list, src_lang="auto"):
-    """Traduz lista de textos para Português usando MyMemory com fallback para Google e cooldown."""
+    """Traduz lista de textos para Português usando Ollama (se disponível) com fallback para MyMemory/Google."""
     if not text_list:
         return []
         
@@ -257,6 +294,12 @@ def translate_batch_texts(text_list, src_lang="auto"):
         
     print(f"[*] Idioma de origem detectado/configurado: {src_lang} -> pt-BR")
     
+    ollama_active, ollama_model = check_ollama_available()
+    if ollama_active:
+        print(f"[+] OLLAMA DETECTADO! Ativando Modo Inteligência Artificial Local (Modelo: {ollama_model})...")
+    else:
+        print(f"[*] Ollama não detectado. Usando modo de tradução em nuvem (MyMemory/Google).")
+    
     fallback_code = src_lang.split('-')[0]
     translator = MyMemoryTranslator(source=src_lang, target='pt-BR')
     results = []
@@ -267,21 +310,31 @@ def translate_batch_texts(text_list, src_lang="auto"):
             results.append(clean_t)
             continue
             
-        try:
-            # Traduz
-            res = translator.translate(clean_t)
-            # Remove avisos do MyMemory se houver
-            if "MYMEMORY WARNING" in res:
-                res = GoogleTranslator(source=fallback_code, target='pt').translate(clean_t)
-            results.append(res)
-            time.sleep(0.1) # Sleep para evitar limit rate da API
-        except Exception as e:
+        res = None
+        
+        # 1. Tenta IA Local (Ollama)
+        if ollama_active:
+            res = translate_with_ollama(clean_t, ollama_model)
+            
+        # 2. Fallback Nuvem
+        if not res:
             try:
-                time.sleep(1) # Backoff em caso de falha
-                res = GoogleTranslator(source=fallback_code, target='pt').translate(clean_t)
-                results.append(res)
+                res = translator.translate(clean_t)
+                if "MYMEMORY WARNING" in res:
+                    res = GoogleTranslator(source=fallback_code, target='pt').translate(clean_t)
+                time.sleep(0.1) # Cooldown da API grátis
             except Exception:
-                results.append(clean_t)
+                try:
+                    time.sleep(1) # Backoff
+                    res = GoogleTranslator(source=fallback_code, target='pt').translate(clean_t)
+                except Exception:
+                    res = clean_t
+                    
+        # Validação extra de segurança: a IA pode às vezes colocar aspas em volta da resposta
+        if res and res.startswith('"') and res.endswith('"'):
+            res = res[1:-1].strip()
+            
+        results.append(res)
                 
     return results
 
@@ -381,13 +434,22 @@ def create_html_reader(images_dir, title):
 def process_manga(manga_dir, target_lang="pt-BR"):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
-        print(f"[!] Diretório inválido: {manga_dir}")
+        print(f"[!] Erro: Caminho inválido ({manga_dir})")
         return False
         
     manga_name = os.path.basename(manga_dir)
     clean_name = manga_name.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip()
-    out_dir_name = f"{clean_name} [PT-BR]"
-    output_dir = os.path.join(BASE_OUTPUT_DIR, out_dir_name)
+    
+    # 0. Define o diretório de destino diretamente no Google Drive (5TB)
+    base_drive_dir = r"G:\Meu Drive\MANGAS"
+    try:
+        os.makedirs(base_drive_dir, exist_ok=True)
+    except Exception as e:
+        print(f"[!] Aviso: Não foi possível criar/acessar a pasta raiz do Google Drive: {e}")
+        # Fallback de segurança se o Google Drive estiver desconectado
+        base_drive_dir = os.path.dirname(manga_dir)
+        
+    output_dir = os.path.join(base_drive_dir, f"{clean_name} [PT-BR]")
     os.makedirs(output_dir, exist_ok=True)
     
     # Criar pasta temp segura para evitar permission errors no OneDrive
@@ -409,36 +471,53 @@ def process_manga(manga_dir, target_lang="pt-BR"):
         
     print(f"[+] {len(img_files)} imagens encontradas.")
     
-    # 2. Executar OCR
-    print("[*] Inicializando motor RapidOCR...")
-    engine = RapidOCR()
-    font_path = get_best_font()
+    # 2. Executar OCR usando Mokuro (Otimizado para Japonês Vertical)
+    parent_dir = os.path.dirname(manga_dir)
+    mokuro_path = os.path.join(parent_dir, manga_name + ".mokuro")
     
+    if not os.path.exists(mokuro_path):
+        print(f"[*] Gerando leitura OCR avançada com Mokuro (isso pode demorar na primeira vez)...")
+        import subprocess
+        try:
+            subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"[!] Erro ao executar o Mokuro. Verifique se ele está instalado (pip install mokuro). Detalhes: {e}")
+            return False
+            
+    if not os.path.exists(mokuro_path):
+        print("[!] Arquivo .mokuro não foi gerado. Falha na leitura OCR.")
+        return False
+        
+    print("[*] Lendo dados estruturados do Mokuro...")
+    with open(mokuro_path, "r", encoding="utf-8") as f:
+        mokuro_data = json.load(f)
+        
     pages_data = []
     all_raw_texts = []
+    font_path = get_best_font()
     
-    print("[*] Executando OCR em todas as páginas...")
-    for idx, fname in enumerate(tqdm(img_files, desc="Extração OCR", unit="pág")):
-        fpath = os.path.join(manga_dir, fname)
-        ocr_res, _ = engine(fpath)
-        blocks = []
-        if ocr_res:
-            for item in ocr_res:
-                box_pts = item[0]
-                text = item[1]
-                score = float(item[2])
-                if score < 0.35: # Ignora ruído extremo
-                    continue
-                xs = [pt[0] for pt in box_pts]
-                ys = [pt[1] for pt in box_pts]
-                blocks.append({
-                    "box": [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))],
-                    "text": text,
-                    "score": score
-                })
-                all_raw_texts.append(text)
+    # Extrair os balões do formato Mokuro
+    for idx, page_info in enumerate(mokuro_data.get("pages", [])):
+        fname = os.path.basename(page_info.get("img_path", ""))
+        bubbles = []
+        for blk in page_info.get("blocks", []):
+            xmin, ymin, xmax, ymax = blk.get("box", [0, 0, 0, 0])
+            is_vertical = blk.get("vertical", True)
+            lines = blk.get("lines", [])
+            text = " ".join(lines)
+            
+            if not text.strip():
+                continue
                 
-        bubbles = smart_group_bubbles(blocks)
+            all_raw_texts.append(text)
+            bubbles.append({
+                "box": [xmin, ymin, xmax, ymax],
+                "raw_boxes": [[xmin, ymin, xmax, ymax]], # Mokuro dá apenas o bloco inteiro, sem bounding box por linha, então usamos o bloco como raw_box
+                "lines": lines,
+                "combined_text": text,
+                "is_vertical": is_vertical
+            })
+            
         pages_data.append({
             "page": idx + 1,
             "img": fname,
@@ -599,6 +678,33 @@ def process_manga(manga_dir, target_lang="pt-BR"):
     print(f"[+] Leitor Web: {os.path.join(output_dir, 'leitor.html')}")
     print("=" * 60 + "\n")
     
+    # 7. Disparar Notificações (PC e Celular)
+    try:
+        from plyer import notification
+        notification.notify(
+            title="Mangá Traduzido! 🎉",
+            message=f"'{clean_name}' foi finalizado com sucesso!",
+            app_name="Manga Translator",
+            timeout=10
+        )
+    except Exception as e:
+        print(f"[*] Não foi possível mostrar notificação no Windows: {e}")
+        
+    try:
+        import requests
+        # Envia notificação grátis e instantânea para o aplicativo 'ntfy' no celular
+        requests.post("https://ntfy.sh/jos9011_mangas",
+            data=f"O mangá '{clean_name}' acabou de ser traduzido e salvo no seu OneDrive!".encode('utf-8'),
+            headers={
+                "Title": "Mangá Concluído!",
+                "Priority": "default",
+                "Tags": "book,tada"
+            },
+            timeout=5
+        )
+    except Exception:
+        pass
+        
     try:
         os.startfile(output_dir)
     except Exception:

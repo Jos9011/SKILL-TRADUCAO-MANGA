@@ -451,6 +451,100 @@ def create_html_reader(images_dir, title):
         f.write(html_content)
     print(f"[+] Leitor interativo criado: {leitor_file}")
 
+def check_needs_rapidocr(manga_dir):
+    """Analisa uma página no meio do mangá usando RapidOCR para ver se é inglês/latino"""
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        import glob
+        img_files = glob.glob(os.path.join(manga_dir, "*.*"))
+        img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
+        if not img_files: return False
+        
+        sample_idx = min(len(img_files)//2, len(img_files)-1)
+        src_path = img_files[sample_idx]
+        
+        engine = RapidOCR()
+        try:
+            with open(src_path, "rb") as f:
+                img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            res, _ = engine(img_cv)
+        except Exception:
+            return False
+            
+        if not res: return False
+        
+        latin_count = 0
+        asian_count = 0
+        for box in res:
+            text = box[1]
+            latin_count += len(re.findall(r'[a-zA-Z]', text))
+            asian_count += len(re.findall(r'[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', text))
+            
+        return latin_count > 10 and latin_count > (asian_count * 2)
+    except Exception:
+        return False
+
+def generate_rapidocr_json(manga_dir, output_json_path):
+    """Gera o arquivo json de caixas usando RapidOCR (ideal para Inglês/Latino)"""
+    from rapidocr_onnxruntime import RapidOCR
+    import glob
+    
+    img_files = glob.glob(os.path.join(manga_dir, "*.*"))
+    img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
+    img_files.sort(key=natural_sort_key)
+    
+    engine = RapidOCR()
+    pages = []
+    
+    print("[*] Extraindo textos usando RapidOCR (Motor otimizado para Inglês/Latino)...")
+    for img_path in tqdm(img_files, desc="OCR Pages"):
+        img_name = os.path.basename(img_path)
+        try:
+            with open(img_path, "rb") as f:
+                img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        except Exception:
+            img_cv = None
+            
+        if img_cv is None:
+            continue
+            
+        res, _ = engine(img_cv)
+        blocks_for_grouping = []
+        if res:
+            for box_data in res:
+                coords = box_data[0]
+                text = box_data[1]
+                xs = [p[0] for p in coords]
+                ys = [p[1] for p in coords]
+                
+                blocks_for_grouping.append({
+                    "box": [min(xs), min(ys), max(xs), max(ys)],
+                    "text": text
+                })
+                
+        # Usa a função smart_group_bubbles nativa para agrupar as falas do RapidOCR
+        grouped = smart_group_bubbles(blocks_for_grouping)
+        final_blocks = []
+        for b in grouped:
+            # Reverte raw_boxes (se necessário) para a formatação do mokuro, 
+            # mas podemos só salvar um bloco gigante pois auto_translate extrai o bloco e text_lines
+            final_blocks.append({
+                "box": b["box"],
+                "vertical": b["is_vertical"],
+                "lines": b["lines"]
+            })
+            
+        pages.append({
+            "img_path": img_name,
+            "blocks": final_blocks
+        })
+        
+    mokuro_data = {"version": "rapidocr", "pages": pages}
+    with open(output_json_path, "w", encoding="utf-8") as f:
+        json.dump(mokuro_data, f, ensure_ascii=False)
+
 def process_manga(manga_dir, target_lang="pt-BR"):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
@@ -508,16 +602,21 @@ def process_manga(manga_dir, target_lang="pt-BR"):
                 pass
 
     if not os.path.exists(mokuro_path_original):
-        print(f"[*] Gerando leitura OCR avançada com Mokuro (isso pode demorar na primeira vez)...")
-        import subprocess
-        try:
-            subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"[!] Erro ao executar o Mokuro. Verifique se ele está instalado (pip install mokuro). Detalhes: {e}")
-            return False
+        print("[*] Analisando imagens para escolher o motor OCR ideal...")
+        if check_needs_rapidocr(manga_dir):
+            print("[+] Idioma predominantemente Latino/Inglês detectado!")
+            generate_rapidocr_json(manga_dir, mokuro_path_original)
+        else:
+            print(f"[*] Idioma predominantemente Asiático detectado. Usando motor Mokuro...")
+            import subprocess
+            try:
+                subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"[!] Erro ao executar o Mokuro. Detalhes: {e}")
+                return False
             
     if not os.path.exists(mokuro_path_original):
-        print("[!] Arquivo .mokuro não foi gerado. Falha na leitura OCR.")
+        print("[!] Arquivo de texto OCR não foi gerado. Falha na leitura.")
         return False
 
     mokuro_path = mokuro_path_original

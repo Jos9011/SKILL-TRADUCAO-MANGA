@@ -585,36 +585,58 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto"):
         
     print(f"[+] {len(img_files)} imagens encontradas.")
     
-    # 2. Executar OCR usando Mokuro (Otimizado para Japonês Vertical)
+        # 2. Executar OCR usando Mokuro ou RapidOCR
     parent_dir = os.path.dirname(manga_dir)
     mokuro_path_original = os.path.join(parent_dir, manga_name + ".mokuro")
     mokuro_path_dest = os.path.join(output_dir, manga_name + ".mokuro")
     
-    # Verifica se já existe o arquivo OCR na origem para evitar reprocessamento longo
-    if not os.path.exists(mokuro_path_original):
-        # Tenta verificar se já não existia um na pasta de destino para restaurar
-        if os.path.exists(mokuro_path_dest):
-            try:
-                shutil.copy2(mokuro_path_dest, mokuro_path_original)
-            except Exception:
-                pass
-
-    if not os.path.exists(mokuro_path_original):
+    # Decidir qual motor deve ser usado
+    print(f"[*] Modo OCR selecionado: {ocr_mode.upper()}")
+    
+    use_rapidocr = False
+    if ocr_mode == "rapidocr":
+        use_rapidocr = True
+    elif ocr_mode == "mokuro":
+        use_rapidocr = False
+    elif ocr_mode == "auto":
         print("[*] Analisando imagens para escolher o motor OCR ideal...")
-        if check_needs_rapidocr(manga_dir):
-            print("[+] Idioma predominantemente Latino/Inglês detectado!")
+        use_rapidocr = check_needs_rapidocr(manga_dir)
+        
+    expected_engine = "rapidocr" if use_rapidocr else "mokuro"
+
+    # Verificar se ja existe um arquivo .mokuro e se ele corresponde ao motor desejado
+    needs_new_ocr = True
+    if os.path.exists(mokuro_path_original):
+        try:
+            with open(mokuro_path_original, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+            file_version = str(existing_data.get("version", ""))
+            is_file_rapidocr = (file_version == "rapidocr")
+            
+            if (use_rapidocr and is_file_rapidocr) or (not use_rapidocr and not is_file_rapidocr):
+                print(f"[+] Arquivo OCR compativel ({expected_engine.upper()}) encontrado. Reutilizando...")
+                needs_new_ocr = False
+            else:
+                print(f"[*] Arquivo OCR existente pertence ao motor {'RAPIDOCR' if is_file_rapidocr else 'MOKURO'}. Regerando com {expected_engine.upper()}...")
+                os.remove(mokuro_path_original)
+        except Exception:
+            needs_new_ocr = True
+
+    if needs_new_ocr:
+        if use_rapidocr:
+            print("[+] Executando motor Universal/Ocidental (RapidOCR)...")
             generate_rapidocr_json(manga_dir, mokuro_path_original)
         else:
-            print(f"[*] Idioma predominantemente Asiático detectado. Usando motor Mokuro...")
+            print("[*] Executando motor Asiatico especializado (Mokuro)...")
             import subprocess
             try:
                 subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
             except subprocess.CalledProcessError as e:
                 print(f"[!] Erro ao executar o Mokuro. Detalhes: {e}")
                 return False
-            
+
     if not os.path.exists(mokuro_path_original):
-        print("[!] Arquivo de texto OCR não foi gerado. Falha na leitura.")
+        print("[!] Arquivo de texto OCR nao foi gerado. Falha na leitura.")
         return False
 
     mokuro_path = mokuro_path_original

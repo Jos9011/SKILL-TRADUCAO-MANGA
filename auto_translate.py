@@ -529,7 +529,7 @@ def generate_rapidocr_json(manga_dir, output_json_path):
         final_blocks = []
         for b in grouped:
             final_blocks.append({
-                "box": [float(v) for v in b["box"]],
+                "box": [int(round(float(v))) for v in b["box"]],
                 "vertical": bool(b["is_vertical"]),
                 "lines": b["lines"]
             })
@@ -708,7 +708,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         fname = os.path.basename(page_info.get("img_path", ""))
         bubbles = []
         for blk in page_info.get("blocks", []):
-            xmin, ymin, xmax, ymax = blk.get("box", [0, 0, 0, 0])
+            xmin, ymin, xmax, ymax = [int(round(float(v))) for v in blk.get("box", [0, 0, 0, 0])]
             is_vertical = blk.get("vertical", True)
             lines = blk.get("lines", [])
             text = " ".join(lines)
@@ -811,10 +811,10 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                     pad_x = 8
                     pad_y = 8
                     
-                x0 = max(0, xmin - pad_x)
-                y0 = max(0, ymin - pad_y)
-                x1 = min(w_img, xmax + pad_x)
-                y1 = min(h_img, ymax + pad_y)
+                x0 = int(max(0, xmin - pad_x))
+                y0 = int(max(0, ymin - pad_y))
+                x1 = int(min(w_img, xmax + pad_x))
+                y1 = int(min(h_img, ymax + pad_y))
                 
                 roi = cleaned[y0:y1, x0:x1]
                 if roi.size == 0:

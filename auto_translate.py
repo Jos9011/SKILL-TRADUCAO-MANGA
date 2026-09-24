@@ -543,7 +543,7 @@ def generate_rapidocr_json(manga_dir, output_json_path):
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
 
-def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto"):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
         print(f"[!] Erro: Caminho inválido ({manga_dir})")
@@ -585,11 +585,23 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto"):
         
     print(f"[+] {len(img_files)} imagens encontradas.")
     
-        # 2. Executar OCR usando Mokuro ou RapidOCR
+    # 2. Executar OCR usando Mokuro ou RapidOCR
     parent_dir = os.path.dirname(manga_dir)
     mokuro_path_original = os.path.join(parent_dir, manga_name + ".mokuro")
     mokuro_path_dest = os.path.join(output_dir, manga_name + ".mokuro")
+    cache_file = os.path.join(output_dir, "translation_cache.json")
     
+    # Se limpeza forcada foi solicitada
+    if force_ocr:
+        print("[!] LIMPEZA DE CACHE ATIVADA: Removendo arquivos OCR e traducoes antigas deste manga...")
+        for p in [mokuro_path_original, mokuro_path_dest, cache_file]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                    print(f"    [x] Removido cache: {os.path.basename(p)}")
+                except Exception as ce:
+                    print(f"    [!] Aviso ao remover cache: {ce}")
+
     # Decidir qual motor deve ser usado
     print(f"[*] Modo OCR selecionado: {ocr_mode.upper()}")
     
@@ -604,22 +616,36 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto"):
         
     expected_engine = "rapidocr" if use_rapidocr else "mokuro"
 
-    # Verificar se ja existe um arquivo .mokuro e se ele corresponde ao motor desejado
+    # Verificar se ja existe um arquivo .mokuro e se ele e valido / compativel
     needs_new_ocr = True
-    if os.path.exists(mokuro_path_original):
+    if not force_ocr and os.path.exists(mokuro_path_original):
         try:
             with open(mokuro_path_original, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
             file_version = str(existing_data.get("version", ""))
             is_file_rapidocr = (file_version == "rapidocr")
             
-            if (use_rapidocr and is_file_rapidocr) or (not use_rapidocr and not is_file_rapidocr):
-                print(f"[+] Arquivo OCR compativel ({expected_engine.upper()}) encontrado. Reutilizando...")
+            # Validacao automatica de conteudo: o arquivo tem blocos reais de texto?
+            pages = existing_data.get("pages", [])
+            total_blocks = sum(len(p.get("blocks", [])) for p in pages)
+            
+            if total_blocks == 0:
+                print("[!] Cache OCR existente estava VAZIO ou INVALIDO. Regerando automaticamente do zero...")
+                os.remove(mokuro_path_original)
+                needs_new_ocr = True
+            elif (use_rapidocr and is_file_rapidocr) or (not use_rapidocr and not is_file_rapidocr):
+                print(f"[+] Cache OCR compativel ({expected_engine.upper()}) encontrado ({total_blocks} baloes). Reutilizando...")
                 needs_new_ocr = False
             else:
-                print(f"[*] Arquivo OCR existente pertence ao motor {'RAPIDOCR' if is_file_rapidocr else 'MOKURO'}. Regerando com {expected_engine.upper()}...")
+                print(f"[*] Cache OCR existente pertence a outro motor ({'RAPIDOCR' if is_file_rapidocr else 'MOKURO'}). Regerando com {expected_engine.upper()}...")
                 os.remove(mokuro_path_original)
-        except Exception:
+                needs_new_ocr = True
+        except Exception as e:
+            print(f"[!] Erro ao ler cache existente ({e}). Regerando...")
+            try:
+                os.remove(mokuro_path_original)
+            except Exception:
+                pass
             needs_new_ocr = True
 
     if needs_new_ocr:
@@ -887,6 +913,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto"):
     return True
 
 if __name__ == "__main__":
+    force_ocr_flag = False
     if len(sys.argv) > 1:
         args = sys.argv[1:]
         chosen_mode = "auto"
@@ -896,6 +923,14 @@ if __name__ == "__main__":
         elif "--mokuro" in args:
             chosen_mode = "mokuro"
             args.remove("--mokuro")
+            
+        if "--force-ocr" in args:
+            force_ocr_flag = True
+            args.remove("--force-ocr")
+        elif "--clean-cache" in args:
+            force_ocr_flag = True
+            args.remove("--clean-cache")
+            
         target = " ".join(args)
     else:
         print("=" * 60)
@@ -905,6 +940,6 @@ if __name__ == "__main__":
         chosen_mode = "auto"
         
     if target:
-        process_manga(target, ocr_mode=chosen_mode)
+        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag)
     else:
         print("[!] Nenhuma pasta informada.")

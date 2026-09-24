@@ -564,6 +564,10 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     output_dir = os.path.join(base_drive_dir, f"{clean_name} [PT-BR]")
     os.makedirs(output_dir, exist_ok=True)
     
+    # Pasta dedicada para todos os arquivos de cache (OCR, .mokuro, traducoes)
+    cache_dir = os.path.join(output_dir, "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    
     # Criar pasta temp segura e ÚNICA para evitar conflitos se rodar 2 mangás ao mesmo tempo
     import uuid
     temp_render_dir = os.path.join(os.environ.get("TEMP", "C:\\temp"), f"manga_render_tmp_{uuid.uuid4().hex[:8]}")

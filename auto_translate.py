@@ -246,34 +246,54 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
 
 import urllib.request
 
-def check_ollama_available():
+def check_ollama_available(prefer_uncensored=False):
     try:
         req = urllib.request.Request("http://localhost:11434/api/tags")
         with urllib.request.urlopen(req, timeout=2) as response:
             if response.status == 200:
-                # Retorna o primeiro modelo disponível como padrão
                 data = json.loads(response.read().decode('utf-8'))
-                models = data.get("models", [])
+                models = [m["name"] for m in data.get("models", [])]
                 if models:
-                    return True, models[0]["name"]
-        return True, "llama3" # fallback de nome se falhar o parse
+                    if prefer_uncensored:
+                        # Prioriza modelos livres de censura se instalados
+                        uncensored_keys = ["abliterated", "dolphin", "unfiltered", "uncensored"]
+                        for m in models:
+                            if any(k in m.lower() for k in uncensored_keys):
+                                return True, m
+                    return True, models[0]
+        return True, "llama3"
     except Exception:
         return False, None
 
-def translate_with_ollama(text, model_name):
+def translate_with_ollama(text, model_name, is_adult=True):
     url = "http://localhost:11434/api/generate"
-    prompt = f"""Atue como um tradutor e diagramador profissional de mangás adultos.
-O texto a seguir pode conter múltiplos idiomas no mesmo mangá (ex: Inglês e Japonês misturados).
-Identifique o idioma deste trecho e traduza-o para o Português do Brasil (PT-BR) com extrema naturalidade.
+    
+    if is_adult:
+        prompt = f"""Atue como um tradutor e diagramador profissional de mangas e quadrinhos adultos (eromanga / hentai).
+O texto a seguir pode conter multiplos idiomas no mesmo manga (ex: Ingles e Japones misturados).
+Identifique o idioma deste trecho e traduza-o para o Portugues do Brasil (PT-BR) com extrema naturalidade.
 
-REGRAS DE FORMATAÇÃO E TRADUÇÃO:
-1. Adapte gírias, expressões e linguagem explícita para o português coloquial e fluído. Não censure.
+REGRAS DE FORMATACAO E TRADUCAO:
+1. Adapte girias, expressoes e linguagem explicita para o portugues coloquial e fluido. Nao censure termos adultos.
 2. Adapte gemidos e onomatopeias para o formato BR (ex: "Ah...", "Ugh!", "Nhn~").
-3. Use pontuação dramática de mangá (exclamações, interrogações e reticências).
-4. Responda APENAS com a tradução, sem aspas, sem notas e sem o texto original.
+3. Use pontuacao dramatica de manga (exclamacoes, interrogacoes e reticencias).
+4. Responda APENAS com a traducao, sem aspas, sem notas e sem o texto original.
 
 Texto original: {text}
-Tradução:"""
+Traducao:"""
+    else:
+        prompt = f"""Atue como um tradutor e diagramador profissional de mangas e quadrinhos tradicionais.
+O texto a seguir pode conter multiplos idiomas no mesmo manga (ex: Ingles e Japones misturados).
+Identifique o idioma deste trecho e traduza-o para o Portugues do Brasil (PT-BR) com fidelidade e naturalidade.
+
+REGRAS DE FORMATACAO E TRADUCAO:
+1. Mantenha o tom da historia (acao, aventura, comedia, romance, etc.).
+2. Adapte girias, expressoes e onomatopeias de forma adequada para o portugues brasileiro coloquial.
+3. Use pontuacao dramatica de manga (exclamacoes, interrogacoes e reticencias).
+4. Responda APENAS com a traducao, sem aspas, sem notas e sem o texto original.
+
+Texto original: {text}
+Traducao:"""
     
     data = {
         "model": model_name,
@@ -307,8 +327,8 @@ Tradução:"""
     except Exception:
         return None
 
-def translate_batch_texts(text_list, src_lang="auto"):
-    """Traduz lista de textos para Português usando Ollama (se disponível) com fallback para MyMemory/Google."""
+def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
+    """Traduz lista de textos para Portugues usando Ollama (se disponivel) com fallback para MyMemory/Google."""
     if not text_list:
         return []
         
@@ -326,8 +346,9 @@ def translate_batch_texts(text_list, src_lang="auto"):
         src_lang = "es-ES"
         
     print(f"[*] Idioma de origem detectado/configurado: {src_lang} -> pt-BR")
+    print(f"[*] Modo de Conteúdo: {'ADULTO / +18 (Sem Censura)' if is_adult else 'NORMAL / PADRAO'}")
     
-    ollama_active, ollama_model = check_ollama_available()
+    ollama_active, ollama_model = check_ollama_available(prefer_uncensored=is_adult)
     if ollama_active:
         print(f"[+] OLLAMA DETECTADO! Ativando Modo Inteligência Artificial Local (Modelo: {ollama_model})...")
     else:
@@ -349,7 +370,7 @@ def translate_batch_texts(text_list, src_lang="auto"):
         
         # 1. Tenta IA Local (Ollama)
         if ollama_active:
-            res = translate_with_ollama(clean_t, ollama_model)
+            res = translate_with_ollama(clean_t, ollama_model, is_adult=is_adult)
             
         # 2. Fallback Nuvem
         if not res:
@@ -558,7 +579,7 @@ def generate_rapidocr_json(manga_dir, output_json_path):
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
 
-def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
         print(f"[!] Erro: Caminho inválido ({manga_dir})")
@@ -772,7 +793,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             
     if texts_to_translate:
         print(f"[*] Traduzindo {len(texts_to_translate)} balões de fala...")
-        translated_results = translate_batch_texts(texts_to_translate, src_lang=src_lang)
+        translated_results = translate_batch_texts(texts_to_translate, src_lang=src_lang, is_adult=is_adult)
         for orig, trans in zip(texts_to_translate, translated_results):
             cache[orig] = trans
             
@@ -971,7 +992,19 @@ if __name__ == "__main__":
         target = input("Arraste ou digite o caminho da pasta do manga: ").strip()
         chosen_mode = "auto"
         
+    is_adult_flag = True
+    if "--normal" in args or "--safe" in args:
+        is_adult_flag = False
+        if "--normal" in args: args.remove("--normal")
+        if "--safe" in args: args.remove("--safe")
+    elif "--adult" in args or "--18" in args:
+        is_adult_flag = True
+        if "--adult" in args: args.remove("--adult")
+        if "--18" in args: args.remove("--18")
+        
+    target = " ".join(args)
+
     if target:
-        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag)
+        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, is_adult=is_adult_flag)
     else:
         print("[!] Nenhuma pasta informada.")

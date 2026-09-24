@@ -36,7 +36,7 @@ except Exception:
 
 # Diretório padrão fixo de saída solicitado pelo usuário
 BASE_OUTPUT_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
-TEMP_RENDER_DIR = os.path.join(os.environ.get("TEMP", "C:\\temp"), "manga_render_tmp")
+temp_render_dir = os.path.join(os.environ.get("TEMP", "C:\\temp"), "manga_render_tmp")
 
 FONT_CANDIDATES = [
     r"C:\Windows\Fonts\comicbd.ttf",   # Comic Sans MS Bold
@@ -255,7 +255,17 @@ def check_ollama_available():
 
 def translate_with_ollama(text, model_name):
     url = "http://localhost:11434/api/generate"
-    prompt = f"Você é um tradutor profissional de mangás. Traduza o seguinte texto estrangeiro para o português do Brasil (PT-BR) de forma natural, mantendo gírias e o tom coloquial da história. Responda APENAS com a tradução final, sem notas, sem aspas e sem explicações extras.\n\nTexto: {text}\nTradução:"
+    prompt = f"""Atue como um tradutor e diagramador profissional de mangás adultos.
+Traduza o texto estrangeiro para o Português do Brasil (PT-BR) com extrema naturalidade.
+
+REGRAS DE FORMATAÇÃO E TRADUÇÃO:
+1. Adapte gírias, expressões e linguagem explícita para o português coloquial e fluído. Não censure.
+2. Adapte gemidos e onomatopeias para o formato BR (ex: "Ah...", "Ugh!", "Nhn~").
+3. Use pontuação dramática de mangá (exclamações, interrogações e reticências).
+4. Responda APENAS com a tradução, sem aspas, sem notas e sem o texto original.
+
+Texto original: {text}
+Tradução:"""
     
     data = {
         "model": model_name,
@@ -440,20 +450,22 @@ def process_manga(manga_dir, target_lang="pt-BR"):
     manga_name = os.path.basename(manga_dir)
     clean_name = manga_name.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip()
     
-    # 0. Define o diretório de destino diretamente no Google Drive (5TB)
-    base_drive_dir = r"G:\Meu Drive\MANGAS"
+    # 0. Define o diretório de destino diretamente como especificado
+    base_drive_dir = BASE_OUTPUT_DIR
     try:
         os.makedirs(base_drive_dir, exist_ok=True)
     except Exception as e:
-        print(f"[!] Aviso: Não foi possível criar/acessar a pasta raiz do Google Drive: {e}")
-        # Fallback de segurança se o Google Drive estiver desconectado
+        print(f"[!] Aviso: Não foi possível criar/acessar a pasta raiz do destino: {e}")
+        # Fallback de segurança
         base_drive_dir = os.path.dirname(manga_dir)
         
     output_dir = os.path.join(base_drive_dir, f"{clean_name} [PT-BR]")
     os.makedirs(output_dir, exist_ok=True)
     
-    # Criar pasta temp segura para evitar permission errors no OneDrive
-    os.makedirs(TEMP_RENDER_DIR, exist_ok=True)
+    # Criar pasta temp segura e ÚNICA para evitar conflitos se rodar 2 mangás ao mesmo tempo
+    import uuid
+    temp_render_dir = os.path.join(os.environ.get("TEMP", "C:\\temp"), f"manga_render_tmp_{uuid.uuid4().hex[:8]}")
+    os.makedirs(temp_render_dir, exist_ok=True)
     
     print("=" * 60)
     print(f"[*] INICIANDO TRADUCAO DO MANGA")
@@ -473,13 +485,19 @@ def process_manga(manga_dir, target_lang="pt-BR"):
     
     # 2. Executar OCR usando Mokuro (Otimizado para Japonês Vertical)
     parent_dir = os.path.dirname(manga_dir)
-    mokuro_path = os.path.join(parent_dir, manga_name + ".mokuro")
+    mokuro_path_original = os.path.join(parent_dir, manga_name + ".mokuro")
+    mokuro_path_dest = os.path.join(output_dir, manga_name + ".mokuro")
     
-    if not os.path.exists(mokuro_path):
+    if os.path.exists(mokuro_path_dest):
+        mokuro_path = mokuro_path_dest
+    elif os.path.exists(mokuro_path_original):
+        mokuro_path = mokuro_path_original
+    else:
         print(f"[*] Gerando leitura OCR avançada com Mokuro (isso pode demorar na primeira vez)...")
         import subprocess
         try:
             subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
+            mokuro_path = mokuro_path_original
         except subprocess.CalledProcessError as e:
             print(f"[!] Erro ao executar o Mokuro. Verifique se ele está instalado (pip install mokuro). Detalhes: {e}")
             return False
@@ -487,6 +505,19 @@ def process_manga(manga_dir, target_lang="pt-BR"):
     if not os.path.exists(mokuro_path):
         print("[!] Arquivo .mokuro não foi gerado. Falha na leitura OCR.")
         return False
+
+    # Mover mokuro e html gerado para a pasta pt-br (output_dir) se estiverem na pasta original
+    if mokuro_path == mokuro_path_original and os.path.exists(mokuro_path_original):
+        try:
+            shutil.move(mokuro_path_original, mokuro_path_dest)
+            mokuro_path = mokuro_path_dest
+            
+            html_original = os.path.join(parent_dir, manga_name + ".html")
+            html_dest = os.path.join(output_dir, manga_name + "_mokuro.html")
+            if os.path.exists(html_original):
+                shutil.move(html_original, html_dest)
+        except Exception as e:
+            print(f"[*] Aviso ao mover arquivos do Mokuro: {e}")
         
     print("[*] Lendo dados estruturados do Mokuro...")
     with open(mokuro_path, "r", encoding="utf-8") as f:
@@ -623,7 +654,7 @@ def process_manga(manga_dir, target_lang="pt-BR"):
         draw = ImageDraw.Draw(img_pil)
         
         for b in bubbles:
-            text = b.get("translated_text", "").strip()
+            text = b.get("translated_text", "").strip().upper()
             if not text or text in ("...", "…"):
                 continue
                 
@@ -648,11 +679,11 @@ def process_manga(manga_dir, target_lang="pt-BR"):
                 ly = start_y + (line_idx * line_h)
                 draw.text((cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=3, stroke_fill=(255, 255, 255), anchor="mm")
                 
-        out_file = os.path.join(TEMP_RENDER_DIR, os.path.splitext(img_name)[0] + ".jpg")
+        out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
         img_pil.save(out_file, quality=95)
             
     # 5. Criar leitor interativo no temp
-    create_html_reader(TEMP_RENDER_DIR, clean_name)
+    create_html_reader(temp_render_dir, clean_name)
     
     # 6. Copiar arquivos para a pasta de destino final do OneDrive de forma segura
     print(f"[*] Substituindo arquivos no destino final: {output_dir}...")
@@ -660,15 +691,15 @@ def process_manga(manga_dir, target_lang="pt-BR"):
     # Tenta remover o atributo de oculto/somente leitura de todos os arquivos no destino
     os.system(f'attrib -h -r -s "{output_dir}\\*.*" >nul 2>&1')
     
-    all_files = os.listdir(TEMP_RENDER_DIR)
+    all_files = os.listdir(temp_render_dir)
     for fname in all_files:
-        src_p = os.path.join(TEMP_RENDER_DIR, fname)
+        src_p = os.path.join(temp_render_dir, fname)
         dst_p = os.path.join(output_dir, fname)
         shutil.copy2(src_p, dst_p)
         
     # Limpeza da pasta temp para não acumular
     try:
-        shutil.rmtree(TEMP_RENDER_DIR)
+        shutil.rmtree(temp_render_dir)
     except Exception:
         pass
 

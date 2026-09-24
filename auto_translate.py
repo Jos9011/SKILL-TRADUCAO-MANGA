@@ -498,36 +498,40 @@ def process_manga(manga_dir, target_lang="pt-BR"):
     mokuro_path_original = os.path.join(parent_dir, manga_name + ".mokuro")
     mokuro_path_dest = os.path.join(output_dir, manga_name + ".mokuro")
     
-    if os.path.exists(mokuro_path_dest):
-        mokuro_path = mokuro_path_dest
-    elif os.path.exists(mokuro_path_original):
-        mokuro_path = mokuro_path_original
-    else:
+    # Verifica se já existe o arquivo OCR na origem para evitar reprocessamento longo
+    if not os.path.exists(mokuro_path_original):
+        # Tenta verificar se já não existia um na pasta de destino para restaurar
+        if os.path.exists(mokuro_path_dest):
+            try:
+                shutil.copy2(mokuro_path_dest, mokuro_path_original)
+            except Exception:
+                pass
+
+    if not os.path.exists(mokuro_path_original):
         print(f"[*] Gerando leitura OCR avançada com Mokuro (isso pode demorar na primeira vez)...")
         import subprocess
         try:
             subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
-            mokuro_path = mokuro_path_original
         except subprocess.CalledProcessError as e:
             print(f"[!] Erro ao executar o Mokuro. Verifique se ele está instalado (pip install mokuro). Detalhes: {e}")
             return False
             
-    if not os.path.exists(mokuro_path):
+    if not os.path.exists(mokuro_path_original):
         print("[!] Arquivo .mokuro não foi gerado. Falha na leitura OCR.")
         return False
 
-    # Mover mokuro e html gerado para a pasta pt-br (output_dir) se estiverem na pasta original
-    if mokuro_path == mokuro_path_original and os.path.exists(mokuro_path_original):
-        try:
-            shutil.move(mokuro_path_original, mokuro_path_dest)
-            mokuro_path = mokuro_path_dest
-            
-            html_original = os.path.join(parent_dir, manga_name + ".html")
-            html_dest = os.path.join(output_dir, manga_name + "_mokuro.html")
-            if os.path.exists(html_original):
-                shutil.move(html_original, html_dest)
-        except Exception as e:
-            print(f"[*] Aviso ao mover arquivos do Mokuro: {e}")
+    mokuro_path = mokuro_path_original
+
+    # Copiar (em vez de mover) o arquivo OCR e HTML para a pasta [PT-BR] para referência do usuário
+    try:
+        shutil.copy2(mokuro_path_original, mokuro_path_dest)
+        
+        html_original = os.path.join(parent_dir, manga_name + ".html")
+        html_dest = os.path.join(output_dir, manga_name + "_mokuro.html")
+        if os.path.exists(html_original):
+            shutil.copy2(html_original, html_dest)
+    except Exception as e:
+        print(f"[*] Aviso ao copiar arquivos de referência do Mokuro: {e}")
         
     print("[*] Lendo dados estruturados do Mokuro...")
     with open(mokuro_path, "r", encoding="utf-8") as f:

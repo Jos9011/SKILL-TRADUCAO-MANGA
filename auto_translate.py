@@ -263,7 +263,8 @@ def check_ollama_available():
 def translate_with_ollama(text, model_name):
     url = "http://localhost:11434/api/generate"
     prompt = f"""Atue como um tradutor e diagramador profissional de mangás adultos.
-Traduza o texto estrangeiro para o Português do Brasil (PT-BR) com extrema naturalidade.
+O texto a seguir pode conter múltiplos idiomas no mesmo mangá (ex: Inglês e Japonês misturados).
+Identifique o idioma deste trecho e traduza-o para o Português do Brasil (PT-BR) com extrema naturalidade.
 
 REGRAS DE FORMATAÇÃO E TRADUÇÃO:
 1. Adapte gírias, expressões e linguagem explícita para o português coloquial e fluído. Não censure.
@@ -317,7 +318,9 @@ def translate_batch_texts(text_list, src_lang="auto"):
     else:
         print(f"[*] Ollama não detectado. Usando modo de tradução em nuvem (MyMemory/Google).")
     
-    fallback_code = src_lang.split('-')[0]
+    # Forçamos o fallback para 'auto', permitindo que o Google Translator avalie balão por balão
+    # caso o mangá tenha idiomas misturados (ex: balão em inglês e balão em japonês no mesmo capítulo)
+    fallback_code = 'auto'
     translator = MyMemoryTranslator(source=src_lang, target='pt-BR')
     results = []
     

@@ -543,7 +543,7 @@ def generate_rapidocr_json(manga_dir, output_json_path):
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
 
-def process_manga(manga_dir, target_lang="pt-BR"):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto"):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
         print(f"[!] Erro: Caminho inválido ({manga_dir})")
@@ -866,14 +866,23 @@ def process_manga(manga_dir, target_lang="pt-BR"):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        target = " ".join(sys.argv[1:])
+        args = sys.argv[1:]
+        chosen_mode = "auto"
+        if "--rapidocr" in args:
+            chosen_mode = "rapidocr"
+            args.remove("--rapidocr")
+        elif "--mokuro" in args:
+            chosen_mode = "mokuro"
+            args.remove("--mokuro")
+        target = " ".join(args)
     else:
         print("=" * 60)
-        print("  SISTEMA AUTOMÁTICO DE TRADUÇÃO DE MANGÁ [PT-BR]")
+        print("  SISTEMA AUTOMATICO DE TRADUCAO DE MANGA [PT-BR]")
         print("=" * 60)
-        target = input("Arraste ou digite o caminho da pasta do mangá: ").strip()
+        target = input("Arraste ou digite o caminho da pasta do manga: ").strip()
+        chosen_mode = "auto"
         
     if target:
-        process_manga(target)
+        process_manga(target, ocr_mode=chosen_mode)
     else:
         print("[!] Nenhuma pasta informada.")

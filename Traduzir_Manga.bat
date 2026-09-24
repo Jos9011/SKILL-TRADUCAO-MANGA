@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 > nul
 title Tradutor de Mangas [PT-BR]
 color 0A

@@ -528,11 +528,9 @@ def generate_rapidocr_json(manga_dir, output_json_path):
         grouped = smart_group_bubbles(blocks_for_grouping)
         final_blocks = []
         for b in grouped:
-            # Reverte raw_boxes (se necessário) para a formatação do mokuro, 
-            # mas podemos só salvar um bloco gigante pois auto_translate extrai o bloco e text_lines
             final_blocks.append({
-                "box": b["box"],
-                "vertical": b["is_vertical"],
+                "box": [float(v) for v in b["box"]],
+                "vertical": bool(b["is_vertical"]),
                 "lines": b["lines"]
             })
             

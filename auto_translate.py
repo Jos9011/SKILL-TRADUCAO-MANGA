@@ -59,29 +59,36 @@ def detect_language_from_samples(texts):
     if not full_str.strip():
         return "en-US"
         
-    # 1. Coreano (Hangul)
+    # Contagem de caracteres por categoria
     ko_chars = len(re.findall(r'[\uac00-\ud7af\u1100-\u11ff]', full_str))
-    # 2. Japonês (Hiragana / Katakana)
     jp_kana = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', full_str))
-    # 3. Ideogramas CJK (Kanji / Hanzi)
     cjk_ideographs = len(re.findall(r'[\u4e00-\u9fff]', full_str))
-    # 4. Caracteres Latinos
     latin_chars = len(re.findall(r'[a-zA-Z]', full_str))
     
-    if ko_chars > 5 and ko_chars > jp_kana:
-        return "ko-KR"
-    if jp_kana > 5 or (cjk_ideographs > 10 and jp_kana > 0):
-        return "ja-JP"
-    if cjk_ideographs > 10 and jp_kana == 0:
-        return "zh-CN"
+    total_asian = ko_chars + jp_kana + cjk_ideographs
     
-    # Se for texto latino, verifica se é espanhol ou inglês padrão
-    lower = full_str.lower()
-    spanish_markers = [" el ", " la ", " de ", " que ", " y ", " en ", " un ", " por ", " con ", " para "]
-    if any(m in lower for m in spanish_markers):
-        return "es-ES"
+    # 1. Se os caracteres latinos forem predominantemente maiores (evita que ruído OCR ou um SFX japonês assuma o controle)
+    if latin_chars > 20 and latin_chars > (total_asian * 2):
+        lower = full_str.lower()
+        spanish_markers = [" el ", " la ", " de ", " que ", " y ", " en ", " un ", " por ", " con ", " para "]
+        # Exige pelo menos alguns marcadores para garantir que é espanhol, senão assume inglês
+        if sum(1 for m in spanish_markers if m in lower) >= 3:
+            return "es-ES"
+        return "en-US"
         
-    return "en-US"
+    # 2. Avalia qual idioma asiático é o principal
+    if ko_chars > 10 and ko_chars > jp_kana:
+        return "ko-KR"
+    if jp_kana > 10 or (cjk_ideographs > 20 and jp_kana > 0):
+        return "ja-JP"
+    if cjk_ideographs > 20 and jp_kana <= 5:
+        return "zh-CN"
+        
+    # 3. Fallbacks finais
+    if latin_chars > total_asian:
+        return "en-US"
+        
+    return "ja-JP"
 
 def should_merge_lines(b1, b2):
     x1_min, y1_min, x1_max, y1_max = b1["box"]

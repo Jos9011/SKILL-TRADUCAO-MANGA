@@ -288,7 +288,22 @@ Tradução:"""
         req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
         with urllib.request.urlopen(req, timeout=15) as response:
             result = json.loads(response.read().decode('utf-8'))
-            return result.get("response", "").strip()
+            resp = result.get("response", "").strip()
+            
+            # Se o modelo disparar recusa moral/censura, descartamos para usar o fallback do Google
+            refusals = [
+                "não posso cumprir", "nao posso cumprir",
+                "não posso atender", "nao posso atender",
+                "não posso ajudar com", "nao posso ajudar com",
+                "posso ajudar com outra coisa",
+                "cannot fulfill", "can't fulfill",
+                "as an ai", "como uma inteligência artificial",
+                "como um modelo de linguagem"
+            ]
+            resp_lower = resp.lower()
+            if any(r in resp_lower for r in refusals):
+                return None
+            return resp
     except Exception:
         return None
 

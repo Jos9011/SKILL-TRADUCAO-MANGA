@@ -585,22 +585,44 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     print(f"[+] {len(img_files)} imagens encontradas.")
     
-    # 2. Executar OCR usando Mokuro ou RapidOCR
+    # 2. Executar OCR usando Mokuro ou RapidOCR (Armazenado na pasta cache)
     parent_dir = os.path.dirname(manga_dir)
-    mokuro_path_original = os.path.join(parent_dir, manga_name + ".mokuro")
-    mokuro_path_dest = os.path.join(output_dir, manga_name + ".mokuro")
-    cache_file = os.path.join(output_dir, "translation_cache.json")
+    mokuro_path = os.path.join(cache_dir, manga_name + ".mokuro")
+    cache_file = os.path.join(cache_dir, "translation_cache.json")
+    html_dest = os.path.join(cache_dir, manga_name + "_mokuro.html")
     
+    # Migra caches legados soltos fora da pasta cache (se existirem)
+    legacy_mokuro = os.path.join(parent_dir, manga_name + ".mokuro")
+    legacy_dest_mokuro = os.path.join(output_dir, manga_name + ".mokuro")
+    legacy_cache_file = os.path.join(output_dir, "translation_cache.json")
+    
+    if not os.path.exists(mokuro_path):
+        if os.path.exists(legacy_dest_mokuro):
+            try: shutil.move(legacy_dest_mokuro, mokuro_path)
+            except Exception: pass
+        elif os.path.exists(legacy_mokuro):
+            try: shutil.move(legacy_mokuro, mokuro_path)
+            except Exception: pass
+            
+    if not os.path.exists(cache_file) and os.path.exists(legacy_cache_file):
+        try: shutil.move(legacy_cache_file, cache_file)
+        except Exception: pass
+
     # Se limpeza forcada foi solicitada
     if force_ocr:
-        print("[!] LIMPEZA DE CACHE ATIVADA: Removendo arquivos OCR e traducoes antigas deste manga...")
-        for p in [mokuro_path_original, mokuro_path_dest, cache_file]:
+        print("[!] LIMPEZA DE CACHE ATIVADA: Removendo pasta cache deste manga...")
+        if os.path.exists(cache_dir):
+            try:
+                shutil.rmtree(cache_dir)
+                print(f"    [x] Pasta cache removida: {cache_dir}")
+            except Exception as ce:
+                print(f"    [!] Aviso ao remover cache: {ce}")
+        os.makedirs(cache_dir, exist_ok=True)
+        # Limpa eventuais arquivos soltos na pasta de origem
+        for p in [legacy_mokuro, os.path.join(parent_dir, manga_name + ".html")]:
             if os.path.exists(p):
-                try:
-                    os.remove(p)
-                    print(f"    [x] Removido cache: {os.path.basename(p)}")
-                except Exception as ce:
-                    print(f"    [!] Aviso ao remover cache: {ce}")
+                try: os.remove(p)
+                except Exception: pass
 
     # Decidir qual motor deve ser usado
     print(f"[*] Modo OCR selecionado: {ocr_mode.upper()}")
@@ -616,69 +638,60 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     expected_engine = "rapidocr" if use_rapidocr else "mokuro"
 
-    # Verificar se ja existe um arquivo .mokuro e se ele e valido / compativel
+    # Verificar se ja existe um arquivo .mokuro na pasta cache e se e compativel
     needs_new_ocr = True
-    if not force_ocr and os.path.exists(mokuro_path_original):
+    if not force_ocr and os.path.exists(mokuro_path):
         try:
-            with open(mokuro_path_original, "r", encoding="utf-8") as f:
+            with open(mokuro_path, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
             file_version = str(existing_data.get("version", ""))
             is_file_rapidocr = (file_version == "rapidocr")
             
-            # Validacao automatica de conteudo: o arquivo tem blocos reais de texto?
             pages = existing_data.get("pages", [])
             total_blocks = sum(len(p.get("blocks", [])) for p in pages)
             
             if total_blocks == 0:
-                print("[!] Cache OCR existente estava VAZIO ou INVALIDO. Regerando automaticamente do zero...")
-                os.remove(mokuro_path_original)
+                print("[!] Cache OCR na pasta cache estava VAZIO. Regerando...")
+                os.remove(mokuro_path)
                 needs_new_ocr = True
             elif (use_rapidocr and is_file_rapidocr) or (not use_rapidocr and not is_file_rapidocr):
-                print(f"[+] Cache OCR compativel ({expected_engine.upper()}) encontrado ({total_blocks} baloes). Reutilizando...")
+                print(f"[+] Cache OCR compativel ({expected_engine.upper()}) encontrado na pasta cache ({total_blocks} baloes). Reutilizando...")
                 needs_new_ocr = False
             else:
-                print(f"[*] Cache OCR existente pertence a outro motor ({'RAPIDOCR' if is_file_rapidocr else 'MOKURO'}). Regerando com {expected_engine.upper()}...")
-                os.remove(mokuro_path_original)
+                print(f"[*] Cache OCR existente pertence a outro motor ({'RAPIDOCR' if is_file_rapidocr else 'MOKURO'}). Regerando na pasta cache com {expected_engine.upper()}...")
+                os.remove(mokuro_path)
                 needs_new_ocr = True
         except Exception as e:
             print(f"[!] Erro ao ler cache existente ({e}). Regerando...")
-            try:
-                os.remove(mokuro_path_original)
-            except Exception:
-                pass
+            try: os.remove(mokuro_path)
+            except Exception: pass
             needs_new_ocr = True
 
     if needs_new_ocr:
         if use_rapidocr:
-            print("[+] Executando motor Universal/Ocidental (RapidOCR)...")
-            generate_rapidocr_json(manga_dir, mokuro_path_original)
+            print("[+] Executando motor Universal/Ocidental (RapidOCR) -> Salvando em cache...")
+            generate_rapidocr_json(manga_dir, mokuro_path)
         else:
             print("[*] Executando motor Asiatico especializado (Mokuro)...")
             import subprocess
             try:
                 subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
+                # Mover saidas geradas pelo Mokuro para dentro da pasta cache para nao poluir a origem
+                temp_mokuro = os.path.join(parent_dir, manga_name + ".mokuro")
+                if os.path.exists(temp_mokuro):
+                    shutil.move(temp_mokuro, mokuro_path)
+                temp_html = os.path.join(parent_dir, manga_name + ".html")
+                if os.path.exists(temp_html):
+                    shutil.move(temp_html, html_dest)
             except subprocess.CalledProcessError as e:
                 print(f"[!] Erro ao executar o Mokuro. Detalhes: {e}")
                 return False
 
-    if not os.path.exists(mokuro_path_original):
-        print("[!] Arquivo de texto OCR nao foi gerado. Falha na leitura.")
+    if not os.path.exists(mokuro_path):
+        print("[!] Arquivo de texto OCR nao foi gerado na pasta cache. Falha na leitura.")
         return False
 
-    mokuro_path = mokuro_path_original
-
-    # Copiar (em vez de mover) o arquivo OCR e HTML para a pasta [PT-BR] para referência do usuário
-    try:
-        shutil.copy2(mokuro_path_original, mokuro_path_dest)
-        
-        html_original = os.path.join(parent_dir, manga_name + ".html")
-        html_dest = os.path.join(output_dir, manga_name + "_mokuro.html")
-        if os.path.exists(html_original):
-            shutil.copy2(html_original, html_dest)
-    except Exception as e:
-        print(f"[*] Aviso ao copiar arquivos de referência do Mokuro: {e}")
-        
-    print("[*] Lendo dados estruturados do Mokuro...")
+    print("[*] Lendo dados estruturados do Mokuro (pasta cache)...")
     with open(mokuro_path, "r", encoding="utf-8") as f:
         mokuro_data = json.load(f)
         
@@ -719,7 +732,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     print(f"[+] Amostragem analisada: idioma detectado é '{src_lang.upper()}'")
     
     # Montar lista linear de textos para tradução com cache
-    cache_file = os.path.join(output_dir, "translation_cache.json")
+    cache_file = os.path.join(cache_dir, "translation_cache.json")
     cache = {}
     if os.path.exists(cache_file):
         try:

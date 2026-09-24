@@ -613,8 +613,18 @@ def process_manga(manga_dir, target_lang="pt-BR"):
     for idx, p in enumerate(tqdm(pages_data, desc="Diagramação", unit="pág")):
         img_name = p["img"]
         src_path = os.path.join(manga_dir, img_name)
-        img_cv = cv2.imread(src_path)
+        
+        # Correção para o Windows: cv2.imread falha silenciosamente se o caminho tiver acentos (ex: "Por trás")
+        # Usamos numpy imdecode que suporta perfeitamente Unicode no Windows
+        try:
+            with open(src_path, "rb") as f:
+                img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        except Exception:
+            img_cv = None
+            
         if img_cv is None:
+            print(f"[!] Aviso: Falha ao ler a imagem {src_path}. Pulando...")
             continue
             
         h_img, w_img = img_cv.shape[:2]

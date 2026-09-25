@@ -105,26 +105,30 @@ def should_merge_lines(b1, b2):
     gap_x = max(0, max(x1_min, x2_min) - min(x1_max, x2_max))
     gap_y = max(0, max(y1_min, y2_min) - min(y1_max, y2_max))
     
+    # 0. Restrição de disparidade de altura (evita juntar ruído minúsculo de cenário com falas reais)
+    min_h = max(min(h1, h2), 1)
+    max_h = max(h1, h2)
+    if max_h > min_h * 2.8 and (gap_y > 15 or gap_x > 15):
+        return False
+    
     # 1. Logica para texto predominantemente HORIZONTAL
     if w1 >= h1 or w2 >= h2:
-        if gap_y < max(max(h1, h2) * 1.5, 35):
+        if gap_y < max(max(h1, h2) * 1.4, 30):
             cx1 = (x1_min + x1_max) / 2
             cx2 = (x2_min + x2_max) / 2
-            if overlap_x > 0 or abs(cx1 - cx2) < max(w1, w2) * 0.8:
-                if gap_x < 40:
-                    return True
+            if (overlap_x > 0 or abs(cx1 - cx2) < max(w1, w2) * 0.7) and gap_x < 35:
+                return True
 
     # 2. Logica para texto predominantemente VERTICAL (Mangas Japoneses)
     if h1 > w1 and h2 > w2:
-        if gap_x < max(max(w1, w2) * 2.5, 50): # Linhas verticais podem ter espacamento lateral
+        if gap_x < max(max(w1, w2) * 2.2, 45): # Linhas verticais podem ter espacamento lateral
             cy1 = (y1_min + y1_max) / 2
             cy2 = (y2_min + y2_max) / 2
-            if overlap_y > 0 or abs(cy1 - cy2) < max(h1, h2) * 0.8:
-                if gap_y < 50:
-                    return True
+            if (overlap_y > 0 or abs(cy1 - cy2) < max(h1, h2) * 0.7) and gap_y < 45:
+                return True
                     
-    # Fallback de proximidade extrema
-    if gap_x < 25 and gap_y < 25:
+    # Fallback de proximidade extrema apenas se alturas forem compativeis
+    if gap_x < 20 and gap_y < 20 and max_h <= min_h * 2.2:
         return True
         
     return False
@@ -199,7 +203,11 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
     """Ajusta proporcionalmente o tamanho da fonte e quebras de linha com precisão cirúrgica."""
     paragraphs = text.split('\n')
     
-    for font_size in range(24, 10, -1):
+    # Tamanho de fonte dinâmico baseado na resolução e tamanho do balão (antigo era fixo em max 24px)
+    ideal_max = int(min(max_h * 0.45, max_w * 0.35, 68))
+    max_font_size = max(26, min(ideal_max, 68))
+    
+    for font_size in range(max_font_size, 9, -2):
         font = ImageFont.truetype(font_path, font_size)
         all_lines = []
         fits_all = True
@@ -210,7 +218,8 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
                 continue
             
             best_para_lines = None
-            for num_lines in range(1, 10):
+            max_lines_try = max(1, int(max_h / (font_size * 1.15))) + 1
+            for num_lines in range(1, min(max_lines_try + 2, len(words) + 1)):
                 words_per_line = int(np.ceil(len(words) / num_lines))
                 candidate_lines = []
                 for i in range(0, len(words), words_per_line):
@@ -234,7 +243,7 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
                 break
                 
         if fits_all and all_lines:
-            line_h = (draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]) * 1.22
+            line_h = (draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]) * 1.20
             if len(all_lines) * line_h <= max_h:
                 return font, all_lines
                 
@@ -270,35 +279,139 @@ def check_ollama_available(prefer_uncensored=False):
     except Exception:
         return False, None
 
+def clean_ai_translation(text, original_text="", is_adult=True):
+    """Higieniza o texto gerado por IA removendo notas, prefixos e corrigindo termos anatômicos."""
+    if not text:
+        return ""
+        
+    cleaned = text.strip()
+    
+    # 1. Remover tags [PT-BR], (PT-BR) e notas de tradução / avisos de IA PRIMEIRO
+    cleaned = re.sub(r'\[\s*(?:PT-BR|PT|BR)\s*\]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\(\s*(?:PT-BR|PT|BR)\s*\)', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'[\(\[]\s*nota(?:\s+de\s+tradu[çc][ãa]o)?\s*:.*?[\]\)]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bNota\s*:.*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bComo\s+(?:uma|um)\s+(?:IA|intelig[êe]ncia artificial|modelo de linguagem).*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip()
+    
+    # 2. Remover prefixos de chatbot / IA em loop (para capturar prefixos encadeados)
+    prefixes_to_strip = [
+        r'^\s*texto\s+traduzido\s*:\s*',
+        r'^\s*tradu[çc][ãa]o\s*:\s*',
+        r'^\s*aqui\s+est[áa]\s+a\s+tradu[çc][ãa]o\s*:\s*',
+        r'^\s*vers[ãa]o\s+em\s+portugu[êe]s\s*:\s*',
+        r'^\s*tradu[çc][ãa]o\s+em\s+portugu[êe]s\s*:\s*',
+        r'^\s*tradu[çc][ãa]o\s+pt-br\s*:\s*',
+        r'^\s*pt-br\s*:\s*',
+        r'^\s*resposta\s*:\s*',
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for p in prefixes_to_strip:
+            new_val = re.sub(p, '', cleaned, flags=re.IGNORECASE).strip()
+            if new_val != cleaned:
+                cleaned = new_val
+                changed = True
+        
+    # 3. Remover aspas envolventes
+    cleaned = cleaned.strip()
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+        
+    # 4. Colapsar repetições excessivas causadas por loops do modelo (ex: "buceta... buceta... buceta...")
+    cleaned = re.sub(r'\b(\w+)(?:(?:\s*[.,!?…~]+\s*|\s+)\1){2,}\b', r'\1...', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\.{4,}', '...', cleaned)
+    cleaned = re.sub(r'(?:\.\.\.)+', '...', cleaned)
+    
+    # 5. Correção cirúrgica de termos anatômicos e gírias (preservando maiúsculas/minúsculas)
+    def _preserve_case(pattern, repl, target_str):
+        def _repl_cb(m):
+            w = m.group(0)
+            if w.isupper():
+                return repl.upper()
+            elif w.istitle():
+                return repl.capitalize()
+            return repl.lower()
+        return re.sub(pattern, _repl_cb, target_str, flags=re.IGNORECASE)
+
+    orig_lower = original_text.lower() if original_text else ""
+    if is_adult:
+        # Pussy / Cunt -> Buceta (Evitar inversão anatômica onde o modelo traduz 'pussy' como 'pica' ou 'pau')
+        if re.search(r'\b(pussy|cunt|vagina|slit|clit|clitoris)\b', orig_lower):
+            cleaned = _preserve_case(r'\bpica\b', 'buceta', cleaned)
+            cleaned = _preserve_case(r'\bpau\b', 'buceta', cleaned)
+            cleaned = _preserve_case(r'\bpiroca\b', 'buceta', cleaned)
+            cleaned = _preserve_case(r'\bcaralho\b', 'buceta', cleaned)
+            
+        # Cock / Dick / Shaft -> Pau / Pica
+        if re.search(r'\b(cock|dick|shaft|penis)\b', orig_lower):
+            cleaned = _preserve_case(r'\bbuceta\b', 'pau', cleaned)
+            cleaned = _preserve_case(r'\bxoxota\b', 'pau', cleaned)
+            
+        # Condom -> Camisinha / Preservativo (Evitar falso cognato 'condomínio')
+        if re.search(r'\bcondom\b', orig_lower):
+            cleaned = _preserve_case(r'\bcondom[íi]nio\b', 'camisinha', cleaned)
+            
+        # Came inside -> Gozou dentro / Gozei dentro (Evitar 'entrou na boca' ou 'veio dentro')
+        if re.search(r'\bcame\s+inside\b', orig_lower):
+            cleaned = _preserve_case(r'\bentrou\s+na\s+boca\b', 'gozou dentro', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+para\s+dentro\b', 'gozou dentro', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+dentro\b', 'gozou dentro', cleaned)
+            
+        # Fapping / Jerking off -> Batendo uma / Masturbação (Evitar 'fornicando')
+        if re.search(r'\b(fap|fapping|jerking\s*off)\b', orig_lower):
+            cleaned = _preserve_case(r'\bfornicando\b', 'batendo uma', cleaned)
+            cleaned = _preserve_case(r'\bfornica[çc][ãa]o\b', 'masturbação', cleaned)
+            
+        # Ooze / Oozing / Leak -> Escorrendo / Vazando (Evitar termo médico estranho 'exsudado')
+        cleaned = _preserve_case(r'\bexsudad[oa]s?\b', 'escorrendo', cleaned)
+        cleaned = _preserve_case(r'\bexsudando\b', 'escorrendo', cleaned)
+        
+        # Nipples -> Mamilos (Evitar 'pelos')
+        if re.search(r'\b(nipple|nipples)\b', orig_lower):
+            cleaned = _preserve_case(r'\bpelos\b', 'mamilos', cleaned)
+            
+    # Limpeza de múltiplos espaços
+    cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
+    return cleaned
+
 def translate_with_ollama(text, model_name, is_adult=True):
     url = "http://localhost:11434/api/generate"
     
     if is_adult:
-        prompt = f"""Atue como um tradutor e diagramador profissional de mangas e quadrinhos adultos (eromanga / hentai).
-O texto a seguir pode conter multiplos idiomas no mesmo manga (ex: Ingles e Japones misturados).
-Identifique o idioma deste trecho e traduza-o para o Portugues do Brasil (PT-BR) com extrema naturalidade.
+        prompt = f"""Atue como um tradutor profissional de mangás adultos e eróticos (hentai/eromanga).
+O texto a seguir pode conter múltiplos idiomas no mesmo mangá (ex: Inglês e Japonês misturados).
+Identifique o idioma e traduza-o para o Português do Brasil (PT-BR) com extrema naturalidade, fluidez e gírias brasileiras autênticas.
 
-REGRAS DE FORMATACAO E TRADUCAO:
-1. Adapte girias, expressoes e linguagem explicita para o portugues coloquial e fluido. Nao censure termos adultos.
-2. Adapte gemidos e onomatopeias para o formato BR (ex: "Ah...", "Ugh!", "Nhn~").
-3. Use pontuacao dramatica de manga (exclamacoes, interrogacoes e reticencias).
-4. Responda APENAS com a traducao, sem aspas, sem notas e sem o texto original.
+REGRAS OBRIGATÓRIAS:
+1. NUNCA adicione notas explicativas, parênteses como "(Nota: ...)", "(PT-BR)" ou avisos éticos.
+2. NUNCA inverta termos anatômicos:
+   - "pussy", "cunt", "vagina" -> buceta, bucetinha (NUNCA traduza como pica ou pau)
+   - "cock", "dick", "shaft" -> pau, pauzão, pica, caralho
+   - "condom" -> camisinha, preservativo (NUNCA condomínio)
+   - "came inside" -> gozei dentro, gozou dentro
+   - "fapping", "jerking off" -> batendo uma, se masturbando (NUNCA fornicando)
+   - "ooze", "leak", "dripping" -> escorrendo, vazando, pingando
+   - "nipples" -> mamilos, bicos
+3. Adapte gemidos e interjeições para o português BR (ex: "Ah...", "Ugh!", "Nhn~", "Mmm...").
+4. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências).
+5. Responda APENAS E EXCLUSIVAMENTE com o texto traduzido final, sem introdução, sem aspas e sem comentários.
 
 Texto original: {text}
-Traducao:"""
+Tradução:"""
     else:
-        prompt = f"""Atue como um tradutor e diagramador profissional de mangas e quadrinhos tradicionais.
-O texto a seguir pode conter multiplos idiomas no mesmo manga (ex: Ingles e Japones misturados).
-Identifique o idioma deste trecho e traduza-o para o Portugues do Brasil (PT-BR) com fidelidade e naturalidade.
+        prompt = f"""Atue como um tradutor profissional de mangás e quadrinhos japoneses.
+O texto a seguir pode conter múltiplos idiomas no mesmo mangá (ex: Inglês e Japonês misturados).
+Identifique o idioma e traduza-o para o Português do Brasil (PT-BR) com fidelidade e fluidez coloquial.
 
-REGRAS DE FORMATACAO E TRADUCAO:
-1. Mantenha o tom da historia (acao, aventura, comedia, romance, etc.).
-2. Adapte girias, expressoes e onomatopeias de forma adequada para o portugues brasileiro coloquial.
-3. Use pontuacao dramatica de manga (exclamacoes, interrogacoes e reticencias).
-4. Responda APENAS com a traducao, sem aspas, sem notas e sem o texto original.
+REGRAS OBRIGATÓRIAS:
+1. NUNCA adicione notas explicativas, parênteses como "(Nota: ...)", "(PT-BR)" ou avisos.
+2. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~).
+3. Responda APENAS E EXCLUSIVAMENTE com o texto traduzido final, sem introdução, sem aspas e sem comentários.
 
 Texto original: {text}
-Traducao:"""
+Tradução:"""
     
     data = {
         "model": model_name,
@@ -328,7 +441,7 @@ Traducao:"""
             resp_lower = resp.lower()
             if any(r in resp_lower for r in refusals):
                 return None
-            return resp
+            return clean_ai_translation(resp, original_text=text, is_adult=is_adult)
     except Exception:
         return None
 
@@ -391,9 +504,9 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
                 except Exception:
                     res = clean_t
                     
-        # Validação extra de segurança: a IA pode às vezes colocar aspas em volta da resposta
-        if res and res.startswith('"') and res.endswith('"'):
-            res = res[1:-1].strip()
+        # Higienização de segurança pós-tradução
+        if res:
+            res = clean_ai_translation(res, original_text=clean_t, is_adult=is_adult)
             
         results.append(res)
                 
@@ -526,6 +639,23 @@ def check_needs_rapidocr(manga_dir):
     except Exception:
         return False
 
+def is_ocr_noise(text, score):
+    """Filtra ruídos comuns de OCR como numerações aleatórias no cenário ou símbolos soltos."""
+    t = text.strip()
+    if not t:
+        return True
+    if score < 0.45:
+        return True
+    # Dígitos puros ou símbolos sem letras com score baixo (< 0.75)
+    has_letters = bool(re.search(r'[a-zA-Z\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', t))
+    if not has_letters and score < 0.75:
+        return True
+    if len(t) <= 1 and score < 0.65:
+        return True
+    if len(set(t)) <= 2 and len(t) >= 4 and score < 0.75:
+        return True
+    return False
+
 def generate_rapidocr_json(manga_dir, output_json_path):
     """Gera o arquivo json de caixas usando RapidOCR (ideal para Inglês/Latino)"""
     from rapidocr_onnxruntime import RapidOCR
@@ -557,6 +687,12 @@ def generate_rapidocr_json(manga_dir, output_json_path):
             for box_data in res:
                 coords = box_data[0]
                 text = box_data[1]
+                score = float(box_data[2]) if len(box_data) > 2 else 1.0
+                
+                # Descarta ruídos de OCR (evita destruir arte de fundo/cenário)
+                if is_ocr_noise(text, score):
+                    continue
+                    
                 xs = [p[0] for p in coords]
                 ys = [p[1] for p in coords]
                 
@@ -583,6 +719,17 @@ def generate_rapidocr_json(manga_dir, output_json_path):
     mokuro_data = {"version": "rapidocr", "pages": pages}
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
+
+def is_credits_page(bubbles):
+    """Detecta páginas de créditos/recrutamento de scanlation para evitar destruição de arte."""
+    full_text = " ".join([b.get("combined_text", "") for b in bubbles]).lower()
+    markers = [
+        "scanlation", "scans", "discord.gg", "patreon", "recruiting",
+        "raw provider", "typesetter", "cleaner", "proofreader",
+        "redrawn by", "translated by", "join us", "donation"
+    ]
+    matched = sum(1 for m in markers if m in full_text)
+    return matched >= 2
 
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
@@ -800,7 +947,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         print(f"[*] Traduzindo {len(texts_to_translate)} balões de fala...")
         translated_results = translate_batch_texts(texts_to_translate, src_lang=src_lang, is_adult=is_adult)
         for orig, trans in zip(texts_to_translate, translated_results):
-            cache[orig] = trans
+            cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
             
         try:
             # Tenta remover o atributo de oculto/sistema antes se existir (OneDrive quirk)
@@ -811,9 +958,10 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         except Exception as e:
             print(f"[!] Aviso: Nao foi possivel salvar o cache de tradução: {e}")
             
-    # Atribuir traduções aos balões
+    # Atribuir traduções aos balões com higienização garantida
     for p_idx, b_idx, orig_text in text_mapping:
-        pages_data[p_idx]["bubbles"][b_idx]["translated_text"] = cache.get(orig_text, orig_text)
+        cached_val = cache.get(orig_text, orig_text)
+        pages_data[p_idx]["bubbles"][b_idx]["translated_text"] = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult)
         
     # 4. Diagramação e Inpainting
     print(f"[*] Iniciando limpeza de balões e diagramação profissional...")
@@ -838,6 +986,13 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         cleaned = img_cv.copy()
         bubbles = p.get("bubbles", [])
         
+        # Preserva páginas de créditos/recrutamento sem aplicar caixas brancas destrutivas sobre a arte
+        if is_credits_page(bubbles):
+            out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
+            img_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+            img_pil.save(out_file, quality=95)
+            continue
+        
         # Limpar balões com a técnica segura (não arrancar arte)
         for b in bubbles:
             boxes_to_clean = b.get("raw_boxes", [b["box"]])
@@ -861,20 +1016,25 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 if roi.size == 0:
                     continue
                 gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
                 
-                # Mascara para inpaint/fill baseada nos pixels de texto escuros
-                mask = (gray_roi < 160).astype(np.uint8) * 255
+                # Detecta tanto texto escuro quanto colorido (ex: rosa/vermelho em balões)
+                is_dark = gray_roi < 165
+                is_colored = (hsv_roi[:, :, 1] > 35) & (gray_roi < 235)
+                mask = (is_dark | is_colored).astype(np.uint8) * 255
+                
                 k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
                 mask = cv2.dilate(mask, k, iterations=2)
                 
-                if np.mean(gray_roi > 210) > 0.20:
-                    # Fundo majoritariamente branco: limpa a máscara pintando de branco (evita cortar a borda preta do balao)
+                white_ratio = np.mean(gray_roi > 210)
+                if white_ratio > 0.55:
+                    # Fundo comprovadamente branco: limpa a máscara pintando de branco (evita cortar a borda preta do balao)
                     roi_clean = roi.copy()
                     roi_clean[mask > 0] = (255, 255, 255)
                     cleaned[y0:y1, x0:x1] = roi_clean
                 else:
-                    # Fundo com textura ou tom de cinza: Inpainting
-                    cleaned[y0:y1, x0:x1] = cv2.inpaint(roi, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+                    # Fundo com textura, arte ou tom de cinza: Inpainting
+                    cleaned[y0:y1, x0:x1] = cv2.inpaint(roi, mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
                 
         # Desenhar texto com Pillow usando fit_text_to_box
         img_pil = Image.fromarray(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB))
@@ -902,9 +1062,18 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             total_h = len(lines) * line_h
             start_y = cy - (total_h / 2) + (line_h / 2)
             
+            # Detecta se o fundo é balão branco para contorno nítido (1px) sem borrão
+            sub_roi = cleaned[max(0, ymin):min(h_img, ymax), max(0, xmin):min(w_img, xmax)]
+            is_white_bg = True
+            if sub_roi.size > 0:
+                is_white_bg = np.mean(cv2.cvtColor(sub_roi, cv2.COLOR_BGR2GRAY) > 210) > 0.55
+                
+            font_size = getattr(font, 'size', 20)
+            stroke_w = 1 if is_white_bg else max(2, int(round(font_size * 0.08)))
+            
             for line_idx, line in enumerate(lines):
                 ly = start_y + (line_idx * line_h)
-                draw.text((cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=3, stroke_fill=(255, 255, 255), anchor="mm")
+                draw.text((cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=stroke_w, stroke_fill=(255, 255, 255), anchor="mm")
                 
         out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
         img_pil.save(out_file, quality=95)

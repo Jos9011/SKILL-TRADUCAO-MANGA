@@ -254,12 +254,17 @@ def check_ollama_available(prefer_uncensored=False):
                 data = json.loads(response.read().decode('utf-8'))
                 models = [m["name"] for m in data.get("models", [])]
                 if models:
+                    uncensored_keys = ["abliterated", "dolphin", "unfiltered", "uncensored"]
                     if prefer_uncensored:
                         # Prioriza modelos livres de censura se instalados
-                        uncensored_keys = ["abliterated", "dolphin", "unfiltered", "uncensored"]
                         for m in models:
                             if any(k in m.lower() for k in uncensored_keys):
                                 return True, m
+                    else:
+                        # Para modo normal, prioriza modelos padrao (sem uncensored/dolphin)
+                        standard_models = [m for m in models if not any(k in m.lower() for k in uncensored_keys)]
+                        if standard_models:
+                            return True, standard_models[0]
                     return True, models[0]
         return True, "llama3"
     except Exception:

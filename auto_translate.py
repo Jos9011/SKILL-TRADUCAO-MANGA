@@ -5,10 +5,11 @@ Salva automaticamente em: C:\Users\ja329\OneDrive\Documentos\MANGAS
 
 Suporta:
 - Arrastar e soltar pastas no .bat
-- OCR automático com RapidOCR
-- Detecção automática de idioma (Japonês ou Inglês -> PT-BR)
-- Limpeza inteligente de balões (fill branco + OpenCV inpainting)
-- Diagramação com Comic Sans MS Bold e outline de contraste
+- OCR automático de alta precisão (RapidOCR com suporte a texto colorido + Mokuro)
+- Detecção automática de idioma (Japonês, Inglês, Coreano, Espanhol -> PT-BR)
+- Limpeza cirúrgica de balões (fill branco preservando bordas + Telea inpainting para arte)
+- Diagramação com Comic Sans MS Bold, centralização e outline de contraste
+- Proteção total contra alucinações de IA, notas de chatbot e inversões anatômicas
 - Geração de leitor web interativo (leitor.html)
 """
 
@@ -22,9 +23,15 @@ import shutil
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
+import urllib.request
 from rapidocr_onnxruntime import RapidOCR
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 from tqdm import tqdm
+
+try:
+    import wordninja
+except ImportError:
+    wordninja = None
 
 try:
     if hasattr(sys.stdout, 'reconfigure'):
@@ -36,7 +43,6 @@ except Exception:
 
 # Diretório padrão fixo de saída solicitado pelo usuário
 BASE_OUTPUT_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
-temp_render_dir = os.path.join(os.environ.get("TEMP", "C:\\temp"), "manga_render_tmp")
 
 FONT_CANDIDATES = [
     r"C:\Windows\Fonts\comicbd.ttf",   # Comic Sans MS Bold
@@ -67,11 +73,10 @@ def detect_language_from_samples(texts):
     
     total_asian = ko_chars + jp_kana + cjk_ideographs
     
-    # 1. Se os caracteres latinos forem predominantemente maiores (evita que ruído OCR ou um SFX japonês assuma o controle)
+    # 1. Se os caracteres latinos forem predominantemente maiores
     if latin_chars > 20 and latin_chars > (total_asian * 2):
         lower = full_str.lower()
         spanish_markers = [" el ", " la ", " de ", " que ", " y ", " en ", " un ", " por ", " con ", " para "]
-        # Exige pelo menos alguns marcadores para garantir que é espanhol, senão assume inglês
         if sum(1 for m in spanish_markers if m in lower) >= 3:
             return "es-ES"
         return "en-US"
@@ -90,7 +95,147 @@ def detect_language_from_samples(texts):
         
     return "ja-JP"
 
+# Dicionário de Onomatopeias e Efeitos Sonoros de Mangá (tradução direta sem alucinação de LLM)
+SFX_DICTIONARY = {
+    'SPRT': 'SPLASH',
+    'SPLRRRT': 'SPLASH',
+    'SLICK': 'SLICK',
+    'BOING': 'BOING',
+    'FLASH': 'FLASH',
+    'DRIP': 'PINGA',
+    'SCRATCH': 'RASC',
+    'STRETCH': 'ESTICA',
+    'PUAH': 'PUAH',
+    'SLORP': 'SLURP',
+    'LICK': 'LAMBE',
+    'GROPE': 'APALPA',
+    'ZLRCH': 'ZLRCH',
+    'GLUG': 'GLUG',
+    'PANT': 'OFEGA',
+    'GASP': 'ARF',
+    'SIGH': 'SUSPIRO',
+    'THUMP': 'TUM',
+    'DOOM': 'BUM',
+    'CREAK': 'RHEEE',
+    'CLANG': 'CLANG',
+    'SMACK': 'SMACK',
+    'KISS': 'BEIJO',
+    'CHU': 'CHU',
+    'AH': 'AH',
+    'HAH': 'HAH',
+    'UGH': 'UGH',
+    'NGH': 'NGH',
+    'MNH': 'MNH',
+    'AAH': 'AAH',
+    'GRIN': 'SORRISO',
+    'GIGGLE': 'RISINHO',
+    'SLAP': 'TAPA',
+    'BANG': 'BUM',
+    'TWITCH': 'TREME',
+    'THROB': 'PULSA',
+    'PINCH': 'BELISCA',
+    'RUB': 'ESFREGA',
+    'FAP': 'FAP',
+    'ZUP': 'ZUP',
+    'ZUR': 'ZUR',
+    'SHLICK': 'SHLICK',
+    'JUPOK': 'CHUP',
+    'GUPOK': 'CHUP',
+    'SNIFF': 'CHEIRA',
+    'GULP': 'GLUP',
+    'CHOMP': 'MHAM',
+    'WAG': 'ABANA',
+    'TUG': 'PUXA',
+    'STRIP': 'TIRA',
+    'SPREAD': 'ABRE',
+    'FREEZE': 'CONGELA',
+    'JOLT': 'SOBRESSALTO',
+    'SHIVER': 'TREME',
+    'SPLRT': 'SPLASH',
+    'SPLRRT': 'SPLASH',
+    'SPLRCH': 'SPLASH',
+    'SLRCH': 'SLRCH',
+    'SLURP': 'SLURP',
+    'SLURRRRRRP': 'SLURP'
+}
+
+COMMON_SOUNDS = set(SFX_DICTIONARY.keys()) | {
+    'AH', 'HAH', 'AHN', 'MNH', 'UGH', 'NGH', 'AAH', 'AHA', 'FWAA', 'NYAA',
+    'HYAH', 'NYAH', 'FUH', 'JYAA', 'CHOP', 'DROP', 'FREEZE', 'SLIP', 'SHH'
+}
+
+def translate_sfx_phrase(text):
+    """Detecta frases compostas de onomatopeias e traduz diretamente sem chamar a IA."""
+    if not text:
+        return None
+    raw_clean = re.sub(r'[^A-Za-z0-9\s!?.,~-]', '', text).strip()
+    if not raw_clean:
+        return None
+    tokens = [t for t in re.split(r'[\s,]+', raw_clean) if t]
+    if not tokens:
+        return None
+    words = [re.sub(r'[^A-Za-z]', '', t).upper() for t in tokens if re.search(r'[A-Za-z]', t)]
+    if not words:
+        return None
+    if all(w in COMMON_SOUNDS or w in SFX_DICTIONARY for w in words):
+        translated_parts = []
+        for t in tokens:
+            w = re.sub(r'[^A-Za-z]', '', t).upper()
+            punct = re.sub(r'[A-Za-z0-9]', '', t)
+            tr = SFX_DICTIONARY.get(w, w)
+            translated_parts.append(tr + punct if punct else tr)
+        return " ".join(translated_parts)
+    return None
+
+PRESERVE_WORDS = {
+    'ONII-SAN', 'ONE-SAN', 'SENSEI', 'SENPAI', 'KOHAI', 'KOUHAI',
+    'OTAKU', 'COSPLAY', 'ISEKAI', 'DOUJIN', 'HENTAI', 'MANGA',
+    'PT-BR', 'R18', 'PDF', 'JPG', 'PNG', 'WEBP', 'NORUN', 'MISHA', 'CHISE', 'LOVEMEA'
+}
+
+def repair_glued_text(text, src_lang="en-US"):
+    """Separa palavras coladas no OCR em inglês/latino usando wordninja e regex."""
+    if not text or src_lang in ("ja-JP", "zh-CN", "ko-KR"):
+        return text
+        
+    if re.match(r'^(?:https?://|www\.|discord\.gg)', text, re.IGNORECASE):
+        return text
+
+    # Corrige falta de espaço após pontuação: 'PANTIES,AND' -> 'PANTIES, AND'
+    text = re.sub(r'([,;:!?])([A-Za-z])', r'\1 \2', text)
+    text = re.sub(r'(\.{2,})([A-Za-z])', r'\1 \2', text)
+
+    # Separa CamelCase ou colagens óbvias com números
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    text = re.sub(r'([A-Za-z])(\d)', r'\1 \2', text)
+    text = re.sub(r'(\d)([A-Za-z])', r'\1 \2', text)
+    
+    if not wordninja:
+        return text
+
+    tokens = text.split()
+    fixed_tokens = []
+    
+    for token in tokens:
+        clean_tok = re.sub(r'[^a-zA-Z]', '', token)
+        # Se a palavra for longa e não for termo reservado
+        if len(clean_tok) >= 10 and clean_tok.upper() not in PRESERVE_WORDS:
+            splits = wordninja.split(clean_tok)
+            if len(splits) >= 2:
+                if token.isupper():
+                    fixed_tok = ' '.join(s.upper() for s in splits)
+                elif token.islower():
+                    fixed_tok = ' '.join(s.lower() for s in splits)
+                else:
+                    fixed_tok = ' '.join(splits)
+                fixed_tokens.append(fixed_tok)
+                continue
+        fixed_tokens.append(token)
+        
+    return ' '.join(fixed_tokens)
+
 def should_merge_lines(b1, b2):
+    """Verifica se duas caixas de OCR pertencem ao MESMO balão, evitando fusão de balões adjacentes."""
     x1_min, y1_min, x1_max, y1_max = b1["box"]
     x2_min, y2_min, x2_max, y2_max = b2["box"]
     
@@ -105,36 +250,53 @@ def should_merge_lines(b1, b2):
     gap_x = max(0, max(x1_min, x2_min) - min(x1_max, x2_max))
     gap_y = max(0, max(y1_min, y2_min) - min(y1_max, y2_max))
     
-    # 0. Restrição de disparidade de altura (evita juntar ruído minúsculo de cenário com falas reais)
     min_h = max(min(h1, h2), 1)
     max_h = max(h1, h2)
+    min_w = max(min(w1, w2), 1)
+    max_w = max(w1, w2)
+    
     if max_h > min_h * 2.8 and (gap_y > 15 or gap_x > 15):
         return False
-    
-    # 1. Logica para texto predominantemente HORIZONTAL
-    if w1 >= h1 or w2 >= h2:
-        if gap_y < max(max(h1, h2) * 1.4, 30):
-            cx1 = (x1_min + x1_max) / 2
-            cx2 = (x2_min + x2_max) / 2
-            if (overlap_x > 0 or abs(cx1 - cx2) < max(w1, w2) * 0.7) and gap_x < 35:
-                return True
 
-    # 2. Logica para texto predominantemente VERTICAL (Mangas Japoneses)
-    if h1 > w1 and h2 > w2:
-        if gap_x < max(max(w1, w2) * 2.2, 45): # Linhas verticais podem ter espacamento lateral
-            cy1 = (y1_min + y1_max) / 2
-            cy2 = (y2_min + y2_max) / 2
-            if (overlap_y > 0 or abs(cy1 - cy2) < max(h1, h2) * 0.7) and gap_y < 45:
+    # 1. TEXTO HORIZONTAL (Ocidental / Inglês / Coreano horizontal)
+    if w1 >= h1 or w2 >= h2:
+        # Se NÃO há sobreposição horizontal, NUNCA juntar (são balões ou colunas diferentes)
+        if overlap_x <= 0:
+            return False
+            
+        cx1 = (x1_min + x1_max) / 2
+        cx2 = (x2_min + x2_max) / 2
+        center_dist_x = abs(cx1 - cx2)
+        overlap_ratio_x = overlap_x / min_w
+        
+        # Devem estar bem alinhados horizontalmente (linhas do mesmo balão)
+        if (overlap_ratio_x >= 0.40 and center_dist_x <= max_w * 0.45) or overlap_ratio_x >= 0.65:
+            if gap_y <= max(max_h * 1.30, 28):
                 return True
-                    
-    # Fallback de proximidade extrema apenas se alturas forem compativeis
-    if gap_x < 20 and gap_y < 20 and max_h <= min_h * 2.2:
-        return True
+                
+        return False
+
+    # 2. TEXTO VERTICAL (Mangá Japonês / Chinês vertical)
+    if h1 > w1 and h2 > w2:
+        # Se NÃO há sobreposição vertical, NUNCA juntar (são balões verticais distintos)
+        if overlap_y <= 0:
+            return False
+            
+        cy1 = (y1_min + y1_max) / 2
+        cy2 = (y2_min + y2_max) / 2
+        center_dist_y = abs(cy1 - cy2)
+        overlap_ratio_y = overlap_y / min_h
+        
+        if (overlap_ratio_y >= 0.40 and center_dist_y <= max_h * 0.45) or overlap_ratio_y >= 0.65:
+            if gap_x <= max(max_w * 1.5, 32):
+                return True
+                
+        return False
         
     return False
 
 def smart_group_bubbles(blocks):
-    """Agrupa linhas de texto próximas usando conectividade de grafos, suportando leitura oriental."""
+    """Agrupa linhas de texto próximas usando conectividade de grafos, suportando leitura oriental e ocidental."""
     n = len(blocks)
     if n == 0:
         return []
@@ -185,7 +347,7 @@ def smart_group_bubbles(blocks):
         
         lines_text = [b["text"].strip() for b in comp_blocks]
         full_text = " ".join(lines_text)
-        
+        full_text = repair_glued_text(full_text)
         raw_boxes = [b["box"] for b in comp_blocks]
         
         bubbles.append({
@@ -199,99 +361,242 @@ def smart_group_bubbles(blocks):
     bubbles.sort(key=lambda b: (b["box"][1], b["box"][0]))
     return bubbles
 
-def fit_text_to_box(draw, text, max_w, max_h, font_path):
-    """Ajusta proporcionalmente o tamanho da fonte e quebras de linha com precisão cirúrgica."""
-    paragraphs = text.split('\n')
+def clean_speech_bubble(img, box):
+    """Limpeza inteligente de balões: remove 100% de textos pretos, coloridos e corações sem danificar a borda."""
+    xmin, ymin, xmax, ymax = box
+    bw = xmax - xmin
+    bh = ymax - ymin
+    ih, iw = img.shape[:2]
     
-    # Tamanho de fonte dinâmico baseado na resolução e tamanho do balão (antigo era fixo em max 24px)
+    pad_x = max(int(bw * 0.40), 45)
+    pad_y = max(int(bh * 0.40), 45)
+    
+    x0 = max(0, xmin - pad_x)
+    y0 = max(0, ymin - pad_y)
+    x1 = min(iw, xmax + pad_x)
+    y1 = min(ih, ymax + pad_y)
+    
+    roi = img[y0:y1, x0:x1]
+    if roi.size == 0:
+        return
+        
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    
+    # Verifica se a região tem fundo branco preponderante (balão de fala)
+    white_ratio = np.mean(gray > 200)
+    if white_ratio > 0.45:
+        # Detecta textos pretos, coloridos (rosa/vermelho/azul) e corações
+        is_text = (gray < 175) | ((hsv[:, :, 1] > 25) & (gray < 238))
+        text_mask = is_text.astype(np.uint8) * 255
+        
+        contours, _ = cv2.findContours(text_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        clean_mask = np.zeros_like(text_mask)
+        rh, rw = gray.shape
+        
+        for c in contours:
+            cx, cy, cw, ch = cv2.boundingRect(c)
+            # Se o contorno encosta na borda externa do ROI, pode ser a borda do balão ou arte externa
+            touches_margin = (cx <= 1 or cy <= 1 or (cx + cw) >= rw - 1 or (cy + ch) >= rh - 1)
+            # Mas se está dentro do núcleo da caixa de texto detectada pelo OCR, é texto garantido!
+            in_text_core = (cx >= (xmin - x0 - 6) and (cx + cw) <= (xmax - x0 + 6) and
+                            cy >= (ymin - y0 - 6) and (cy + ch) <= (ymax - y0 + 6))
+            if in_text_core or not touches_margin:
+                cv2.drawContours(clean_mask, [c], -1, 255, -1)
+                
+        clean_mask = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        roi[clean_mask > 0] = (255, 255, 255)
+    else:
+        # Inpainting seguro para texturas, retículas e arte de fundo
+        is_text = (gray < 165) | ((hsv[:, :, 1] > 35) & (gray < 235))
+        mask = cv2.dilate(is_text.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=2)
+        img[y0:y1, x0:x1] = cv2.inpaint(roi, mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
+
+def wrap_text_to_width(draw, text, font, max_w):
+    """Quebra texto por palavras usando largura em pixels real da fonte (sem deformações)."""
+    paragraphs = text.split('\n')
+    all_lines = []
+    for p in paragraphs:
+        words = p.split()
+        if not words:
+            continue
+        curr = []
+        for w in words:
+            test_l = ' '.join(curr + [w])
+            bbox = draw.textbbox((0, 0), test_l, font=font)
+            if (bbox[2] - bbox[0]) <= max_w:
+                curr.append(w)
+            else:
+                if curr:
+                    all_lines.append(' '.join(curr))
+                    curr = [w]
+                else:
+                    all_lines.append(w)
+                    curr = []
+        if curr:
+            all_lines.append(' '.join(curr))
+    return all_lines
+
+def fit_text_to_box(draw, text, max_w, max_h, font_path):
+    """Ajusta proporcionalmente o tamanho da fonte e quebras de linha para preencher o balão esteticamente."""
+    # Limpa emojis e símbolos não suportados pela fonte TTF para evitar retângulos 'tofu'
+    text = re.sub(r'[\u2660-\u2667\u2764\ufe0f♥❤♡★☆]', '', text).strip()
+    words = text.split()
+    if not words:
+        return ImageFont.truetype(font_path, 12), []
+        
     ideal_max = int(min(max_h * 0.45, max_w * 0.35, 68))
-    max_font_size = max(26, min(ideal_max, 68))
+    max_font_size = max(24, min(ideal_max, 68))
     
     for font_size in range(max_font_size, 9, -2):
         font = ImageFont.truetype(font_path, font_size)
-        all_lines = []
-        fits_all = True
-        
-        for para in paragraphs:
-            words = para.split()
-            if not words:
-                continue
+        line_h = (draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]) * 1.22
+        max_possible_lines = int(max_h / line_h)
+        if max_possible_lines < 1:
+            continue
             
-            best_para_lines = None
-            max_lines_try = max(1, int(max_h / (font_size * 1.15))) + 1
-            for num_lines in range(1, min(max_lines_try + 2, len(words) + 1)):
-                words_per_line = int(np.ceil(len(words) / num_lines))
-                candidate_lines = []
-                for i in range(0, len(words), words_per_line):
-                    candidate_lines.append(' '.join(words[i:i+words_per_line]))
+        greedy_lines = wrap_text_to_width(draw, text, font, max_w)
+        if len(greedy_lines) <= max_possible_lines:
+            # Se a última linha tiver apenas 1 palavra curta pendurada, tenta distribuir de forma equilibrada (formato balão)
+            best_lines = greedy_lines
+            if len(greedy_lines) > 1 and len(greedy_lines[-1].split()) == 1 and len(greedy_lines[-1]) < 6:
+                target_w = max_w * 0.88
+                balanced = []
+                b_cur = []
+                for w in words:
+                    test_l = ' '.join(b_cur + [w])
+                    w_len = draw.textbbox((0, 0), test_l, font=font)[2] - draw.textbbox((0, 0), test_l, font=font)[0]
+                    if w_len <= target_w or (not b_cur and w_len <= max_w):
+                        b_cur.append(w)
+                    else:
+                        if b_cur:
+                            balanced.append(' '.join(b_cur))
+                            b_cur = [w]
+                        else:
+                            balanced.append(w)
+                            b_cur = []
+                if b_cur:
+                    balanced.append(' '.join(b_cur))
+                if len(balanced) <= max_possible_lines and all((draw.textbbox((0, 0), l, font=font)[2] - draw.textbbox((0, 0), l, font=font)[0]) <= max_w for l in balanced):
+                    best_lines = balanced
                     
-                fits = True
-                for l in candidate_lines:
-                    bbox = draw.textbbox((0, 0), l, font=font)
-                    w_line = bbox[2] - bbox[0]
-                    if w_line > max_w:
-                        fits = False
-                        break
-                if fits:
-                    best_para_lines = candidate_lines
-                    break
-                    
-            if best_para_lines is not None:
-                all_lines.extend(best_para_lines)
-            else:
-                fits_all = False
-                break
-                
-        if fits_all and all_lines:
-            line_h = (draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]) * 1.20
-            if len(all_lines) * line_h <= max_h:
-                return font, all_lines
-                
+            return font, best_lines
+            
+    # Fallback dinâmico usando tamanho 10 e wrapping proporcional (nunca width=16 rígido)
     font = ImageFont.truetype(font_path, 10)
-    fallback_lines = []
-    for p in paragraphs:
-        fallback_lines.extend(textwrap.wrap(p, width=14))
+    fallback_lines = wrap_text_to_width(draw, text, font, max_w)
     return font, fallback_lines
 
-import urllib.request
-
 def check_ollama_available(prefer_uncensored=False):
+    """Verifica se o servidor Ollama local está ativo e seleciona o modelo ideal priorizando fluência em PT-BR."""
     try:
         req = urllib.request.Request("http://localhost:11434/api/tags")
-        with urllib.request.urlopen(req, timeout=2) as response:
+        with urllib.request.urlopen(req, timeout=3) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
                 models = [m["name"] for m in data.get("models", [])]
                 if models:
-                    uncensored_keys = ["abliterated", "dolphin", "unfiltered", "uncensored"]
-                    if prefer_uncensored:
-                        # Prioriza modelos livres de censura se instalados
+                    # Modelos multilíngues de alta qualidade comprovada em Português
+                    best_pt_models = ["llama3.1", "qwen2.5", "mistral", "gemma2", "llama3.2", "llama3"]
+                    selected_model = None
+                    
+                    # 1. Procura primeiro modelos limpos oficiais (evita viés de chatbot/alucinação de 'dolphin')
+                    for pref in best_pt_models:
                         for m in models:
-                            if any(k in m.lower() for k in uncensored_keys):
-                                return True, m
-                    else:
-                        # Para modo normal, prioriza modelos padrao (sem uncensored/dolphin)
-                        standard_models = [m for m in models if not any(k in m.lower() for k in uncensored_keys)]
-                        if standard_models:
-                            return True, standard_models[0]
-                    return True, models[0]
-        return True, "llama3"
+                            if pref in m.lower() and "dolphin" not in m.lower():
+                                selected_model = m
+                                break
+                        if selected_model:
+                            break
+                            
+                    # 2. Se não encontrar sem dolphin, busca qualquer um que coincida
+                    if not selected_model:
+                        for pref in best_pt_models:
+                            for m in models:
+                                if pref in m.lower():
+                                    selected_model = m
+                                    break
+                            if selected_model:
+                                break
+                                
+                    if not selected_model:
+                        selected_model = models[0]
+                        
+                    # Executa aquecimento (warm-up) e ativa keep_alive: 60m para pré-carregar o modelo na VRAM
+                    print(f"[*] Pré-carregando modelo local '{selected_model}' na VRAM (keep_alive: 60m)...")
+                    try:
+                        warm_req = urllib.request.Request(
+                            "http://localhost:11434/api/chat",
+                            data=json.dumps({
+                                "model": selected_model,
+                                "messages": [{"role": "user", "content": "oi"}],
+                                "stream": False,
+                                "keep_alive": "60m"
+                            }).encode('utf-8'),
+                            headers={'Content-Type': 'application/json'}
+                        )
+                        with urllib.request.urlopen(warm_req, timeout=120) as warm_resp:
+                            pass
+                        print(f"[+] Modelo '{selected_model}' ativo na memória com sucesso!")
+                    except Exception as we:
+                        print(f"[*] Aviso no warm-up do Ollama: {we}")
+                        
+                    return True, selected_model
+        return False, None
     except Exception:
         return False, None
 
 def clean_ai_translation(text, original_text="", is_adult=True):
-    """Higieniza o texto gerado por IA removendo notas, prefixos e corrigindo termos anatômicos."""
+    """Higieniza rigorosamente a saída da IA: elimina notas, 'Obs:', prefixos e normaliza anatomia."""
     if not text:
-        return ""
+        return original_text.strip()
         
     cleaned = text.strip()
     
-    # 0. Se o modelo incluiu 'A tradução para o Português é: "..."' ou similar
+    # 0. Detectar e ignorar mensagens de recusa de IA ou vazamentos de prompt
+    refusal_markers = [
+        'idioma desconhecido', 'forneça o texto original',
+        'como uma inteligência artificial', 'como uma ia',
+        'como um modelo de linguagem', 'não posso cumprir',
+        'não posso ajudar', 'não posso atender', 'cannot fulfill', "can't fulfill",
+        'você é um tradutor', 'regras obrigatórias', 'traduza o texto original',
+        'como modelo de ia', 'as an ai'
+    ]
+    if any(rm in cleaned.lower() for rm in refusal_markers):
+        sfx_try = translate_sfx_phrase(original_text)
+        if sfx_try:
+            return sfx_try
+        norm_sfx = re.sub(r'[^A-Z]', '', original_text.upper())
+        if norm_sfx in SFX_DICTIONARY:
+            return SFX_DICTIONARY[norm_sfx]
+        return original_text.strip()
+        
+    # Preservar nomes próprios e créditos de scanlators sem deixar a IA alucinar
+    clean_lower = original_text.strip().lower()
+    if clean_lower in ['alex', 'takuya', 'valirius', 'pr', 'alex yasa', 'omega scans', 'qmega scans', 'amega scans']:
+        return original_text.strip()
+    if 'discord.gg' in clean_lower or '@gmail.com' in clean_lower:
+        return original_text.strip()
+
+    # Se a saída for o próprio texto do prompt repetido
+    for p_leak in ['você é um tradutor', 'traduza fielmente', 'regras obrigatórias']:
+        if p_leak in cleaned.lower() and len(cleaned) > 80 and len(original_text) < 30:
+            sfx_try = translate_sfx_phrase(original_text)
+            if sfx_try:
+                return sfx_try
+            norm_sfx = re.sub(r'[^A-Z]', '', original_text.upper())
+            if norm_sfx in SFX_DICTIONARY:
+                return SFX_DICTIONARY[norm_sfx]
+            return original_text.strip()
+
+    # 1. Eliminar saudações e conversas de assistente ('Vem lá, meu amigo...', 'Estou traduzindo...', 'Aqui está...')
+    cleaned = re.sub(r'(?i)^(?:ol[áa]|aqui\s+est[áa]|com\s+certeza|vamos\s+traduzir|estou\s+traduzindo|com\s+base\s+nas\s+regras|veja\s+bem|beleza|entendi|ok|vem\s+l[áa],?\s+meu\s+amigo!?).*?[:\n]+', '', cleaned).strip()
+
+    # Extração se o modelo formatou com 'Tradução: "..."'
     inline_trad = re.search(r'(?:a\s+tradu[çc][ãa]o(?:\s+para\s+.*?)?\s+[eé]\s*:?\s*)["“\']([^"”\']+)["”\']', cleaned, flags=re.IGNORECASE)
     if inline_trad:
         cleaned = inline_trad.group(1).strip()
     else:
-        # Se houver marcador 'Tradução:' ou 'Texto traduzido:' no corpo da resposta
         trad_matches = list(re.finditer(r'(?:texto\s+traduzido|tradu[çc][ãa]o(?:\s+(?:para\s+)?(?:o\s+)?(?:portugu[êe]s(?:\s+do\s+brasil)?|pt-br))?)\s*:\s*(.*)', cleaned, flags=re.IGNORECASE))
         if trad_matches:
             for m in reversed(trad_matches):
@@ -301,76 +606,43 @@ def clean_ai_translation(text, original_text="", is_adult=True):
                     cleaned = candidate
                     break
 
-    # 1. Remover intros metalinguísticas de IA
-    meta_intro_patterns = [
-        r'^(?:vou\s+traduzir|traduzindo|o\s+texto\s+original|l[íi]ngua\s+identificada|identifiquei|aqui\s+est[áa]).*?(?:\n+|\:\s*)',
-        r'^original\s*:.*?(?:\n+|$)',
-        r'^texto\s+original\s*:.*?(?:\n+|$)',
-    ]
-    for pat in meta_intro_patterns:
-        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE).strip()
+    # 2. Remover metadados, notas de rodapé, 'Obs:' e explicações
+    cleaned = re.sub(r'(?is)\bobs(?:\.|erva[çc][ãa]o)?\s*:.*$', '', cleaned).strip()
+    cleaned = re.sub(r'(?is)\bsugest[ãa]o\s*:.*$', '', cleaned).strip()
+    cleaned = re.sub(r'(?is)\bnota(?:\s+de\s+tradu[çc][ãa]o)?\s*:.*$', '', cleaned).strip()
+    cleaned = re.sub(r'(?i)^[a-z0-9_-]+,\s+que\s+[eé]\s+um\s+termo.*$', '', cleaned).strip()
 
-    # 2. Filtrar linhas com cabeçalhos de metadados
+    # 3. Remover parênteses contendo explicações da IA ou meta-comentários
+    cleaned = re.sub(r'\[\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\(\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\)', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\([^\)]*(?:sugest|express|g[íi]ria|significa|regras|contexto|portugu[êe]s|afeto|fluidez|gozou|surpresa|nega[çc][ãa]o|nunca|ingl[êe]s|japon[êe]s|traduz|mistur)[^\)]*\)', '', cleaned, flags=re.IGNORECASE)
+    
+    # 4. Limpar linhas vazias ou cabeçalhos soltos
     lines = cleaned.split('\n')
     valid_lines = []
     for line in lines:
         l_str = line.strip()
-        if re.match(r'^(?:texto\s+original|original|l[íi]ngua\s+identificada|tradu[çc][ãa]o|texto\s+traduzido)\s*:', l_str, flags=re.IGNORECASE):
+        if re.match(r'^(?:texto\s+original|original|l[íi]ngua\s+identificada|tradu[çc][ãa]o|texto\s+traduzido|resposta)\s*:', l_str, flags=re.IGNORECASE):
             continue
-        if re.match(r'^(?:traduzindo\s+o\s+texto|vou\s+traduzir)', l_str, flags=re.IGNORECASE):
+        if re.match(r'^(?:traduzindo\s+o\s+texto|vou\s+traduzir|aqui\s+est[áa])', l_str, flags=re.IGNORECASE):
             continue
         valid_lines.append(l_str)
     cleaned = '\n'.join(valid_lines).strip()
 
-    # 3. Desduplica linhas idênticas repetidas
-    blocks = [b.strip() for b in cleaned.split('\n') if b.strip()]
-    if blocks and all(b.lower() == blocks[0].lower() for b in blocks):
-        cleaned = blocks[0]
-
-    # Se houver formato "ORIGINAL -> TRADUÇÃO"
+    # 5. Se houver formato "ORIGINAL -> TRADUÇÃO"
     if '->' in cleaned:
         cleaned = cleaned.split('->')[-1].strip()
 
-    # 4. Remover tags [PT-BR], (PT-BR) e notas de tradução / avisos de IA
-    cleaned = re.sub(r'\[\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\]', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\(\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\)', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\([^\)]*(?:ingl[êe]s|japon[êe]s|traduz|mistur|sem\s+tradu[çc][ãa]o|express[ãa]o|explica[çc][ãa]o)[^\)]*\)', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'[\(\[]\s*nota(?:\s+de\s+tradu[çc][ãa]o)?\s*:.*?[\]\)]', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bNota\s*:.*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bComo\s+(?:uma|um)\s+(?:IA|intelig[êe]ncia artificial|modelo de linguagem).*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.strip()
-
-    # 5. Remover prefixos de chatbot / IA em loop (para capturar prefixos encadeados)
-    prefixes_to_strip = [
-        r'^\s*texto\s+traduzido\s*:\s*',
-        r'^\s*tradu[çc][ãa]o\s*:\s*',
-        r'^\s*aqui\s+est[áa]\s+a\s+tradu[çc][ãa]o\s*:\s*',
-        r'^\s*vers[ãa]o\s+em\s+portugu[êe]s\s*:\s*',
-        r'^\s*tradu[çc][ãa]o\s+em\s+portugu[êe]s\s*:\s*',
-        r'^\s*tradu[çc][ãa]o\s+pt-br\s*:\s*',
-        r'^\s*pt-br\s*:\s*',
-        r'^\s*resposta\s*:\s*',
-    ]
-    changed = True
-    while changed:
-        changed = False
-        for p in prefixes_to_strip:
-            new_val = re.sub(p, '', cleaned, flags=re.IGNORECASE).strip()
-            if new_val != cleaned:
-                cleaned = new_val
-                changed = True
-
-    # 6. Remover aspas envolventes
+    # 6. Remover aspas externas
     cleaned = cleaned.strip()
     if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
         cleaned = cleaned[1:-1].strip()
 
-    # 7. Colapsar repetições excessivas causadas por loops do modelo (ex: "buceta... buceta... buceta...")
-    cleaned = re.sub(r'\b(\w+)(?:(?:\s*[.,!?…~]+\s*|\s+)\1){2,}\b', r'\1...', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\.{4,}', '...', cleaned)
-    cleaned = re.sub(r'(?:\.\.\.)+', '...', cleaned)
+    # 7. Remover parênteses e colchetes órfãos
+    cleaned = re.sub(r'[\(\[\{]$', '', cleaned).strip()
+    cleaned = re.sub(r'^[\)\]\}]', '', cleaned).strip()
 
-    # 8. Correção cirúrgica de termos anatômicos e gírias (preservando maiúsculas/minúsculas)
+    # 8. Correção de termos anatômicos e gírias de mangá
     def _preserve_case(pattern, repl, target_str):
         def _repl_cb(m):
             w = m.group(0)
@@ -383,122 +655,147 @@ def clean_ai_translation(text, original_text="", is_adult=True):
 
     orig_lower = original_text.lower() if original_text else ""
     if is_adult:
-        # Pussy / Cunt -> Buceta (Evitar inversão anatômica onde o modelo traduz 'pussy' como 'pica' ou 'pau')
+        # Pussy / Cunt -> Buceta (NUNCA pau ou pica)
         if re.search(r'\b(pussy|cunt|vagina|slit|clit|clitoris)\b', orig_lower):
             cleaned = _preserve_case(r'\bpica\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bpau\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bpiroca\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bcaralho\b', 'buceta', cleaned)
 
-        # Cock / Dick / Shaft / Peepee -> Pau / Pica / Pinto
-        if re.search(r'(peepee|pecker|penis|cock|dick|shaft|wiener)', orig_lower):
+        # Cock / Dick / Shaft / Peepee -> Pau / Pinto (NUNCA peito ou pé de peixe)
+        if re.search(r'\b(peepee|pecker|penis|cock|dick|shaft|wiener)\b', orig_lower):
             cleaned = _preserve_case(r'\bsua\s+bucetinha\b', 'seu pintinho', cleaned)
             cleaned = _preserve_case(r'\bsua\s+buceta\b', 'seu pau', cleaned)
             cleaned = _preserve_case(r'\bbucetinha\b', 'pintinho', cleaned)
             cleaned = _preserve_case(r'\bbuceta\b', 'pau', cleaned)
-            cleaned = _preserve_case(r'\bxoxota\b', 'pau', cleaned)
             cleaned = _preserve_case(r'\bseu\s+peito\b', 'seu pau', cleaned)
             cleaned = _preserve_case(r'\bseus\s+peitos\b', 'seu pau', cleaned)
-            cleaned = _preserve_case(r'\bpeitinho\b', 'pintinho', cleaned)
+            cleaned = _preserve_case(r'\bpeito\b', 'pau', cleaned)
+            cleaned = _preserve_case(r'\bp[ée]\s+de\s+peixe\b', 'pintinho', cleaned)
 
-        # Condom -> Camisinha / Preservativo (Evitar falso cognato 'condomínio')
-        if re.search(r'\bcondom\b', orig_lower):
-            cleaned = _preserve_case(r'\bcondom[íi]nio\b', 'camisinha', cleaned)
+        # Striped Panties / Panties -> Calcinha listrada / Calcinha (NUNCA cuecas ou estriadas)
+        if re.search(r'\bstriped\s+panties\b', orig_lower):
+            cleaned = _preserve_case(r'\bcuecas?\s+estriadas?\b', 'calcinha listrada', cleaned)
+            cleaned = _preserve_case(r'\bcueca\s+listrada\b', 'calcinha listrada', cleaned)
+        if re.search(r'\bpanties\b', orig_lower):
+            cleaned = _preserve_case(r'\bcuecas?\b', 'calcinha', cleaned)
 
-        # Came inside -> Gozou dentro / Gozei dentro (Evitar 'entrou na boca' ou 'veio dentro')
+        # Fiancée -> Noiva (NUNCA noivo)
+        if re.search(r'\bfianc[eé]+e?\b', orig_lower):
+            cleaned = _preserve_case(r'\bnoivo\b', 'noiva', cleaned)
+
+        # Came inside -> Gozou dentro / Gozei dentro (NUNCA entrei na mamãe)
         if re.search(r'\bcame\s+inside\b', orig_lower):
+            cleaned = _preserve_case(r'\bentrei\s+(?:na|dentro\s+da)\b', 'gozei dentro da', cleaned)
+            cleaned = _preserve_case(r'\bentrou\s+(?:na|dentro\s+da)\b', 'gozou dentro da', cleaned)
             cleaned = _preserve_case(r'\bentrou\s+na\s+boca\b', 'gozou dentro', cleaned)
             cleaned = _preserve_case(r'\bveio\s+para\s+dentro\b', 'gozou dentro', cleaned)
             cleaned = _preserve_case(r'\bveio\s+dentro\b', 'gozou dentro', cleaned)
 
-        # Fapping / Jerking off -> Batendo uma / Masturbação (Evitar 'fornicando')
+        # Honey -> Amor / Querido (NUNCA doce-pessoa)
+        if re.search(r'\bhoney\b', orig_lower):
+            cleaned = _preserve_case(r'\bdoce-pes[oa]a?\b', 'querido', cleaned)
+            cleaned = _preserve_case(r'\bdoce\s+pessoa\b', 'querido', cleaned)
+
+        # Mommy -> Mamãe (NUNCA mamã de Portugal)
+        if re.search(r'\bmommy\b', orig_lower):
+            cleaned = _preserve_case(r'\bmam[ãa]\b', 'mamãe', cleaned)
+
+        # Such a bad boy -> Que garoto levado / garoto mau
+        if re.search(r'such\s+a\s+bad\s+boy', orig_lower):
+            cleaned = _preserve_case(r't[áa]\s+t[ãa]o\s+ruim\s+assim.*', 'Que garoto levado...', cleaned)
+
+        # That would be bad -> Isso seria ruim
+        if re.search(r'that\s+would\s+be\s+bad', orig_lower):
+            cleaned = _preserve_case(r'uau,\s+que\s+coisa!?', 'Isso seria ruim!', cleaned)
+
+        # Pregnant -> Grávida (NUNCA gestante)
+        if re.search(r'\bpregnant\b', orig_lower):
+            cleaned = _preserve_case(r'\bgestante\b', 'grávida', cleaned)
+
+        # Condom -> Camisinha (NUNCA condomínio)
+        if re.search(r'\bcondom\b', orig_lower):
+            cleaned = _preserve_case(r'\bcondom[íi]nio\b', 'camisinha', cleaned)
+
+        # Fapping / Jerking off -> Batendo uma / Masturbação (NUNCA fornicando)
         if re.search(r'\b(fap|fapping|jerking\s*off)\b', orig_lower):
             cleaned = _preserve_case(r'\bfornicando\b', 'batendo uma', cleaned)
             cleaned = _preserve_case(r'\bfornica[çc][ãa]o\b', 'masturbação', cleaned)
 
-        # Ooze / Oozing / Leak -> Escorrendo / Vazando (Evitar termo médico estranho 'exsudado')
+        # Ooze / Leak -> Escorrendo / Vazando (NUNCA exsudado)
         cleaned = _preserve_case(r'\bexsudad[oa]s?\b', 'escorrendo', cleaned)
         cleaned = _preserve_case(r'\bexsudando\b', 'escorrendo', cleaned)
 
-        # Nipples -> Mamilos (Evitar 'pelos')
-        if re.search(r'\b(nipple|nipples)\b', orig_lower):
+        # Nipples / Nips -> Mamilos (NUNCA pelos)
+        if re.search(r'\b(nipple|nipples|nips|nip)\b', orig_lower):
             cleaned = _preserve_case(r'\bpelos\b', 'mamilos', cleaned)
 
+    cleaned = _preserve_case(r'\bperfecto\b', 'perfeito', cleaned)
     cleaned = _preserve_case(r'\btacto\b', 'tato', cleaned)
+    
+    # 9. Proteção para gemidos/sons curtos (evita que um 'NGH!' vire um parágrafo)
+    orig_stripped = original_text.strip()
+    if len(orig_stripped) <= 6 and len(cleaned.split()) > 3:
+        cleaned = cleaned.split()[0].strip()
+
     cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
-    return cleaned
+    return cleaned if cleaned else original_text.strip()
 
 def translate_with_ollama(text, model_name, is_adult=True):
-    url = "http://localhost:11434/api/generate"
+    """Traduz texto usando a API nativa /api/chat do Ollama com prompt estrito anti-alucinação e temperature 0.0."""
+    url = "http://localhost:11434/api/chat"
+    
+    clean_t = text.strip()
+    # Checagem SFX prioritária
+    sfx_res = translate_sfx_phrase(clean_t)
+    if sfx_res:
+        return sfx_res
     
     if is_adult:
-        prompt = f"""Atue como um tradutor profissional de mangás adultos e eróticos (hentai/eromanga).
-O texto a seguir pode conter múltiplos idiomas no mesmo mangá (ex: Inglês e Japonês misturados).
-Identifique o idioma e traduza-o para o Português do Brasil (PT-BR) com extrema naturalidade, fluidez e gírias brasileiras autênticas.
+        sys_prompt = """Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
+Traduza fielmente o diálogo original com máxima naturalidade coloquial e fluidez brasileira, respeitando o tom da cena (romance, ecchi, diálogos picantes ou adultos).
 
 REGRAS OBRIGATÓRIAS:
-1. NUNCA adicione notas explicativas, parênteses como "(Nota: ...)", "(PT-BR)" ou avisos éticos.
-2. NUNCA inverta termos anatômicos:
-   - "pussy", "cunt", "vagina" -> buceta, bucetinha (NUNCA traduza como pica ou pau)
-   - "cock", "dick", "shaft" -> pau, pauzão, pica, caralho
-   - "condom" -> camisinha, preservativo (NUNCA condomínio)
-   - "came inside" -> gozei dentro, gozou dentro
-   - "fapping", "jerking off" -> batendo uma, se masturbando (NUNCA fornicando)
-   - "ooze", "leak", "dripping" -> escorrendo, vazando, pingando
-   - "nipples" -> mamilos, bicos
-3. Adapte gemidos e interjeições para o português BR (ex: "Ah...", "Ugh!", "Nhn~", "Mmm...").
-4. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências).
-5. Responda APENAS E EXCLUSIVAMENTE com o texto traduzido final, sem introdução, sem aspas e sem comentários.
-
-Texto original: {text}
-Tradução:"""
+1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA introduza com "Aqui está", NUNCA adicione explicações, notas de tradutor ou parênteses de justificativa.
+2. NUNCA use palavras em espanhol (ex: use sempre 'perfeito', NUNCA 'perfecto'; 'vocês', NUNCA 'vosotros').
+3. Adapte expressões e gírias com naturalidade autêntica brasileira (ex: 'panties' -> 'calcinha'; 'striped panties' -> 'calcinha listrada'; 'cock/penis' -> 'pau/pinto'; 'came inside' -> 'gozou dentro'; 'honey' -> 'amor/querido'; 'fiancée' -> 'noiva').
+4. Mantenha nomes de personagens inalterados (Norun, Misha, Chise, Lovemea, Ichiri).
+5. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências)."""
     else:
-        prompt = f"""Atue como um tradutor profissional de mangás e quadrinhos japoneses.
-O texto a seguir pode conter múltiplos idiomas no mesmo mangá (ex: Inglês e Japonês misturados).
-Identifique o idioma e traduza-o para o Português do Brasil (PT-BR) com fidelidade e fluidez coloquial.
+        sys_prompt = """Você é um tradutor literário profissional de mangás e quadrinhos japoneses para Português do Brasil (PT-BR).
+Traduza fielmente o texto original com máxima naturalidade coloquial e fluidez brasileira.
 
 REGRAS OBRIGATÓRIAS:
-1. NUNCA adicione notas explicativas, parênteses como "(Nota: ...)", "(PT-BR)" ou avisos.
-2. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~).
-3. Responda APENAS E EXCLUSIVAMENTE com o texto traduzido final, sem introdução, sem aspas e sem comentários.
+1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA adicione saudações, notas ou explicações.
+2. NUNCA use palavras em espanhol.
+3. Mantenha nomes próprios inalterados (Norun, Misha, Chise, Lovemea).
+4. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~)."""
 
-Texto original: {text}
-Tradução:"""
-    
     data = {
         "model": model_name,
-        "prompt": prompt,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{text}"}
+        ],
         "stream": False,
+        "keep_alive": "60m",
         "options": {
-            "temperature": 0.3
+            "temperature": 0.0,
+            "num_predict": 256
         }
     }
     
     try:
         req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=60) as response:
             result = json.loads(response.read().decode('utf-8'))
-            resp = result.get("response", "").strip()
-            
-            # Se o modelo disparar recusa moral/censura, descartamos para usar o fallback do Google
-            refusals = [
-                "não posso cumprir", "nao posso cumprir",
-                "não posso atender", "nao posso atender",
-                "não posso ajudar com", "nao posso ajudar com",
-                "posso ajudar com outra coisa",
-                "cannot fulfill", "can't fulfill",
-                "as an ai", "como uma inteligência artificial",
-                "como um modelo de linguagem"
-            ]
-            resp_lower = resp.lower()
-            if any(r in resp_lower for r in refusals):
-                return None
+            resp = result.get("message", {}).get("content", "").strip()
             return clean_ai_translation(resp, original_text=text, is_adult=is_adult)
     except Exception:
         return None
 
 def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
-    """Traduz lista de textos para Portugues usando Ollama (se disponivel) com fallback para MyMemory/Google."""
+    """Traduz lista de textos usando Ollama local (prioritário, offline, sem erros 401) com fallback para Google."""
     if not text_list:
         return []
         
@@ -520,13 +817,10 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
     
     ollama_active, ollama_model = check_ollama_available(prefer_uncensored=is_adult)
     if ollama_active:
-        print(f"[+] OLLAMA DETECTADO! Ativando Modo Inteligência Artificial Local (Modelo: {ollama_model})...")
+        print(f"[+] OLLAMA ATIVO! Motor de IA Local ({ollama_model}) selecionado para máxima privacidade e precisão.")
     else:
         print(f"[*] Ollama não detectado. Usando modo de tradução em nuvem (MyMemory/Google).")
     
-    # Forçamos o fallback para 'auto', permitindo que o Google Translator avalie balão por balão
-    # caso o mangá tenha idiomas misturados (ex: balão em inglês e balão em japonês no mesmo capítulo)
-    fallback_code = 'auto'
     translator = MyMemoryTranslator(source=src_lang, target='pt-BR')
     results = []
     
@@ -534,6 +828,17 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
         clean_t = t.strip()
         if not clean_t or clean_t in ("...", "…", "!!", "!?"):
             results.append(clean_t)
+            continue
+            
+        # 0. Checagem SFX composta ou simples direta
+        sfx_res = translate_sfx_phrase(clean_t)
+        if sfx_res:
+            results.append(sfx_res)
+            continue
+            
+        norm_sfx = re.sub(r'[^A-Z]', '', clean_t.upper())
+        if norm_sfx in SFX_DICTIONARY:
+            results.append(SFX_DICTIONARY[norm_sfx])
             continue
             
         res = None
@@ -547,16 +852,15 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
             try:
                 res = translator.translate(clean_t)
                 if "MYMEMORY WARNING" in res:
-                    res = GoogleTranslator(source=fallback_code, target='pt').translate(clean_t)
-                time.sleep(0.1) # Cooldown da API grátis
+                    res = GoogleTranslator(source='auto', target='pt').translate(clean_t)
+                time.sleep(0.3)
             except Exception:
                 try:
-                    time.sleep(1) # Backoff
-                    res = GoogleTranslator(source=fallback_code, target='pt').translate(clean_t)
+                    time.sleep(0.8)
+                    res = GoogleTranslator(source='auto', target='pt').translate(clean_t)
                 except Exception:
                     res = clean_t
                     
-        # Higienização de segurança pós-tradução
         if res:
             res = clean_ai_translation(res, original_text=clean_t, is_adult=is_adult)
             
@@ -658,9 +962,8 @@ def create_html_reader(images_dir, title):
     print(f"[+] Leitor interativo criado: {leitor_file}")
 
 def check_needs_rapidocr(manga_dir):
-    """Analisa uma página no meio do mangá usando RapidOCR para ver se é inglês/latino"""
+    """Analisa imagens para determinar se o conteúdo é ocidental/latino."""
     try:
-        from rapidocr_onnxruntime import RapidOCR
         import glob
         img_files = glob.glob(os.path.join(manga_dir, "*.*"))
         img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
@@ -692,25 +995,27 @@ def check_needs_rapidocr(manga_dir):
         return False
 
 def is_ocr_noise(text, score):
-    """Filtra ruídos comuns de OCR como numerações aleatórias no cenário ou símbolos soltos."""
+    """Filtra ruídos de OCR para não apagar detalhes de arte ou fundos."""
     t = text.strip()
     if not t:
         return True
-    if score < 0.45:
+    try:
+        sc = float(score)
+    except Exception:
+        sc = 1.0
+    if sc < 0.45:
         return True
-    # Dígitos puros ou símbolos sem letras com score baixo (< 0.75)
     has_letters = bool(re.search(r'[a-zA-Z\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', t))
-    if not has_letters and score < 0.75:
+    if not has_letters and sc < 0.75:
         return True
-    if len(t) <= 1 and score < 0.65:
+    if len(t) <= 1 and sc < 0.65:
         return True
-    if len(set(t)) <= 2 and len(t) >= 4 and score < 0.75:
+    if len(set(t)) <= 2 and len(t) >= 4 and sc < 0.75:
         return True
     return False
 
 def generate_rapidocr_json(manga_dir, output_json_path):
-    """Gera o arquivo json de caixas usando RapidOCR (ideal para Inglês/Latino)"""
-    from rapidocr_onnxruntime import RapidOCR
+    """Extrai textos usando RapidOCR com pré-processamento que realça textos coloridos (ex: rosa/vermelho)."""
     import glob
     
     img_files = glob.glob(os.path.join(manga_dir, "*.*"))
@@ -720,7 +1025,7 @@ def generate_rapidocr_json(manga_dir, output_json_path):
     engine = RapidOCR()
     pages = []
     
-    print("[*] Extraindo textos usando RapidOCR (Motor otimizado para Inglês/Latino)...")
+    print("[*] Extraindo textos usando RapidOCR (com detecção avançada de textos coloridos)...")
     for img_path in tqdm(img_files, desc="OCR Pages"):
         img_name = os.path.basename(img_path)
         try:
@@ -733,7 +1038,11 @@ def generate_rapidocr_json(manga_dir, output_json_path):
         if img_cv is None:
             continue
             
-        res, _ = engine(img_cv)
+        # Gera versão com canal mínimo (min_ch): faz textos rosa, vermelho e azul terem alto contraste
+        min_ch = img_cv.min(axis=2)
+        min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
+        
+        res, _ = engine(min_bgr)
         blocks_for_grouping = []
         if res:
             for box_data in res:
@@ -741,19 +1050,18 @@ def generate_rapidocr_json(manga_dir, output_json_path):
                 text = box_data[1]
                 score = float(box_data[2]) if len(box_data) > 2 else 1.0
                 
-                # Descarta ruídos de OCR (evita destruir arte de fundo/cenário)
                 if is_ocr_noise(text, score):
                     continue
                     
                 xs = [p[0] for p in coords]
                 ys = [p[1] for p in coords]
                 
+                clean_ocr_text = repair_glued_text(text, src_lang="en-US")
                 blocks_for_grouping.append({
                     "box": [min(xs), min(ys), max(xs), max(ys)],
-                    "text": text
+                    "text": clean_ocr_text
                 })
                 
-        # Usa a função smart_group_bubbles nativa para agrupar as falas do RapidOCR
         grouped = smart_group_bubbles(blocks_for_grouping)
         final_blocks = []
         for b in grouped:
@@ -778,10 +1086,11 @@ def is_credits_page(bubbles):
     markers = [
         "scanlation", "scans", "discord.gg", "patreon", "recruiting",
         "raw provider", "typesetter", "cleaner", "proofreader",
-        "redrawn by", "translated by", "join us", "donation"
+        "redrawn by", "translated by", "join us", "donation",
+        "commissionrequests", "hiringpaid", "omega scans", "qmega scans", "amega scans"
     ]
     matched = sum(1 for m in markers if m in full_text)
-    return matched >= 2
+    return matched >= 1
 
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
@@ -792,23 +1101,20 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     manga_name = os.path.basename(manga_dir)
     clean_name = manga_name.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip()
     
-    # 0. Define o diretório de destino diretamente como especificado
+    # 0. Define o diretório de destino
     base_drive_dir = BASE_OUTPUT_DIR
     try:
         os.makedirs(base_drive_dir, exist_ok=True)
     except Exception as e:
-        print(f"[!] Aviso: Não foi possível criar/acessar a pasta raiz do destino: {e}")
-        # Fallback de segurança
+        print(f"[!] Aviso: Não foi possível acessar pasta de destino padrão: {e}")
         base_drive_dir = os.path.dirname(manga_dir)
         
     output_dir = os.path.join(base_drive_dir, f"{clean_name} [PT-BR]")
     os.makedirs(output_dir, exist_ok=True)
     
-    # Pasta dedicada para todos os arquivos de cache (OCR, .mokuro, traducoes)
     cache_dir = os.path.join(output_dir, "cache")
     os.makedirs(cache_dir, exist_ok=True)
     
-    # Criar pasta temp segura e ÚNICA para evitar conflitos se rodar 2 mangás ao mesmo tempo
     import uuid
     temp_render_dir = os.path.join(os.environ.get("TEMP", "C:\\temp"), f"manga_render_tmp_{uuid.uuid4().hex[:8]}")
     os.makedirs(temp_render_dir, exist_ok=True)
@@ -819,7 +1125,6 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     print(f"[*] Pasta de Destino: {output_dir}")
     print("=" * 60)
     
-    # 1. Carregar arquivos de imagem
     img_files = [f for f in os.listdir(manga_dir) if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
     img_files.sort(key=natural_sort_key)
     
@@ -829,48 +1134,19 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     print(f"[+] {len(img_files)} imagens encontradas.")
     
-    # 2. Executar OCR usando Mokuro ou RapidOCR (Armazenado na pasta cache)
     parent_dir = os.path.dirname(manga_dir)
     mokuro_path = os.path.join(cache_dir, manga_name + ".mokuro")
     cache_file = os.path.join(cache_dir, "translation_cache.json")
     html_dest = os.path.join(cache_dir, manga_name + "_mokuro.html")
     
-    # Migra caches legados soltos fora da pasta cache (se existirem)
-    legacy_mokuro = os.path.join(parent_dir, manga_name + ".mokuro")
-    legacy_dest_mokuro = os.path.join(output_dir, manga_name + ".mokuro")
-    legacy_cache_file = os.path.join(output_dir, "translation_cache.json")
-    
-    if not os.path.exists(mokuro_path):
-        if os.path.exists(legacy_dest_mokuro):
-            try: shutil.move(legacy_dest_mokuro, mokuro_path)
-            except Exception: pass
-        elif os.path.exists(legacy_mokuro):
-            try: shutil.move(legacy_mokuro, mokuro_path)
-            except Exception: pass
-            
-    if not os.path.exists(cache_file) and os.path.exists(legacy_cache_file):
-        try: shutil.move(legacy_cache_file, cache_file)
-        except Exception: pass
-
-    # Se limpeza forcada foi solicitada
     if force_ocr:
-        print("[!] LIMPEZA DE CACHE ATIVADA: Removendo pasta cache deste manga...")
+        print("[!] LIMPEZA DE CACHE ATIVADA: Regerando OCR e traduções...")
         if os.path.exists(cache_dir):
-            try:
-                shutil.rmtree(cache_dir)
-                print(f"    [x] Pasta cache removida: {cache_dir}")
-            except Exception as ce:
-                print(f"    [!] Aviso ao remover cache: {ce}")
+            try: shutil.rmtree(cache_dir)
+            except Exception: pass
         os.makedirs(cache_dir, exist_ok=True)
-        # Limpa eventuais arquivos soltos na pasta de origem
-        for p in [legacy_mokuro, os.path.join(parent_dir, manga_name + ".html")]:
-            if os.path.exists(p):
-                try: os.remove(p)
-                except Exception: pass
 
-    # Decidir qual motor deve ser usado
     print(f"[*] Modo OCR selecionado: {ocr_mode.upper()}")
-    
     use_rapidocr = False
     if ocr_mode == "rapidocr":
         use_rapidocr = True
@@ -882,7 +1158,6 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     expected_engine = "rapidocr" if use_rapidocr else "mokuro"
 
-    # Verificar se ja existe um arquivo .mokuro na pasta cache e se e compativel
     needs_new_ocr = True
     if not force_ocr and os.path.exists(mokuro_path):
         try:
@@ -890,52 +1165,38 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 existing_data = json.load(f)
             file_version = str(existing_data.get("version", ""))
             is_file_rapidocr = (file_version == "rapidocr")
-            
             pages = existing_data.get("pages", [])
             total_blocks = sum(len(p.get("blocks", [])) for p in pages)
             
-            if total_blocks == 0:
-                print("[!] Cache OCR na pasta cache estava VAZIO. Regerando...")
-                os.remove(mokuro_path)
-                needs_new_ocr = True
-            elif (use_rapidocr and is_file_rapidocr) or (not use_rapidocr and not is_file_rapidocr):
-                print(f"[+] Cache OCR compativel ({expected_engine.upper()}) encontrado na pasta cache ({total_blocks} baloes). Reutilizando...")
+            if total_blocks > 0 and ((use_rapidocr and is_file_rapidocr) or (not use_rapidocr and not is_file_rapidocr)):
+                print(f"[+] Cache OCR ({expected_engine.upper()}) encontrado ({total_blocks} balões). Reutilizando...")
                 needs_new_ocr = False
             else:
-                print(f"[*] Cache OCR existente pertence a outro motor ({'RAPIDOCR' if is_file_rapidocr else 'MOKURO'}). Regerando na pasta cache com {expected_engine.upper()}...")
                 os.remove(mokuro_path)
                 needs_new_ocr = True
-        except Exception as e:
-            print(f"[!] Erro ao ler cache existente ({e}). Regerando...")
-            try: os.remove(mokuro_path)
-            except Exception: pass
+        except Exception:
             needs_new_ocr = True
 
     if needs_new_ocr:
         if use_rapidocr:
-            print("[+] Executando motor Universal/Ocidental (RapidOCR) -> Salvando em cache...")
+            print("[+] Executando RapidOCR com detecção de textos coloridos...")
             generate_rapidocr_json(manga_dir, mokuro_path)
         else:
-            print("[*] Executando motor Asiatico especializado (Mokuro)...")
+            print("[*] Executando motor Asiático especializado (Mokuro)...")
             import subprocess
             try:
                 subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
-                # Mover saidas geradas pelo Mokuro para dentro da pasta cache para nao poluir a origem
                 temp_mokuro = os.path.join(parent_dir, manga_name + ".mokuro")
                 if os.path.exists(temp_mokuro):
                     shutil.move(temp_mokuro, mokuro_path)
-                temp_html = os.path.join(parent_dir, manga_name + ".html")
-                if os.path.exists(temp_html):
-                    shutil.move(temp_html, html_dest)
             except subprocess.CalledProcessError as e:
-                print(f"[!] Erro ao executar o Mokuro. Detalhes: {e}")
+                print(f"[!] Erro ao executar o Mokuro: {e}")
                 return False
 
     if not os.path.exists(mokuro_path):
-        print("[!] Arquivo de texto OCR nao foi gerado na pasta cache. Falha na leitura.")
+        print("[!] Arquivo de texto OCR não foi gerado. Falha na leitura.")
         return False
 
-    print("[*] Lendo dados estruturados do Mokuro (pasta cache)...")
     with open(mokuro_path, "r", encoding="utf-8") as f:
         mokuro_data = json.load(f)
         
@@ -943,7 +1204,6 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     all_raw_texts = []
     font_path = get_best_font()
     
-    # Extrair os balões do formato Mokuro
     for idx, page_info in enumerate(mokuro_data.get("pages", [])):
         fname = os.path.basename(page_info.get("img_path", ""))
         bubbles = []
@@ -951,15 +1211,15 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             xmin, ymin, xmax, ymax = [int(round(float(v))) for v in blk.get("box", [0, 0, 0, 0])]
             is_vertical = blk.get("vertical", True)
             lines = blk.get("lines", [])
-            text = " ".join(lines)
+            text = " ".join(lines).strip()
             
-            if not text.strip():
+            if not text:
                 continue
                 
             all_raw_texts.append(text)
             bubbles.append({
                 "box": [xmin, ymin, xmax, ymax],
-                "raw_boxes": [[xmin, ymin, xmax, ymax]], # Mokuro dá apenas o bloco inteiro, sem bounding box por linha, então usamos o bloco como raw_box
+                "raw_boxes": [[xmin, ymin, xmax, ymax]],
                 "lines": lines,
                 "combined_text": text,
                 "is_vertical": is_vertical
@@ -971,24 +1231,35 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             "bubbles": bubbles
         })
             
-    # 3. Detectar idioma e traduzir
+    # 3. Detectar idioma e traduzir com cache
     src_lang = detect_language_from_samples(all_raw_texts)
-    print(f"[+] Amostragem analisada: idioma detectado é '{src_lang.upper()}'")
+    print(f"[+] Idioma predominante detectado: '{src_lang.upper()}'")
     
-    # Montar lista linear de textos para tradução com cache
-    cache_file = os.path.join(cache_dir, "translation_cache.json")
     cache = {}
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as cf:
-                cache = json.load(cf)
+                raw_cache = json.load(cf)
+            # Purga automaticamente entradas corrompidas por alucinações ou vazamentos de IA
+            corrupt_markers = [
+                'delfim perverso', 'o gato está sentado', 'vem lá, meu amigo',
+                'estou traduzindo o texto', 'com base nas regras', 'ok, vamos traduzir',
+                'traduza o texto original', 'como uma inteligência artificial', 'regras obrigatórias'
+            ]
+            for k, v in raw_cache.items():
+                if not any(cm in v.lower() for cm in corrupt_markers):
+                    cache[k] = v
         except Exception:
             pass
             
     texts_to_translate = []
-    text_mapping = [] # (page_idx, bubble_idx)
+    text_mapping = []
     
     for p_idx, p in enumerate(pages_data):
+        # Se for página de créditos, não desperdiça tokens/chamadas
+        if is_credits_page(p["bubbles"]):
+            continue
+            
         for b_idx, b in enumerate(p["bubbles"]):
             orig_text = b["combined_text"].strip()
             if orig_text not in cache:
@@ -1002,27 +1273,21 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
             
         try:
-            # Tenta remover o atributo de oculto/sistema antes se existir (OneDrive quirk)
-            if os.path.exists(cache_file):
-                os.system(f'attrib -h -r -s "{cache_file}" >nul 2>&1')
             with open(cache_file, "w", encoding="utf-8") as cf:
                 json.dump(cache, cf, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[!] Aviso: Nao foi possivel salvar o cache de tradução: {e}")
+            print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
             
-    # Atribuir traduções aos balões com higienização garantida
     for p_idx, b_idx, orig_text in text_mapping:
         cached_val = cache.get(orig_text, orig_text)
         pages_data[p_idx]["bubbles"][b_idx]["translated_text"] = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult)
         
     # 4. Diagramação e Inpainting
-    print(f"[*] Iniciando limpeza de balões e diagramação profissional...")
+    print(f"[*] Iniciando limpeza profissional de balões e diagramação...")
     for idx, p in enumerate(tqdm(pages_data, desc="Diagramação", unit="pág")):
         img_name = p["img"]
         src_path = os.path.join(manga_dir, img_name)
         
-        # Correção para o Windows: cv2.imread falha silenciosamente se o caminho tiver acentos (ex: "Por trás")
-        # Usamos numpy imdecode que suporta perfeitamente Unicode no Windows
         try:
             with open(src_path, "rb") as f:
                 img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
@@ -1031,64 +1296,24 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             img_cv = None
             
         if img_cv is None:
-            print(f"[!] Aviso: Falha ao ler a imagem {src_path}. Pulando...")
             continue
             
         h_img, w_img = img_cv.shape[:2]
         cleaned = img_cv.copy()
         bubbles = p.get("bubbles", [])
         
-        # Preserva páginas de créditos/recrutamento sem aplicar caixas brancas destrutivas sobre a arte
+        # Páginas de créditos são preservadas intactas
         if is_credits_page(bubbles):
             out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
             img_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
             img_pil.save(out_file, quality=95)
             continue
         
-        # Limpar balões com a técnica segura (não arrancar arte)
+        # 4.1 Limpar balões com algoritmo seguro
         for b in bubbles:
-            boxes_to_clean = b.get("raw_boxes", [b["box"]])
-            is_vertical = b.get("is_vertical", False)
-            for box in boxes_to_clean:
-                xmin, ymin, xmax, ymax = box
-                # Para texto vertical japonês (com furigana) a margem lateral deve ser maior
-                if is_vertical or (ymax - ymin) > (xmax - xmin) * 1.2:
-                    pad_x = 12
-                    pad_y = 6
-                else:
-                    pad_x = 8
-                    pad_y = 8
-                    
-                x0 = int(max(0, xmin - pad_x))
-                y0 = int(max(0, ymin - pad_y))
-                x1 = int(min(w_img, xmax + pad_x))
-                y1 = int(min(h_img, ymax + pad_y))
+            clean_speech_bubble(cleaned, b["box"])
                 
-                roi = cleaned[y0:y1, x0:x1]
-                if roi.size == 0:
-                    continue
-                gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-                
-                # Detecta tanto texto escuro quanto colorido (ex: rosa/vermelho em balões)
-                is_dark = gray_roi < 165
-                is_colored = (hsv_roi[:, :, 1] > 35) & (gray_roi < 235)
-                mask = (is_dark | is_colored).astype(np.uint8) * 255
-                
-                k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                mask = cv2.dilate(mask, k, iterations=2)
-                
-                white_ratio = np.mean(gray_roi > 210)
-                if white_ratio > 0.55:
-                    # Fundo comprovadamente branco: limpa a máscara pintando de branco (evita cortar a borda preta do balao)
-                    roi_clean = roi.copy()
-                    roi_clean[mask > 0] = (255, 255, 255)
-                    cleaned[y0:y1, x0:x1] = roi_clean
-                else:
-                    # Fundo com textura, arte ou tom de cinza: Inpainting
-                    cleaned[y0:y1, x0:x1] = cv2.inpaint(roi, mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
-                
-        # Desenhar texto com Pillow usando fit_text_to_box
+        # 4.2 Desenhar texto traduzido com Comic Sans MS Bold
         img_pil = Image.fromarray(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
         
@@ -1102,9 +1327,56 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             bh = ymax - ymin
             cx = (xmin + xmax) / 2
             cy = (ymin + ymax) / 2
+
+            sub_roi = cleaned[max(0, ymin):min(h_img, ymax), max(0, xmin):min(w_img, xmax)]
+            is_white_bg = True
+            if sub_roi.size > 0:
+                is_white_bg = np.mean(cv2.cvtColor(sub_roi, cv2.COLOR_BGR2GRAY) > 200) > 0.45
+
+            safe_cx = cx
+            safe_cy = cy
+            target_w = bw
+            target_h = max(bh * 1.20, 50)
+
+            if is_white_bg:
+                # Detecta limites do balão branco para nunca desenhar sobre as bordas pretas
+                gray_c = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
+                icx, icy = int(np.clip(cx, 0, w_img - 1)), int(np.clip(cy, 0, h_img - 1))
+                if gray_c[icy, icx] > 190:
+                    b_left = icx
+                    while b_left > 0 and gray_c[icy, b_left] > 185: b_left -= 1
+                    b_right = icx
+                    while b_right < w_img - 1 and gray_c[icy, b_right] > 185: b_right += 1
+                    b_top = icy
+                    while b_top > 0 and gray_c[b_top, icx] > 185: b_top -= 1
+                    b_bottom = icy
+                    while b_bottom < h_img - 1 and gray_c[b_bottom, icx] > 185: b_bottom += 1
+
+                    pad = 10
+                    safe_min_x = b_left + pad
+                    safe_max_x = b_right - pad
+                    if safe_max_x > safe_min_x + 30:
+                        safe_cx = (safe_min_x + safe_max_x) / 2
+                        safe_w = safe_max_x - safe_min_x
+                        target_w = min(safe_w, max(bw * 1.05, 80))
+                    else:
+                        target_w = bw
+
+                    safe_min_y = b_top + pad
+                    safe_max_y = b_bottom - pad
+                    if safe_max_y > safe_min_y + 20:
+                        safe_cy = (safe_min_y + safe_max_y) / 2
+                        target_h = max(bh * 1.20, safe_max_y - safe_min_y)
+                    else:
+                        target_h = max(bh * 1.20, 50)
+            else:
+                target_w = bw
+                target_h = max(bh * 1.15, 50)
             
-            target_w = max(bw * 1.15, 80)
-            target_h = max(bh * 1.10, 40)
+            # Margem de segurança na largura para evitar corte nas bordas da página
+            max_avail_w = min(safe_cx, w_img - safe_cx) * 2 - 20
+            if max_avail_w > 60:
+                target_w = min(target_w, max_avail_w)
             
             font, lines = fit_text_to_box(draw, text, target_w, target_h, font_path)
             if not lines:
@@ -1112,40 +1384,36 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 
             line_h = (draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]) * 1.22
             total_h = len(lines) * line_h
-            start_y = cy - (total_h / 2) + (line_h / 2)
+            start_y = safe_cy - (total_h / 2) + (line_h / 2)
             
-            # Detecta se o fundo é balão branco para contorno nítido (1px) sem borrão
-            sub_roi = cleaned[max(0, ymin):min(h_img, ymax), max(0, xmin):min(w_img, xmax)]
-            is_white_bg = True
-            if sub_roi.size > 0:
-                is_white_bg = np.mean(cv2.cvtColor(sub_roi, cv2.COLOR_BGR2GRAY) > 210) > 0.55
+            # Margem de segurança vertical para não ultrapassar topo ou base da página
+            if start_y < 15:
+                start_y = 15
+            elif start_y + total_h > h_img - 15:
+                start_y = max(15, h_img - total_h - 15)
                 
             font_size = getattr(font, 'size', 20)
             stroke_w = 1 if is_white_bg else max(2, int(round(font_size * 0.08)))
             
             for line_idx, line in enumerate(lines):
                 ly = start_y + (line_idx * line_h)
-                draw.text((cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=stroke_w, stroke_fill=(255, 255, 255), anchor="mm")
+                draw.text((safe_cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=stroke_w, stroke_fill=(255, 255, 255), anchor="mm")
                 
         out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
         img_pil.save(out_file, quality=95)
             
-    # 5. Criar leitor interativo no temp
+    # 5. Criar leitor web responsivo
     create_html_reader(temp_render_dir, clean_name)
     
-    # 6. Copiar arquivos para a pasta de destino final do OneDrive de forma segura
-    print(f"[*] Substituindo arquivos no destino final: {output_dir}...")
-    
-    # Tenta remover o atributo de oculto/somente leitura de todos os arquivos no destino
+    # 6. Salvar na pasta final
+    print(f"[*] Salvando arquivos traduzidos em: {output_dir}...")
     os.system(f'attrib -h -r -s "{output_dir}\\*.*" >nul 2>&1')
     
-    all_files = os.listdir(temp_render_dir)
-    for fname in all_files:
+    for fname in os.listdir(temp_render_dir):
         src_p = os.path.join(temp_render_dir, fname)
         dst_p = os.path.join(output_dir, fname)
         shutil.copy2(src_p, dst_p)
         
-    # Limpeza da pasta temp para não acumular
     try:
         shutil.rmtree(temp_render_dir)
     except Exception:
@@ -1157,7 +1425,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     print(f"[+] Leitor Web: {os.path.join(output_dir, 'leitor.html')}")
     print("=" * 60 + "\n")
     
-    # 7. Disparar Notificações (PC e Celular)
+    # Notificações
     try:
         import threading
         if hasattr(threading, 'excepthook'):
@@ -1174,7 +1442,6 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     try:
         import requests
-        # Envia notificação grátis e instantânea para o aplicativo 'ntfy' no celular
         requests.post("https://ntfy.sh/jos9011_mangas",
             data=f"O mangá '{clean_name}' acabou de ser traduzido e salvo no seu OneDrive!".encode('utf-8'),
             headers={
@@ -1196,9 +1463,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 
 if __name__ == "__main__":
     force_ocr_flag = False
+    chosen_mode = "auto"
+    is_adult_flag = True
+    
     if len(sys.argv) > 1:
         args = sys.argv[1:]
-        chosen_mode = "auto"
         if "--rapidocr" in args:
             chosen_mode = "rapidocr"
             args.remove("--rapidocr")
@@ -1213,25 +1482,21 @@ if __name__ == "__main__":
             force_ocr_flag = True
             args.remove("--clean-cache")
             
-        target = " ".join(args)
+        if "--normal" in args or "--safe" in args:
+            is_adult_flag = False
+            if "--normal" in args: args.remove("--normal")
+            if "--safe" in args: args.remove("--safe")
+        elif "--adult" in args or "--18" in args:
+            is_adult_flag = True
+            if "--adult" in args: args.remove("--adult")
+            if "--18" in args: args.remove("--18")
+            
+        target = " ".join(args).strip()
     else:
         print("=" * 60)
         print("  SISTEMA AUTOMATICO DE TRADUCAO DE MANGA [PT-BR]")
         print("=" * 60)
         target = input("Arraste ou digite o caminho da pasta do manga: ").strip()
-        chosen_mode = "auto"
-        
-    is_adult_flag = True
-    if "--normal" in args or "--safe" in args:
-        is_adult_flag = False
-        if "--normal" in args: args.remove("--normal")
-        if "--safe" in args: args.remove("--safe")
-    elif "--adult" in args or "--18" in args:
-        is_adult_flag = True
-        if "--adult" in args: args.remove("--adult")
-        if "--18" in args: args.remove("--18")
-        
-    target = " ".join(args)
 
     if target:
         process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, is_adult=is_adult_flag)

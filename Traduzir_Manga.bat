@@ -59,16 +59,18 @@ echo.
 echo [2] MANGA ADULTO / +18 (Hentai, Erotico, Ecchi pesado)
 echo     - Sem censura, girias explicitas e adaptacao adulta brasileira
 echo =====================================================================
-set /p CONTENT_MODE=">> Digite 1 ou 2 (Padrao: 2): "
+set /p CONTENT_MODE=">> Digite 1 ou 2 (Padrao: 1): "
 
-set TYPE_FLAG=--adult
-if "%CONTENT_MODE%"=="1" (
-    set TYPE_FLAG=--normal
+set TYPE_FLAG=--normal
+if "%CONTENT_MODE%"=="2" (
+    set TYPE_FLAG=--adult
 )
 
 echo.
 echo [*] Iniciando processamento...
-"C:\Users\ja329\AppData\Local\Python\bin\python.exe" "C:\Users\ja329\tools\manga-translator\auto_translate.py" "%TARGET_DIR%" %OCR_FLAG% %FORCE_FLAG% %TYPE_FLAG%
+set "SCRIPT_PATH=%~dp0auto_translate.py"
+if not exist "%SCRIPT_PATH%" set "SCRIPT_PATH=C:\Users\ja329\tools\manga-translator\auto_translate.py"
+"C:\Users\ja329\AppData\Local\Python\bin\python.exe" "%SCRIPT_PATH%" "%TARGET_DIR%" %OCR_FLAG% %FORCE_FLAG% %TYPE_FLAG%
 
 :FIM
 pause > nul

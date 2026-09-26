@@ -286,15 +286,57 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         
     cleaned = text.strip()
     
-    # 1. Remover tags [PT-BR], (PT-BR) e notas de tradução / avisos de IA PRIMEIRO
-    cleaned = re.sub(r'\[\s*(?:PT-BR|PT|BR)\s*\]', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\(\s*(?:PT-BR|PT|BR)\s*\)', '', cleaned, flags=re.IGNORECASE)
+    # 0. Se o modelo incluiu 'A tradução para o Português é: "..."' ou similar
+    inline_trad = re.search(r'(?:a\s+tradu[çc][ãa]o(?:\s+para\s+.*?)?\s+[eé]\s*:?\s*)["“\']([^"”\']+)["”\']', cleaned, flags=re.IGNORECASE)
+    if inline_trad:
+        cleaned = inline_trad.group(1).strip()
+    else:
+        # Se houver marcador 'Tradução:' ou 'Texto traduzido:' no corpo da resposta
+        trad_matches = list(re.finditer(r'(?:texto\s+traduzido|tradu[çc][ãa]o(?:\s+(?:para\s+)?(?:o\s+)?(?:portugu[êe]s(?:\s+do\s+brasil)?|pt-br))?)\s*:\s*(.*)', cleaned, flags=re.IGNORECASE))
+        if trad_matches:
+            for m in reversed(trad_matches):
+                candidate = m.group(1).strip()
+                candidate = re.split(r'\n+\s*(?:texto\s+original|original)\s*:\s*', candidate, flags=re.IGNORECASE)[0].strip()
+                if candidate:
+                    cleaned = candidate
+                    break
+
+    # 1. Remover intros metalinguísticas de IA
+    meta_intro_patterns = [
+        r'^(?:vou\s+traduzir|traduzindo|o\s+texto\s+original|l[íi]ngua\s+identificada|identifiquei|aqui\s+est[áa]).*?(?:\n+|\:\s*)',
+        r'^original\s*:.*?(?:\n+|$)',
+        r'^texto\s+original\s*:.*?(?:\n+|$)',
+    ]
+    for pat in meta_intro_patterns:
+        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE).strip()
+
+    # 2. Filtrar linhas com cabeçalhos de metadados
+    lines = cleaned.split('\n')
+    valid_lines = []
+    for line in lines:
+        l_str = line.strip()
+        if re.match(r'^(?:texto\s+original|original|l[íi]ngua\s+identificada|tradu[çc][ãa]o|texto\s+traduzido)\s*:', l_str, flags=re.IGNORECASE):
+            continue
+        if re.match(r'^(?:traduzindo\s+o\s+texto|vou\s+traduzir)', l_str, flags=re.IGNORECASE):
+            continue
+        valid_lines.append(l_str)
+    cleaned = '\n'.join(valid_lines).strip()
+
+    # 3. Desduplica linhas idênticas repetidas
+    blocks = [b.strip() for b in cleaned.split('\n') if b.strip()]
+    if blocks and all(b.lower() == blocks[0].lower() for b in blocks):
+        cleaned = blocks[0]
+
+    # 4. Remover tags [PT-BR], (PT-BR) e notas de tradução / avisos de IA
+    cleaned = re.sub(r'\[\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\(\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\)', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\([^\)]*(?:ingl[êe]s|japon[êe]s|traduz|mistur)[^\)]*\)', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'[\(\[]\s*nota(?:\s+de\s+tradu[çc][ãa]o)?\s*:.*?[\]\)]', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\bNota\s*:.*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\bComo\s+(?:uma|um)\s+(?:IA|intelig[êe]ncia artificial|modelo de linguagem).*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
     cleaned = cleaned.strip()
-    
-    # 2. Remover prefixos de chatbot / IA em loop (para capturar prefixos encadeados)
+
+    # 5. Remover prefixos de chatbot / IA em loop (para capturar prefixos encadeados)
     prefixes_to_strip = [
         r'^\s*texto\s+traduzido\s*:\s*',
         r'^\s*tradu[çc][ãa]o\s*:\s*',
@@ -313,24 +355,24 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             if new_val != cleaned:
                 cleaned = new_val
                 changed = True
-        
-    # 3. Remover aspas envolventes
+
+    # 6. Remover aspas envolventes
     cleaned = cleaned.strip()
     if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
         cleaned = cleaned[1:-1].strip()
-        
-    # 4. Colapsar repetições excessivas causadas por loops do modelo (ex: "buceta... buceta... buceta...")
+
+    # 7. Colapsar repetições excessivas causadas por loops do modelo (ex: "buceta... buceta... buceta...")
     cleaned = re.sub(r'\b(\w+)(?:(?:\s*[.,!?…~]+\s*|\s+)\1){2,}\b', r'\1...', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\.{4,}', '...', cleaned)
     cleaned = re.sub(r'(?:\.\.\.)+', '...', cleaned)
-    
-    # 5. Correção cirúrgica de termos anatômicos e gírias (preservando maiúsculas/minúsculas)
+
+    # 8. Correção cirúrgica de termos anatômicos e gírias (preservando maiúsculas/minúsculas)
     def _preserve_case(pattern, repl, target_str):
         def _repl_cb(m):
             w = m.group(0)
             if w.isupper():
                 return repl.upper()
-            elif w.istitle():
+            elif w[0].isupper():
                 return repl.capitalize()
             return repl.lower()
         return re.sub(pattern, _repl_cb, target_str, flags=re.IGNORECASE)
@@ -343,36 +385,39 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             cleaned = _preserve_case(r'\bpau\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bpiroca\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bcaralho\b', 'buceta', cleaned)
-            
-        # Cock / Dick / Shaft -> Pau / Pica
-        if re.search(r'\b(cock|dick|shaft|penis)\b', orig_lower):
+
+        # Cock / Dick / Shaft / Peepee -> Pau / Pica / Pinto
+        if re.search(r'(peepee|pecker|penis|cock|dick|shaft|wiener)', orig_lower):
+            cleaned = _preserve_case(r'\bsua\s+bucetinha\b', 'seu pintinho', cleaned)
+            cleaned = _preserve_case(r'\bsua\s+buceta\b', 'seu pau', cleaned)
+            cleaned = _preserve_case(r'\bbucetinha\b', 'pintinho', cleaned)
             cleaned = _preserve_case(r'\bbuceta\b', 'pau', cleaned)
             cleaned = _preserve_case(r'\bxoxota\b', 'pau', cleaned)
-            
+
         # Condom -> Camisinha / Preservativo (Evitar falso cognato 'condomínio')
         if re.search(r'\bcondom\b', orig_lower):
             cleaned = _preserve_case(r'\bcondom[íi]nio\b', 'camisinha', cleaned)
-            
+
         # Came inside -> Gozou dentro / Gozei dentro (Evitar 'entrou na boca' ou 'veio dentro')
         if re.search(r'\bcame\s+inside\b', orig_lower):
             cleaned = _preserve_case(r'\bentrou\s+na\s+boca\b', 'gozou dentro', cleaned)
             cleaned = _preserve_case(r'\bveio\s+para\s+dentro\b', 'gozou dentro', cleaned)
             cleaned = _preserve_case(r'\bveio\s+dentro\b', 'gozou dentro', cleaned)
-            
+
         # Fapping / Jerking off -> Batendo uma / Masturbação (Evitar 'fornicando')
         if re.search(r'\b(fap|fapping|jerking\s*off)\b', orig_lower):
             cleaned = _preserve_case(r'\bfornicando\b', 'batendo uma', cleaned)
             cleaned = _preserve_case(r'\bfornica[çc][ãa]o\b', 'masturbação', cleaned)
-            
+
         # Ooze / Oozing / Leak -> Escorrendo / Vazando (Evitar termo médico estranho 'exsudado')
         cleaned = _preserve_case(r'\bexsudad[oa]s?\b', 'escorrendo', cleaned)
         cleaned = _preserve_case(r'\bexsudando\b', 'escorrendo', cleaned)
-        
+
         # Nipples -> Mamilos (Evitar 'pelos')
         if re.search(r'\b(nipple|nipples)\b', orig_lower):
             cleaned = _preserve_case(r'\bpelos\b', 'mamilos', cleaned)
-            
-    # Limpeza de múltiplos espaços
+
+    cleaned = _preserve_case(r'\btacto\b', 'tato', cleaned)
     cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
     return cleaned
 
@@ -1107,6 +1152,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     
     # 7. Disparar Notificações (PC e Celular)
     try:
+        import threading
+        if hasattr(threading, 'excepthook'):
+            threading.excepthook = lambda args: None
         from plyer import notification
         notification.notify(
             title="Mangá Traduzido! 🎉",
@@ -1114,8 +1162,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             app_name="Manga Translator",
             timeout=10
         )
-    except Exception as e:
-        print(f"[*] Não foi possível mostrar notificação no Windows: {e}")
+    except Exception:
+        pass
         
     try:
         import requests

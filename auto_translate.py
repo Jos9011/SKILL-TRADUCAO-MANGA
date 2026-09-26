@@ -1606,7 +1606,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         img_pil = Image.fromarray(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
         
-        for b in bubbles:
+        for i, b in enumerate(bubbles):
             text = b.get("translated_text", "").strip().upper()
             if not text or text in ("...", "…"):
                 continue
@@ -1616,6 +1616,40 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             bh = ymax - ymin
             cx = (xmin + xmax) / 2
             cy = (ymin + ymax) / 2
+
+            # 1. Particionamento espacial inteligente entre balões vizinhos (evita sobreposição)
+            x_min_limit = 10
+            x_max_limit = w_img - 10
+            y_min_limit = 10
+            y_max_limit = h_img - 10
+            
+            for j, other in enumerate(bubbles):
+                if i == j:
+                    continue
+                other_text = other.get("translated_text", "").strip().upper()
+                if not other_text or other_text in ("...", "…"):
+                    continue
+                o_xmin, o_ymin, o_xmax, o_ymax = other["box"]
+                o_cx = (o_xmin + o_xmax) / 2
+                o_cy = (o_ymin + o_ymax) / 2
+                
+                # Proximidade vertical: se houver sobreposição vertical ou proximidade < 40px
+                if max(ymin, o_ymin) < min(ymax, o_ymax) + 40:
+                    if o_cx < cx:
+                        mid = (o_xmax + xmin) / 2
+                        x_min_limit = max(x_min_limit, mid + 6)
+                    elif o_cx > cx:
+                        mid = (xmax + o_xmin) / 2
+                        x_max_limit = min(x_max_limit, mid - 6)
+                        
+                # Proximidade horizontal: se houver sobreposição horizontal ou proximidade < 30px
+                if max(xmin, o_xmin) < min(xmax, o_xmax) + 30:
+                    if o_cy < cy:
+                        mid = (o_ymax + ymin) / 2
+                        y_min_limit = max(y_min_limit, mid + 6)
+                    elif o_cy > cy:
+                        mid = (ymax + o_ymin) / 2
+                        y_max_limit = min(y_max_limit, mid - 6)
 
             sub_roi = cleaned[max(0, ymin):min(h_img, ymax), max(0, xmin):min(w_img, xmax)]
             is_white_bg = True
@@ -1628,31 +1662,31 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             target_h = max(bh * 1.20, 50)
 
             if is_white_bg:
-                # Detecta limites do balão branco para nunca desenhar sobre as bordas pretas
+                # Detecta limites do balão branco respeitando estritamente a partição dos vizinhos
                 gray_c = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
                 icx, icy = int(np.clip(cx, 0, w_img - 1)), int(np.clip(cy, 0, h_img - 1))
-                if gray_c[icy, icx] > 190:
+                if gray_c[icy, icx] > 185:
                     b_left = icx
-                    while b_left > 0 and gray_c[icy, b_left] > 185: b_left -= 1
+                    while b_left > x_min_limit and gray_c[icy, b_left] > 185: b_left -= 1
                     b_right = icx
-                    while b_right < w_img - 1 and gray_c[icy, b_right] > 185: b_right += 1
+                    while b_right < x_max_limit and gray_c[icy, b_right] > 185: b_right += 1
                     b_top = icy
-                    while b_top > 0 and gray_c[b_top, icx] > 185: b_top -= 1
+                    while b_top > y_min_limit and gray_c[b_top, icx] > 185: b_top -= 1
                     b_bottom = icy
-                    while b_bottom < h_img - 1 and gray_c[b_bottom, icx] > 185: b_bottom += 1
+                    while b_bottom < y_max_limit and gray_c[b_bottom, icx] > 185: b_bottom += 1
 
-                    pad = 10
-                    safe_min_x = b_left + pad
-                    safe_max_x = b_right - pad
-                    if safe_max_x > safe_min_x + 30:
+                    pad = 8
+                    safe_min_x = max(b_left + pad, x_min_limit)
+                    safe_max_x = min(b_right - pad, x_max_limit)
+                    if safe_max_x > safe_min_x + 25:
                         safe_cx = (safe_min_x + safe_max_x) / 2
                         safe_w = safe_max_x - safe_min_x
-                        target_w = min(safe_w, max(bw * 1.05, 80))
+                        target_w = min(safe_w, max(bw * 1.10, 80))
                     else:
                         target_w = bw
 
-                    safe_min_y = b_top + pad
-                    safe_max_y = b_bottom - pad
+                    safe_min_y = max(b_top + pad, y_min_limit)
+                    safe_max_y = min(b_bottom - pad, y_max_limit)
                     if safe_max_y > safe_min_y + 20:
                         safe_cy = (safe_min_y + safe_max_y) / 2
                         target_h = max(bh * 1.20, safe_max_y - safe_min_y)
@@ -1662,9 +1696,13 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 target_w = bw
                 target_h = max(bh * 1.15, 50)
             
-            # Margem de segurança na largura para evitar corte nas bordas da página
-            max_avail_w = min(safe_cx, w_img - safe_cx) * 2 - 20
-            if max_avail_w > 60:
+            # Margem de segurança na largura considerando os limites da partição e da página
+            max_avail_w = min(
+                (safe_cx - x_min_limit) * 2 - 10,
+                (x_max_limit - safe_cx) * 2 - 10,
+                min(safe_cx, w_img - safe_cx) * 2 - 20
+            )
+            if max_avail_w > 40:
                 target_w = min(target_w, max_avail_w)
             
             # Seleciona a melhor fonte tipográfica para a fala (Anime/Comic Neue, Bangers/Shout ou Itálico)

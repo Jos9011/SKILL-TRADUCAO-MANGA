@@ -20,6 +20,8 @@ import time
 import json
 import cv2
 import shutil
+import math
+import zipfile
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
@@ -27,6 +29,12 @@ import urllib.request
 from rapidocr_onnxruntime import RapidOCR
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 from tqdm import tqdm
+
+try:
+    import pyphen
+    _pyphen_dic = pyphen.Pyphen(lang='pt_BR')
+except Exception:
+    _pyphen_dic = None
 
 try:
     import wordninja
@@ -44,7 +52,14 @@ except Exception:
 # Diretório padrão fixo de saída solicitado pelo usuário
 BASE_OUTPUT_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+FONT_DIR = os.path.join(SCRIPT_DIR, "fonts")
+DIALOGUE_FONT = os.path.join(FONT_DIR, "dialogue.ttf")
+DIALOGUE_ITALIC_FONT = os.path.join(FONT_DIR, "dialogue_italic.ttf")
+SHOUT_FONT = os.path.join(FONT_DIR, "shout.ttf")
+
 FONT_CANDIDATES = [
+    DIALOGUE_FONT,
     r"C:\Windows\Fonts\comicbd.ttf",   # Comic Sans MS Bold
     r"C:\Windows\Fonts\segoeuib.ttf",  # Segoe UI Bold
     r"C:\Windows\Fonts\arialbd.ttf"    # Arial Bold
@@ -55,6 +70,80 @@ def get_best_font():
         if os.path.exists(f):
             return f
     return "arial.ttf"
+
+def select_font_for_bubble(text, is_shout=False, is_thought=False):
+    """Seleciona dinamicamente a melhor fonte tipográfica de scanlation para o balão."""
+    clean = text.strip()
+    
+    # 1. Gritos, exclamações enfáticas ou onomatopeias
+    if is_shout or clean.endswith('!!') or clean.endswith('!?') or clean.endswith('!?!') or (clean.endswith('!') and len(clean.split()) <= 4 and clean.isupper()):
+        if os.path.exists(SHOUT_FONT):
+            return SHOUT_FONT
+        if os.path.exists(r"C:\Windows\Fonts\impact.ttf"):
+            return r"C:\Windows\Fonts\impact.ttf"
+            
+    # 2. Pensamentos, sussurros, notas e diálogos suaves
+    if is_thought or (clean.startswith('(') and clean.endswith(')')) or '~' in clean or clean.startswith('*'):
+        if os.path.exists(DIALOGUE_ITALIC_FONT):
+            return DIALOGUE_ITALIC_FONT
+        if os.path.exists(r"C:\Windows\Fonts\comici.ttf"):
+            return r"C:\Windows\Fonts\comici.ttf"
+            
+    # 3. Diálogo padrão de scanlation
+    if os.path.exists(DIALOGUE_FONT):
+        return DIALOGUE_FONT
+        
+    return get_best_font()
+
+def load_project_glossary(manga_dir):
+    """Carrega glossário personalizado (termos, nomes de personagens) da pasta do mangá ou global."""
+    candidates = [
+        os.path.join(manga_dir, "glossary.json"),
+        os.path.join(manga_dir, "termos.txt"),
+        os.path.join(SCRIPT_DIR, "glossary.json"),
+        os.path.join(r"C:\Users\ja329\tools\manga-translator", "glossary.json"),
+        os.path.join(r"C:\Users\ja329\OneDrive\Documentos\MANGAS\SKILL-TRADUCAO-MANGA-main", "glossary.json")
+    ]
+    glossary = {"characters": {}, "terms": {}}
+    for c in candidates:
+        if os.path.exists(c):
+            try:
+                if c.endswith(".json"):
+                    with open(c, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict):
+                            glossary["characters"].update(data.get("characters", {}))
+                            glossary["terms"].update(data.get("terms", {}))
+                elif c.endswith(".txt"):
+                    with open(c, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line and "->" in line:
+                                k, v = line.split("->", 1)
+                                glossary["terms"][k.strip()] = v.strip()
+                print(f"[+] Glossário ativo carregado de: {c}")
+                break
+            except Exception as e:
+                print(f"[*] Aviso ao ler glossário ({c}): {e}")
+    return glossary
+
+def create_cbz_archive(source_dir, output_cbz_path):
+    """Cria um arquivo .cbz (Comic Book Zip) compacto para leitura direta em apps móveis."""
+    try:
+        image_files = [f for f in os.listdir(source_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+        image_files.sort(key=natural_sort_key)
+        if not image_files:
+            return False
+            
+        with zipfile.ZipFile(output_cbz_path, 'w', zipfile.ZIP_DEFLATED) as cbz:
+            for img in image_files:
+                img_path = os.path.join(source_dir, img)
+                cbz.write(img_path, arcname=img)
+        print(f"[+] Arquivo CBZ criado com sucesso: {output_cbz_path} ({len(image_files)} páginas)")
+        return True
+    except Exception as e:
+        print(f"[!] Erro ao criar arquivo CBZ: {e}")
+        return False
 
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
@@ -437,6 +526,82 @@ def wrap_text_to_width(draw, text, font, max_w):
             all_lines.append(' '.join(curr))
     return all_lines
 
+def wrap_text_diamond(draw, text, font, max_w, max_h):
+    """Quebra texto no formato de diamante/elipse típico dos balões de mangá com suporte a hifenização PT-BR."""
+    words = text.split()
+    if not words:
+        return []
+        
+    line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+    line_h = (line_bbox[3] - line_bbox[1]) * 1.20
+    max_k = max(1, int(max_h / line_h))
+    
+    single_bbox = draw.textbbox((0, 0), text, font=font)
+    if (single_bbox[2] - single_bbox[0]) <= max_w * 0.90:
+        return [text]
+
+    def get_allowed_w(li, total_lines):
+        if total_lines <= 1:
+            return max_w
+        # y varia de -0.85 a +0.85 (curvatura da elipse)
+        y = ((li + 0.5) - total_lines / 2.0) / (total_lines / 2.0) * 0.85
+        factor = math.sqrt(max(0.20, 1.0 - y * y))
+        return max_w * factor
+
+    # Testa números de linhas de 2 até max_k
+    for k in range(2, max_k + 1):
+        lines = []
+        w_idx = 0
+        possible = True
+        words_copy = list(words)
+        for li in range(k):
+            allowed_w = get_allowed_w(li, k)
+            curr = []
+            while w_idx < len(words_copy):
+                w = words_copy[w_idx]
+                test_l = ' '.join(curr + [w])
+                bbox = draw.textbbox((0, 0), test_l, font=font)
+                if (bbox[2] - bbox[0]) <= allowed_w or not curr:
+                    curr.append(w)
+                    w_idx += 1
+                else:
+                    # Tenta hifenização silábica se a palavra for longa e faltar pouco para caber
+                    if _pyphen_dic and len(w) >= 7 and not curr:
+                        hyphenated = _pyphen_dic.inserted(w).split('-')
+                        if len(hyphenated) > 1:
+                            part1 = ""
+                            p_idx = 0
+                            while p_idx < len(hyphenated) - 1:
+                                test_part = part1 + hyphenated[p_idx]
+                                if (draw.textbbox((0, 0), test_part + "-", font=font)[2] - draw.textbbox((0, 0), test_part + "-", font=font)[0]) <= allowed_w:
+                                    part1 = test_part
+                                    p_idx += 1
+                                else:
+                                    break
+                            if part1:
+                                part2 = "".join(hyphenated[p_idx:])
+                                curr.append(part1 + "-")
+                                words_copy[w_idx] = part2
+                                continue
+                    break
+            if curr:
+                lines.append(' '.join(curr))
+            elif w_idx < len(words_copy):
+                possible = False
+                break
+        if possible and w_idx == len(words_copy):
+            all_fit = True
+            for li, l_str in enumerate(lines):
+                bb = draw.textbbox((0, 0), l_str, font=font)
+                if (bb[2] - bb[0]) > max_w:
+                    all_fit = False
+                    break
+            if all_fit:
+                return lines
+                
+    # Fallback para quebra proporcional linear se diamond estrito não encaixar
+    return wrap_text_to_width(draw, text, font, max_w)
+
 def fit_text_to_box(draw, text, max_w, max_h, font_path):
     """Ajusta proporcionalmente o tamanho da fonte e quebras de linha para preencher o balão esteticamente."""
     # Limpa emojis e símbolos não suportados pela fonte TTF para evitar retângulos 'tofu'
@@ -455,34 +620,11 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
         if max_possible_lines < 1:
             continue
             
-        greedy_lines = wrap_text_to_width(draw, text, font, max_w)
-        if len(greedy_lines) <= max_possible_lines:
-            # Se a última linha tiver apenas 1 palavra curta pendurada, tenta distribuir de forma equilibrada (formato balão)
-            best_lines = greedy_lines
-            if len(greedy_lines) > 1 and len(greedy_lines[-1].split()) == 1 and len(greedy_lines[-1]) < 6:
-                target_w = max_w * 0.88
-                balanced = []
-                b_cur = []
-                for w in words:
-                    test_l = ' '.join(b_cur + [w])
-                    w_len = draw.textbbox((0, 0), test_l, font=font)[2] - draw.textbbox((0, 0), test_l, font=font)[0]
-                    if w_len <= target_w or (not b_cur and w_len <= max_w):
-                        b_cur.append(w)
-                    else:
-                        if b_cur:
-                            balanced.append(' '.join(b_cur))
-                            b_cur = [w]
-                        else:
-                            balanced.append(w)
-                            b_cur = []
-                if b_cur:
-                    balanced.append(' '.join(b_cur))
-                if len(balanced) <= max_possible_lines and all((draw.textbbox((0, 0), l, font=font)[2] - draw.textbbox((0, 0), l, font=font)[0]) <= max_w for l in balanced):
-                    best_lines = balanced
-                    
-            return font, best_lines
+        candidate_lines = wrap_text_diamond(draw, text, font, max_w, max_h)
+        if candidate_lines and len(candidate_lines) <= max_possible_lines:
+            return font, candidate_lines
             
-    # Fallback dinâmico usando tamanho 10 e wrapping proporcional (nunca width=16 rígido)
+    # Fallback dinâmico usando tamanho 10 e wrapping proporcional
     font = ImageFont.truetype(font_path, 10)
     fallback_lines = wrap_text_to_width(draw, text, font, max_w)
     return font, fallback_lines
@@ -730,13 +872,44 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         if re.search(r'\b(nipple|nipples|nips|nip)\b', orig_lower):
             cleaned = _preserve_case(r'\bpelos\b', 'mamilos', cleaned)
 
+        # Tip (manga adulto) -> Ponta / Glande (NUNCA canto ou gorjeta)
+        if re.search(r'\btip\b', orig_lower):
+            cleaned = _preserve_case(r'\bcanto\b', 'ponta', cleaned)
+            cleaned = _preserve_case(r'\bgorjeta\b', 'ponta', cleaned)
+            cleaned = _preserve_case(r'\bdica\b', 'ponta', cleaned)
+
+        # Sucking / Suck -> Chupando / Chupar
+        if re.search(r'\b(suck|sucking|sucks)\b', orig_lower):
+            cleaned = _preserve_case(r'\bsuckar\b', 'chupar', cleaned)
+            cleaned = _preserve_case(r'\bsucking\b', 'chupando', cleaned)
+
+        # Thrusts -> Estocadas / Empurrões
+        if re.search(r'\bthrusts?\b', orig_lower):
+            cleaned = _preserve_case(r'\bempurr[aã]o\b', 'estocada', cleaned)
+            cleaned = _preserve_case(r'\bempurr[aã]os\b', 'estocadas', cleaned)
+
+        # Out of his mind -> Ficou louco / Perdeu a cabeça
+        if re.search(r'out\s+of\s+his\s+mind', orig_lower):
+            cleaned = _preserve_case(r'de\s+sua\s+mente', 'ficou louco', cleaned)
+
     cleaned = _preserve_case(r'\bperfecto\b', 'perfeito', cleaned)
     cleaned = _preserve_case(r'\btacto\b', 'tato', cleaned)
+    cleaned = _preserve_case(r'\bmbicar\b', 'lamber', cleaned)
+    cleaned = _preserve_case(r'\breito\b', 'peito', cleaned)
+    
+    # Limpeza de artefatos de OCR e corações transcritos
+    cleaned = re.sub(r'(?i)\bheart(?:\s+111|\s+11|\s+1)?\b', '♡', cleaned)
     
     # 9. Proteção para gemidos/sons curtos (evita que um 'NGH!' vire um parágrafo)
     orig_stripped = original_text.strip()
     if len(orig_stripped) <= 6 and len(cleaned.split()) > 3:
         cleaned = cleaned.split()[0].strip()
+
+    # Fragmentos residuais de OCR truncado ou ruídos de redes sociais
+    if cleaned.upper() in ('OF', 'D..', 'HW)', 'D.', '(1)', '+66>'):
+        return ""
+    if re.match(r'^(?:ill\d+.*|\?\d+|\+\d+>|\(\d+\))$', cleaned):
+        return ""
 
     cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
     return cleaned if cleaned else original_text.strip()
@@ -793,6 +966,104 @@ REGRAS OBRIGATÓRIAS:
             return clean_ai_translation(resp, original_text=text, is_adult=is_adult)
     except Exception:
         return None
+
+def translate_page_dialogue_with_ollama(bubbles_to_trans, model_name, is_adult=True, glossary=None):
+    """Traduz todas as falas de uma página em lote com Ollama mantendo coerência narrativa e de personagens."""
+    if not bubbles_to_trans:
+        return {}
+        
+    url = "http://localhost:11434/api/chat"
+    dialogue_map = {}
+    
+    # 1. Resolução imediata de SFX/Onomatopeias sem gastar chamada à IA
+    results = {}
+    needed = {}
+    for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
+        key = str(idx + 1)
+        sfx_res = translate_sfx_phrase(orig_text)
+        if sfx_res:
+            results[orig_text] = sfx_res
+        else:
+            needed[key] = orig_text
+            dialogue_map[key] = orig_text
+            
+    if not needed:
+        return results
+
+    # 2. Monta prompt com glossário da obra se disponível
+    glossary_rules = ""
+    if glossary:
+        chars = glossary.get("characters", {})
+        terms = glossary.get("terms", {})
+        if chars or terms:
+            glossary_rules = "\nGLOSSÁRIO OBRIGATÓRIO DESTA OBRA:\n"
+            for k, v in chars.items():
+                glossary_rules += f"- Personagem '{k}': manter '{v}'\n"
+            for k, v in terms.items():
+                glossary_rules += f"- Termo '{k}': traduzir/adaptar como '{v}'\n"
+
+    adult_instructions = ""
+    if is_adult:
+        adult_instructions = (
+            "Traduza mantendo o tom adulto (+18), sem censura e com gírias brasileiras autênticas "
+            "(ex: 'panties' -> 'calcinha', 'cock' -> 'pau/pinto', 'came inside' -> 'gozou dentro', 'tip' -> 'ponta/glande'). "
+        )
+
+    sys_prompt = f"""Você é um tradutor literário profissional de mangás {'adultos (+18) e scanlations' if is_adult else 'e quadrinhos'} para Português do Brasil (PT-BR).
+Você receberá um objeto JSON com as falas de uma mesma página de mangá na ordem de leitura.
+Traduza cada fala para PT-BR mantendo coerência narrativa, pronomes corretos entre quem fala e fluidez natural de scanlation brasileiro.
+{adult_instructions}
+{glossary_rules}
+REGRAS OBRIGATÓRIAS:
+1. Responda EXCLUSIVAMENTE em formato JSON com as mesmas chaves numéricas e os valores traduzidos. Exemplo: {{"1": "...", "2": "..."}}
+2. NUNCA adicione introduções, explicações, saudações ou notas de rodapé.
+3. Mantenha pontuação dramática de mangá (!, ?, ..., ~).
+4. NUNCA use palavras em espanhol."""
+
+    req_body = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": json.dumps(needed, ensure_ascii=False, indent=2)}
+        ],
+        "stream": False,
+        "keep_alive": "60m",
+        "options": {
+            "temperature": 0.0,
+            "num_predict": 1024
+        }
+    }
+    
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(req_body).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=75) as response:
+            res = json.loads(response.read().decode('utf-8'))
+            resp_content = res.get("message", {}).get("content", "").strip()
+            
+            # Extrai o bloco JSON
+            json_match = re.search(r'\{.*\}', resp_content, flags=re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group(0))
+                for k, trans in parsed.items():
+                    if k in dialogue_map:
+                        orig = dialogue_map[k]
+                        cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                        results[orig] = cleaned_trans
+    except Exception:
+        pass
+
+    # 3. Fallback para qualquer fala que não tenha sido traduzida pelo JSON
+    for key, orig in needed.items():
+        if orig not in results:
+            fallback_res = translate_with_ollama(orig, model_name, is_adult=is_adult)
+            if fallback_res:
+                results[orig] = clean_ai_translation(fallback_res, original_text=orig, is_adult=is_adult)
+                
+    return results
 
 def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
     """Traduz lista de textos usando Ollama local (prioritário, offline, sem erros 401) com fallback para Google."""
@@ -1081,13 +1352,18 @@ def generate_rapidocr_json(manga_dir, output_json_path):
         json.dump(mokuro_data, f, ensure_ascii=False)
 
 def is_credits_page(bubbles):
-    """Detecta páginas de créditos/recrutamento de scanlation para evitar destruição de arte."""
+    """Detecta páginas de créditos, doações, redes sociais ou colofão de doujinshi para preservar a arte original."""
     full_text = " ".join([b.get("combined_text", "") for b in bubbles]).lower()
     markers = [
         "scanlation", "scans", "discord.gg", "patreon", "recruiting",
         "raw provider", "typesetter", "cleaner", "proofreader",
         "redrawn by", "translated by", "join us", "donation",
-        "commissionrequests", "hiringpaid", "omega scans", "qmega scans", "amega scans"
+        "commission", "hiring", "omega scans", "qmega scans", "amega scans",
+        "pixiv", "twitter", "x : @", "(x) :", "@gmail.com", "e-mail",
+        "ko-fi", "fantia", "fanbox", "sungroup", "story/illust", "translator/editor",
+        "c108", "c107", "c106", "c105", "c104", "c103", "c102", "c101", "c100",
+        "c99", "c98", "c97", "c96", "comiket", "if you liked this doujin",
+        "send me a donation", "free hugs"
     ]
     matched = sum(1 for m in markers if m in full_text)
     return matched >= 1
@@ -1100,6 +1376,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     manga_name = os.path.basename(manga_dir)
     clean_name = manga_name.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip()
+    
+    # Carrega glossário específico da obra se existir
+    glossary = load_project_glossary(manga_dir)
     
     # 0. Define o diretório de destino
     base_drive_dir = BASE_OUTPUT_DIR
@@ -1252,36 +1531,46 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         except Exception:
             pass
             
-    texts_to_translate = []
-    text_mapping = []
-    
-    for p_idx, p in enumerate(pages_data):
-        # Se for página de créditos, não desperdiça tokens/chamadas
+    ollama_active, ollama_model = check_ollama_available(prefer_uncensored=is_adult)
+    if ollama_active:
+        print(f"[+] OLLAMA ATIVO! Motor de IA Local ({ollama_model}) com Tradução Contextual por Página.")
+    else:
+        print(f"[*] Modo Fallback de Tradução Nuvem ativado.")
+
+    # Traduz página por página com coerência narrativa e suporte a glossário
+    for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
         if is_credits_page(p["bubbles"]):
             continue
             
-        for b_idx, b in enumerate(p["bubbles"]):
+        untranslated = []
+        for b in p["bubbles"]:
             orig_text = b["combined_text"].strip()
             if orig_text not in cache:
-                texts_to_translate.append(orig_text)
-            text_mapping.append((p_idx, b_idx, orig_text))
-            
-    if texts_to_translate:
-        print(f"[*] Traduzindo {len(texts_to_translate)} balões de fala...")
-        translated_results = translate_batch_texts(texts_to_translate, src_lang=src_lang, is_adult=is_adult)
-        for orig, trans in zip(texts_to_translate, translated_results):
-            cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
-            
-        try:
-            with open(cache_file, "w", encoding="utf-8") as cf:
-                json.dump(cache, cf, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
-            
-    for p_idx, b_idx, orig_text in text_mapping:
-        cached_val = cache.get(orig_text, orig_text)
-        pages_data[p_idx]["bubbles"][b_idx]["translated_text"] = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult)
-        
+                untranslated.append((orig_text, b))
+                
+        if untranslated:
+            if ollama_active:
+                batch_res = translate_page_dialogue_with_ollama(untranslated, ollama_model, is_adult=is_adult, glossary=glossary)
+                for orig, trans in batch_res.items():
+                    cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+            else:
+                texts_needed = [item[0] for item in untranslated]
+                cloud_res = translate_batch_texts(texts_needed, src_lang=src_lang, is_adult=is_adult)
+                for orig, trans in zip(texts_needed, cloud_res):
+                    cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+
+    try:
+        with open(cache_file, "w", encoding="utf-8") as cf:
+            json.dump(cache, cf, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
+
+    for p in pages_data:
+        for b in p["bubbles"]:
+            orig_text = b["combined_text"].strip()
+            cached_val = cache.get(orig_text, orig_text)
+            b["translated_text"] = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult)
+
     # 4. Diagramação e Inpainting
     print(f"[*] Iniciando limpeza profissional de balões e diagramação...")
     for idx, p in enumerate(tqdm(pages_data, desc="Diagramação", unit="pág")):
@@ -1378,7 +1667,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             if max_avail_w > 60:
                 target_w = min(target_w, max_avail_w)
             
-            font, lines = fit_text_to_box(draw, text, target_w, target_h, font_path)
+            # Seleciona a melhor fonte tipográfica para a fala (Anime/Comic Neue, Bangers/Shout ou Itálico)
+            chosen_font_path = select_font_for_bubble(text)
+            font, lines = fit_text_to_box(draw, text, target_w, target_h, chosen_font_path)
             if not lines:
                 continue
                 
@@ -1419,10 +1710,17 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     except Exception:
         pass
 
+    # 7. Criar arquivo CBZ para celulares e leitores digitais
+    cbz_filename = f"{clean_name} [PT-BR].cbz"
+    cbz_dest_path = os.path.join(base_drive_dir, cbz_filename)
+    print(f"[*] Gerando arquivo .CBZ para leitura em tablets e celulares...")
+    create_cbz_archive(output_dir, cbz_dest_path)
+
     print("\n" + "=" * 60)
     print(f"[+] MANGA TRADUZIDO COM SUCESSO!")
     print(f"[+] Pasta salva: {output_dir}")
     print(f"[+] Leitor Web: {os.path.join(output_dir, 'leitor.html')}")
+    print(f"[+] Arquivo CBZ: {cbz_dest_path}")
     print("=" * 60 + "\n")
     
     # Notificações

@@ -36,11 +36,12 @@ Para que as traduções façam sentido, as linhas fracionadas de um balão devem
 * **Leitura Oriental (Mangás JP):** Se as linhas forem verticais (`altura > largura * 1.2`), agrupa por sobreposição no eixo Y e proximidade no eixo X, ordenando da Direita para Esquerda, Topo para Baixo.
 * **Leitura Ocidental:** Agrupa por proximidade vertical e alinhamento horizontal, ordenando de Cima para Baixo, Esquerda para Direita.
 
-### 2. Tradução com IA Local (Ollama Chat API) e Fallbacks
-* **Motor Local Prioritário (Ollama Chat API):** Utiliza `/api/chat` com mensagens estruturadas (`system` e `user`) priorizando modelos literários de alta fidelidade (ex: `llama3.1:latest`, `dolphin-llama3:latest`) na porta 11434. Totalmente offline e imune a erros de quota ou 401.
+### 2. Tradução com IA Local (Ollama Chat API Contextual) e Glossário
+* **Tradução em Lote por Página (*Context-Aware*):** Em vez de traduzir balão por balão cegamente, o sistema agrupa os balões da página e os submete em bloco JSON ao Ollama. A IA traduz a cena completa com total consciência de quem fala com quem, mantendo coerência nos pronomes, gênero e fluidez de diálogo.
+* **Glossário Personalizado por Obra (`glossary.json` / `termos.txt`):** Suporte a termos e nomes de personagens customizados (ex: Rudy, Roxy, Sylphy, Misha, Lovemea). O glossário é injetado diretamente nas diretrizes da IA e aplicado pós-tradução.
 * **Tradução Determinística Anti-Alucinação (`temperature: 0.0`):** Persona estrita de scanlation que proíbe saudações de chatbot, notas explicativas e suposições fora de contexto.
 * **Tratador Avançado de SFX e Gemidos:** Decomposição e tradução de onomatopeias e sons repetidos/compostos (ex: `SLAP SLAPI`, `TWITCH TWITCH`, `ZUP ZUP`) via dicionário direto antes da IA, impedindo alucinações.
-* **Dicionário Anatômico e Gírias (+18):** Filtro contextual rigoroso para termos adultos de mangá e gírias brasileiras fluidas.
+* **Dicionário Anatômico e Gírias (+18):** Filtro contextual rigoroso para termos adultos de mangá e gírias brasileiras fluidas (`tip` -> ponta/glande; `panties` -> calcinha; `sucking` -> chupando).
 * **Fallback Nuvem:** Fallback automático para `MyMemoryTranslator` e `GoogleTranslator` caso o Ollama esteja offline.
 
 ### 3. Limpeza Cirúrgica de Balões (Algoritmo Borda-Preservada)
@@ -50,16 +51,22 @@ Ao limpar um balão de texto, o sistema nunca destrói a borda do desenho ou art
 * **Preservação de Bordas:** Utiliza análise de contornos no ROI. Contornos que tocam as margens externas (as paredes pretas do balão) são preservados; elementos flutuantes no interior são limpos cirurgicamente com branco puro.
 * **Para Retículas/Cabelos/Arte de Fundo:** Aplica inpainting Telea suave com raio de 4px.
 
-### 4. Extração OCR com Realce de Cor (RapidOCR)
-* Pré-processamento por canal mínimo (`img.min(axis=2)`): transforma textos estilizados com tons claros ou coloridos (rosa choque, vermelho, ciano) em alto contraste com o fundo branco, permitindo que o RapidOCR leia títulos e onomatopeias coloridas que seriam ignorados em tons de cinza comuns.
-* **Filtro de Páginas de Crédito/Scanlation:** Identifica automaticamente páginas de recrutamento, créditos e links de scanlators (ex: Omega Scans) para preservá-las 100% intactas, sem desenhar caixas de tradução ou estragar a arte.
+### 4. Extração OCR e Filtro de Páginas Especiais (Créditos, Doações, Colofão)
+* **Realce de Cor (RapidOCR):** Pré-processamento por canal mínimo (`img.min(axis=2)`): transforma textos estilizados com tons claros ou coloridos em alto contraste com o fundo branco.
+* **Filtro de Páginas de Crédito, Redes Sociais e Doações:** Identifica automaticamente páginas de recrutamento, créditos de scanlators, links sociais (Twitter/X, Pixiv, Discord) e páginas de doação (Ko-fi, Patreon, Comiket, colofão de doujinshi) para preservá-las 100% intactas, sem desenhar caixas de tradução ou estragar a arte.
 
-### 5. Diagramação Responsiva com Limites Seguros (Safe Balloon Boundary)
+### 5. Diagramação Profissional de Scanlation (Multi-Font + Diamond Wrap)
 A inserção do português (`fit_text_to_box`):
-* **Sondagem de Limites Seguros (*Safe Boundary*):** Antes de renderizar, o sistema varre a máscara limpa para detectar os limites brancos reais do balão (`b_left`, `b_right`, `b_top`, `b_bottom`) e aplica margem de segurança de 10px. O texto nunca vaza a borda preta do balão para invadir a arte.
-* **Fonte dinâmica:** Calculada a partir das dimensões reais do balão (iniciando em até 68px para balões grandes e escalando até 12px para balões estreitos).
-* Teste iterativo de quebras de linha para encontrar a melhor distribuição espacial com centralização geométrica (`anchor="mm"`).
-* Tipografia profissional com Comic Sans MS Bold e contorno (*stroke*) proporcional para leitura perfeita em qualquer contraste.
+* **Suíte Tipográfica Multi-Fonte Scanlation (`fonts/`):**
+  * *Diálogo Padrão:* `dialogue.ttf` (Comic Neue Bold - limpa, moderna e altamente legível).
+  * *Gritos e Ação:* `shout.ttf` (Bangers Regular / Impact para exclamações e balões espinhosos).
+  * *Pensamentos e Sussurros:* `dialogue_italic.ttf` (Comic Neue Bold Italic para diálogos suaves e monólogos internos).
+* **Diagramação em Diamante/Elipse (*Diamond Wrapping*):** Modela a largura das linhas de texto segundo a curvatura elíptica natural dos balões de mangá. As linhas do meio têm maior extensão que as pontas superior e inferior, preenchendo o balão de forma harmônica e estética.
+* **Hifenização Silábica Correta (PT-BR via `pyphen`):** Quando uma palavra longa excede a linha, o sistema aplica quebra silábica oficial da língua portuguesa com hífen (`-`), evitando que a fonte inteira seja diminuída ou que ocorram espaços esquisitos.
+* **Sondagem de Limites Seguros (*Safe Boundary*):** Antes de renderizar, o sistema varre a máscara limpa para detectar os limites brancos reais do balão e aplica margem de segurança de 10px. O texto nunca vaza a borda preta do balão para invadir a arte.
+* **Contorno e Centralização Geométrica:** Texto renderizado com ponto de ancoragem `mm` (centro exato) e contorno branco proporcional de contraste.
 
-### 6. Renderização Segura Temp -> Nuvem
-Devido a problemas de bloqueio por sincronização no Windows/OneDrive (`PermissionError`), todas as imagens e o `leitor.html` interativo são processados e salvos num diretório temporário isolado (`%TEMP%`). Ao finalizar com sucesso, os arquivos finais e o leitor são copiados via `shutil.copy2` para o drive de destino.
+### 6. Exportação Automática para `.CBZ` e Leitor Web
+* **Arquivo `.CBZ` Automático:** Gera imediatamente um arquivo compactado `<Nome do Manga> [PT-BR].cbz` ao lado da pasta final, pronto para leitura direta em aplicativos móveis e tablets (Tachiyomi, Mihon, Kotatsu, Perfect Viewer, Kuro Reader).
+* **Leitor Web Interativo:** Gera `leitor.html` com suporte a navegação por teclado (setas/espaço), modo página única e modo rolagem contínua (*webtoon*).
+* **Renderização Segura Temp -> Nuvem:** Processamento em diretório temporário isolado (`%TEMP%`) para total imunidade a bloqueios de sincronização do OneDrive.

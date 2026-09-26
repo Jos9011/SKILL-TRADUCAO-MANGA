@@ -327,10 +327,14 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     if blocks and all(b.lower() == blocks[0].lower() for b in blocks):
         cleaned = blocks[0]
 
+    # Se houver formato "ORIGINAL -> TRADUÇÃO"
+    if '->' in cleaned:
+        cleaned = cleaned.split('->')[-1].strip()
+
     # 4. Remover tags [PT-BR], (PT-BR) e notas de tradução / avisos de IA
     cleaned = re.sub(r'\[\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\]', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\(\s*(?:em\s+)?(?:PT-BR|PT|BR)\s*\)', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\([^\)]*(?:ingl[êe]s|japon[êe]s|traduz|mistur)[^\)]*\)', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\([^\)]*(?:ingl[êe]s|japon[êe]s|traduz|mistur|sem\s+tradu[çc][ãa]o|express[ãa]o|explica[çc][ãa]o)[^\)]*\)', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'[\(\[]\s*nota(?:\s+de\s+tradu[çc][ãa]o)?\s*:.*?[\]\)]', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\bNota\s*:.*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\bComo\s+(?:uma|um)\s+(?:IA|intelig[êe]ncia artificial|modelo de linguagem).*?(?:\n|$)', '', cleaned, flags=re.IGNORECASE)
@@ -393,6 +397,9 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             cleaned = _preserve_case(r'\bbucetinha\b', 'pintinho', cleaned)
             cleaned = _preserve_case(r'\bbuceta\b', 'pau', cleaned)
             cleaned = _preserve_case(r'\bxoxota\b', 'pau', cleaned)
+            cleaned = _preserve_case(r'\bseu\s+peito\b', 'seu pau', cleaned)
+            cleaned = _preserve_case(r'\bseus\s+peitos\b', 'seu pau', cleaned)
+            cleaned = _preserve_case(r'\bpeitinho\b', 'pintinho', cleaned)
 
         # Condom -> Camisinha / Preservativo (Evitar falso cognato 'condomínio')
         if re.search(r'\bcondom\b', orig_lower):

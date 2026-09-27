@@ -22,6 +22,7 @@ import cv2
 import shutil
 import math
 import zipfile
+import unicodedata
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
@@ -95,6 +96,116 @@ def select_font_for_bubble(text, is_shout=False, is_thought=False):
         
     return get_best_font()
 
+_NOTDEF_CACHE = {}
+_FALLBACK_FONTS = {}
+
+def sanitize_lettering_text(text):
+    """Normaliza caracteres asiáticos (zenkaku), macrons e pontuações para compatibilidade total com fontes TrueType sem gerar quadrados 'tofu'."""
+    if not text:
+        return ""
+    # 1. Normalização NFKC: converte zenkaku (largura total) para caracteres padrão (ASCII)
+    # Transforma ．．． -> ..., ： -> :, ！ -> !, ？ -> ?, １２３ -> 123
+    text = unicodedata.normalize('NFKC', text)
+    
+    # 2. Mapeamento de macrons de romanização (Kōyō -> KOYO, Chōhō -> CHOHO)
+    macron_map = str.maketrans({
+        'Ā': 'A', 'ā': 'a',
+        'Ē': 'E', 'ē': 'e',
+        'Ī': 'I', 'ī': 'i',
+        'Ō': 'O', 'ō': 'o',
+        'Ū': 'U', 'ū': 'u',
+    })
+    text = text.translate(macron_map)
+    
+    # 3. Padrões adicionais de pontuação asiática e caracteres gráficos
+    trans_punct = {
+        '…': '...',
+        '―': '-',
+        '—': '-',
+        '–': '-',
+        '〜': '~',
+        '～': '~',
+        '“': '"',
+        '”': '"',
+        '‘': "'",
+        '’': "'",
+        '「': '"',
+        '」': '"',
+        '『': "'",
+        '』': "'",
+        '・': '·',
+        '♥': '♡',
+    }
+    for k, v in trans_punct.items():
+        text = text.replace(k, v)
+        
+    return text
+
+def is_char_supported(char, font, default_font_path=None):
+    try:
+        fpath = getattr(font, 'path', default_font_path or '')
+        if fpath not in _NOTDEF_CACHE:
+            _NOTDEF_CACHE[fpath] = bytes(font.getmask(chr(0xFFFF)))
+        notdef = _NOTDEF_CACHE[fpath]
+        m = bytes(font.getmask(char))
+        return m != notdef and len(m) > 0
+    except Exception:
+        return False
+
+def draw_manga_text_line(draw, xy, line, font, fill=(0, 0, 0), stroke_width=0, stroke_fill=(255, 255, 255), anchor="mm"):
+    """Desenha uma linha de texto tipográfico com suporte a fallback de fontes (para corações e glifos especiais) e garantia contra 'tofu'."""
+    line = sanitize_lettering_text(line)
+    if not line:
+        return
+        
+    # Verifica se há caracteres não suportados pela fonte principal
+    unsupported = [c for c in line if not c.isspace() and not is_char_supported(c, font)]
+    if not unsupported:
+        draw.text(xy, line, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, anchor=anchor)
+        return
+
+    # Se há caracteres não suportados, tenta usar fonte de fallback (Segoe UI) ou filtra glifos desconhecidos
+    fb_path = r"C:\Windows\Fonts\segoeui.ttf"
+    font_size = getattr(font, 'size', 20)
+    if font_size not in _FALLBACK_FONTS:
+        if os.path.exists(fb_path):
+            _FALLBACK_FONTS[font_size] = ImageFont.truetype(fb_path, font_size)
+        else:
+            _FALLBACK_FONTS[font_size] = font
+    fb_font = _FALLBACK_FONTS[font_size]
+
+    char_widths = []
+    for c in line:
+        if is_char_supported(c, font):
+            use_f = font
+        elif is_char_supported(c, fb_font, fb_path):
+            use_f = fb_font
+        else:
+            # Se nem a fonte principal nem o fallback suportam, ignora o glifo para nunca desenhar caixa preta/tofu
+            continue
+            
+        bb = draw.textbbox((0, 0), c, font=use_f)
+        char_widths.append((c, use_f, bb[2] - bb[0]))
+
+    if not char_widths:
+        return
+
+    tot_w = sum(w for _, _, w in char_widths)
+    cx, cy = xy
+    if anchor == "mm":
+        curr_x = cx - (tot_w / 2)
+    elif anchor == "lm":
+        curr_x = cx
+    else:
+        curr_x = cx - (tot_w / 2)
+
+    for c, use_f, w in char_widths:
+        if c.isspace():
+            curr_x += w
+            continue
+        draw.text((curr_x, cy), c, font=use_f, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, anchor="lm")
+        curr_x += w
+
 def load_project_glossary(manga_dir):
     """Carrega glossário personalizado (termos, nomes de personagens) da pasta do mangá ou global."""
     candidates = [
@@ -165,8 +276,10 @@ def detect_language_from_samples(texts):
     # 1. Se os caracteres latinos forem predominantemente maiores
     if latin_chars > 20 and latin_chars > (total_asian * 2):
         lower = full_str.lower()
-        spanish_markers = [" el ", " la ", " de ", " que ", " y ", " en ", " un ", " por ", " con ", " para "]
-        if sum(1 for m in spanish_markers if m in lower) >= 3:
+        words = re.findall(r'\b[a-zA-Z]+\b', lower)
+        spanish_words = {"el", "la", "de", "que", "y", "en", "un", "una", "por", "con", "para", "los", "las", "del", "al"}
+        sp_count = sum(1 for w in words if w in spanish_words)
+        if len(words) > 0 and (sp_count / len(words)) > 0.08:
             return "es-ES"
         return "en-US"
         
@@ -360,7 +473,8 @@ def should_merge_lines(b1, b2):
         
         # Devem estar bem alinhados horizontalmente (linhas do mesmo balão)
         if (overlap_ratio_x >= 0.40 and center_dist_x <= max_w * 0.45) or overlap_ratio_x >= 0.65:
-            if gap_y <= max(max_h * 1.30, 28):
+            allowed_gap_y = max(min(min_h * 1.1, 45), 28)
+            if gap_y <= allowed_gap_y:
                 return True
                 
         return False
@@ -377,7 +491,9 @@ def should_merge_lines(b1, b2):
         overlap_ratio_y = overlap_y / min_h
         
         if (overlap_ratio_y >= 0.40 and center_dist_y <= max_h * 0.45) or overlap_ratio_y >= 0.65:
-            if gap_x <= max(max_w * 1.5, 32):
+            # O vão horizontal entre colunas adjacentes do mesmo balão deve ser proporcional à largura da linha
+            allowed_gap_x = max(min(min_w * 0.9, 60), 38)
+            if gap_x <= allowed_gap_x:
                 return True
                 
         return False
@@ -604,8 +720,8 @@ def wrap_text_diamond(draw, text, font, max_w, max_h):
 
 def fit_text_to_box(draw, text, max_w, max_h, font_path):
     """Ajusta proporcionalmente o tamanho da fonte e quebras de linha para preencher o balão esteticamente."""
-    # Limpa emojis e símbolos não suportados pela fonte TTF para evitar retângulos 'tofu'
-    text = re.sub(r'[\u2660-\u2667\u2764\ufe0f♥❤♡★☆]', '', text).strip()
+    # Sanitiza pontuação asiática, números de largura total e macrons para evitar retângulos 'tofu'
+    text = sanitize_lettering_text(text).strip()
     words = text.split()
     if not words:
         return ImageFont.truetype(font_path, 12), []
@@ -693,7 +809,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     if not text:
         return original_text.strip()
         
-    cleaned = text.strip()
+    cleaned = sanitize_lettering_text(text).strip()
     
     # 0. Detectar e ignorar mensagens de recusa de IA ou vazamentos de prompt
     refusal_markers = [
@@ -711,7 +827,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         norm_sfx = re.sub(r'[^A-Z]', '', original_text.upper())
         if norm_sfx in SFX_DICTIONARY:
             return SFX_DICTIONARY[norm_sfx]
-        return original_text.strip()
+        return ""
         
     # Preservar nomes próprios e créditos de scanlators sem deixar a IA alucinar
     clean_lower = original_text.strip().lower()
@@ -729,7 +845,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             norm_sfx = re.sub(r'[^A-Z]', '', original_text.upper())
             if norm_sfx in SFX_DICTIONARY:
                 return SFX_DICTIONARY[norm_sfx]
-            return original_text.strip()
+            return ""
 
     # 1. Eliminar saudações e conversas de assistente ('Vem lá, meu amigo...', 'Estou traduzindo...', 'Aqui está...')
     cleaned = re.sub(r'(?i)^(?:ol[áa]|aqui\s+est[áa]|com\s+certeza|vamos\s+traduzir|estou\s+traduzindo|com\s+base\s+nas\s+regras|veja\s+bem|beleza|entendi|ok|vem\s+l[áa],?\s+meu\s+amigo!?).*?[:\n]+', '', cleaned).strip()
@@ -766,7 +882,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         l_str = line.strip()
         if re.match(r'^(?:texto\s+original|original|l[íi]ngua\s+identificada|tradu[çc][ãa]o|texto\s+traduzido|resposta)\s*:', l_str, flags=re.IGNORECASE):
             continue
-        if re.match(r'^(?:traduzindo\s+o\s+texto|vou\s+traduzir|aqui\s+est[áa])', l_str, flags=re.IGNORECASE):
+        if re.match(r'^(?:traduzindo\s+o\s+texto|vou\s+traduzir|aqui\s+est[áa]\s*(?:a\s+tradu[çc][ãa]o|o\s+texto|:))', l_str, flags=re.IGNORECASE):
             continue
         valid_lines.append(l_str)
     cleaned = '\n'.join(valid_lines).strip()
@@ -911,31 +1027,56 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     if re.match(r'^(?:ill\d+.*|\?\d+|\+\d+>|\(\d+\))$', cleaned):
         return ""
 
+    cleaned = sanitize_lettering_text(cleaned)
     cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
-    return cleaned if cleaned else original_text.strip()
+    return cleaned if cleaned else ""
 
 def translate_with_ollama(text, model_name, is_adult=True):
-    """Traduz texto usando a API nativa /api/chat do Ollama com prompt estrito anti-alucinação e temperature 0.0."""
+    """Traduz texto usando a API nativa /api/chat do Ollama com prompt estrito e fallback automático multi-nível."""
     url = "http://localhost:11434/api/chat"
     
     clean_t = text.strip()
-    # Checagem SFX prioritária
     sfx_res = translate_sfx_phrase(clean_t)
     if sfx_res:
         return sfx_res
-    
-    if is_adult:
-        sys_prompt = """Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
+        
+    def _do_request(m_name, s_prompt):
+        try:
+            req_data = {
+                "model": m_name,
+                "messages": [
+                    {"role": "system", "content": s_prompt},
+                    {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
+                ],
+                "stream": False,
+                "keep_alive": "60m",
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 300
+                }
+            }
+            req = urllib.request.Request(url, data=json.dumps(req_data).encode('utf-8'), headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=40) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                resp = result.get("message", {}).get("content", "").strip()
+                cleaned = clean_ai_translation(resp, original_text=clean_t, is_adult=is_adult)
+                if cleaned and cleaned.strip().lower() != clean_t.lower():
+                    return cleaned
+        except Exception:
+            pass
+        return None
+
+    sys_prompt_adult = """Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
 Traduza fielmente o diálogo original com máxima naturalidade coloquial e fluidez brasileira, respeitando o tom da cena (romance, ecchi, diálogos picantes ou adultos).
 
 REGRAS OBRIGATÓRIAS:
 1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA introduza com "Aqui está", NUNCA adicione explicações, notas de tradutor ou parênteses de justificativa.
-2. NUNCA use palavras em espanhol (ex: use sempre 'perfeito', NUNCA 'perfecto'; 'vocês', NUNCA 'vosotros').
+2. NUNCA use palavras em espanhol.
 3. Adapte expressões e gírias com naturalidade autêntica brasileira (ex: 'panties' -> 'calcinha'; 'striped panties' -> 'calcinha listrada'; 'cock/penis' -> 'pau/pinto'; 'came inside' -> 'gozou dentro'; 'honey' -> 'amor/querido'; 'fiancée' -> 'noiva').
 4. Mantenha nomes de personagens inalterados (Norun, Misha, Chise, Lovemea, Ichiri).
 5. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências)."""
-    else:
-        sys_prompt = """Você é um tradutor literário profissional de mangás e quadrinhos japoneses para Português do Brasil (PT-BR).
+
+    sys_prompt_neutral = """Você é um tradutor literário profissional de mangás e quadrinhos japoneses para Português do Brasil (PT-BR).
 Traduza fielmente o texto original com máxima naturalidade coloquial e fluidez brasileira.
 
 REGRAS OBRIGATÓRIAS:
@@ -944,28 +1085,24 @@ REGRAS OBRIGATÓRIAS:
 3. Mantenha nomes próprios inalterados (Norun, Misha, Chise, Lovemea).
 4. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~)."""
 
-    data = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{text}"}
-        ],
-        "stream": False,
-        "keep_alive": "60m",
-        "options": {
-            "temperature": 0.0,
-            "num_predict": 256
-        }
-    }
-    
-    try:
-        req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req, timeout=60) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            resp = result.get("message", {}).get("content", "").strip()
-            return clean_ai_translation(resp, original_text=text, is_adult=is_adult)
-    except Exception:
-        return None
+    # 1. Tenta com o modelo selecionado e prompt adulto
+    if is_adult:
+        res = _do_request(model_name, sys_prompt_adult)
+        if res:
+            return res
+
+    # 2. Se recusou ou falhou, tenta com o prompt neutro
+    res = _do_request(model_name, sys_prompt_neutral)
+    if res:
+        return res
+
+    # 3. Se ainda recusou (recusa de segurança do Llama 3.1), tenta com o modelo sem censura (dolphin-llama3)
+    if "dolphin" not in model_name.lower():
+        res = _do_request("dolphin-llama3:latest", sys_prompt_neutral)
+        if res:
+            return res
+
+    return None
 
 def translate_page_dialogue_with_ollama(bubbles_to_trans, model_name, is_adult=True, glossary=None):
     """Traduz todas as falas de uma página em lote com Ollama mantendo coerência narrativa e de personagens."""
@@ -1052,16 +1189,17 @@ REGRAS OBRIGATÓRIAS:
                     if k in dialogue_map:
                         orig = dialogue_map[k]
                         cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
-                        results[orig] = cleaned_trans
+                        if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
+                            results[orig] = cleaned_trans
     except Exception:
         pass
 
-    # 3. Fallback para qualquer fala que não tenha sido traduzida pelo JSON
+    # 3. Fallback para qualquer fala que não tenha sido traduzida pelo JSON ou tenha sido recusada
     for key, orig in needed.items():
-        if orig not in results:
+        if orig not in results or results[orig].strip().lower() == orig.strip().lower():
             fallback_res = translate_with_ollama(orig, model_name, is_adult=is_adult)
-            if fallback_res:
-                results[orig] = clean_ai_translation(fallback_res, original_text=orig, is_adult=is_adult)
+            if fallback_res and fallback_res.strip().lower() != orig.strip().lower():
+                results[orig] = fallback_res
                 
     return results
 
@@ -1352,21 +1490,24 @@ def generate_rapidocr_json(manga_dir, output_json_path):
         json.dump(mokuro_data, f, ensure_ascii=False)
 
 def is_credits_page(bubbles):
-    """Detecta páginas de créditos, doações, redes sociais ou colofão de doujinshi para preservar a arte original."""
+    """Detecta páginas puras de créditos ou recrutamento de scanlators para preservar a arte original."""
     full_text = " ".join([b.get("combined_text", "") for b in bubbles]).lower()
+    
+    # Se a página contiver texto longo narrativo (>35 palavras, como posfácio ou nota do autor), NÃO é página de créditos
+    if len(full_text.split()) > 35:
+        if any(sm in full_text for sm in ["recruiting", "raw provider", "join us", "hiring typesetter", "cleaner needed"]):
+            return True
+        return False
+        
     markers = [
-        "scanlation", "scans", "discord.gg", "patreon", "recruiting",
+        "scanlation", "discord.gg", "patreon", "recruiting",
         "raw provider", "typesetter", "cleaner", "proofreader",
         "redrawn by", "translated by", "join us", "donation",
         "commission", "hiring", "omega scans", "qmega scans", "amega scans",
-        "pixiv", "twitter", "x : @", "(x) :", "@gmail.com", "e-mail",
-        "ko-fi", "fantia", "fanbox", "sungroup", "story/illust", "translator/editor",
-        "c108", "c107", "c106", "c105", "c104", "c103", "c102", "c101", "c100",
-        "c99", "c98", "c97", "c96", "comiket", "if you liked this doujin",
-        "send me a donation", "free hugs"
+        "ko-fi", "fantia", "fanbox", "sungroup"
     ]
     matched = sum(1 for m in markers if m in full_text)
-    return matched >= 1
+    return matched >= 2 or any(m in full_text for m in ["discord.gg", "patreon", "recruiting", "scanlation"])
 
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True):
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
@@ -1485,23 +1626,31 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     
     for idx, page_info in enumerate(mokuro_data.get("pages", [])):
         fname = os.path.basename(page_info.get("img_path", ""))
-        bubbles = []
+        blocks_for_grouping = []
         for blk in page_info.get("blocks", []):
             xmin, ymin, xmax, ymax = [int(round(float(v))) for v in blk.get("box", [0, 0, 0, 0])]
             is_vertical = blk.get("vertical", True)
             lines = blk.get("lines", [])
             text = " ".join(lines).strip()
-            
             if not text:
                 continue
-                
-            all_raw_texts.append(text)
-            bubbles.append({
+            blocks_for_grouping.append({
                 "box": [xmin, ymin, xmax, ymax],
-                "raw_boxes": [[xmin, ymin, xmax, ymax]],
+                "text": text,
                 "lines": lines,
-                "combined_text": text,
                 "is_vertical": is_vertical
+            })
+            
+        grouped = smart_group_bubbles(blocks_for_grouping)
+        bubbles = []
+        for b in grouped:
+            all_raw_texts.append(b["combined_text"])
+            bubbles.append({
+                "box": b["box"],
+                "raw_boxes": b.get("raw_boxes", [b["box"]]),
+                "lines": b["lines"],
+                "combined_text": b["combined_text"],
+                "is_vertical": b["is_vertical"]
             })
             
         pages_data.append({
@@ -1545,19 +1694,24 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         untranslated = []
         for b in p["bubbles"]:
             orig_text = b["combined_text"].strip()
-            if orig_text not in cache:
+            # Se não está no cache, OU se o cache tem o texto original idêntico em inglês (>1 palavra)
+            if orig_text not in cache or (cache[orig_text].strip().lower() == orig_text.lower() and len(orig_text.split()) > 1):
                 untranslated.append((orig_text, b))
                 
         if untranslated:
             if ollama_active:
                 batch_res = translate_page_dialogue_with_ollama(untranslated, ollama_model, is_adult=is_adult, glossary=glossary)
                 for orig, trans in batch_res.items():
-                    cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
-            else:
-                texts_needed = [item[0] for item in untranslated]
-                cloud_res = translate_batch_texts(texts_needed, src_lang=src_lang, is_adult=is_adult)
-                for orig, trans in zip(texts_needed, cloud_res):
-                    cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                    if trans and trans.strip().lower() != orig.strip().lower():
+                        cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                        
+            # Se ainda houver textos sem tradução, tenta o fallback
+            still_untranslated = [item[0] for item in untranslated if item[0] not in cache or (cache[item[0]].strip().lower() == item[0].lower() and len(item[0].split()) > 1)]
+            if still_untranslated:
+                cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult)
+                for orig, trans in zip(still_untranslated, cloud_res):
+                    if trans and trans.strip().lower() != orig.strip().lower():
+                        cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
 
     try:
         with open(cache_file, "w", encoding="utf-8") as cf:
@@ -1568,8 +1722,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     for p in pages_data:
         for b in p["bubbles"]:
             orig_text = b["combined_text"].strip()
-            cached_val = cache.get(orig_text, orig_text)
-            b["translated_text"] = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult)
+            cached_val = cache.get(orig_text, "")
+            cleaned_val = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult) if cached_val else ""
+            b["translated_text"] = cleaned_val if cleaned_val else (cached_val or orig_text)
 
     # 4. Diagramação e Inpainting
     print(f"[*] Iniciando limpeza profissional de balões e diagramação...")
@@ -1600,6 +1755,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
         # 4.1 Limpar balões com algoritmo seguro
         for b in bubbles:
+            for r_box in b.get("raw_boxes", [b["box"]]):
+                clean_speech_bubble(cleaned, r_box)
             clean_speech_bubble(cleaned, b["box"])
                 
         # 4.2 Desenhar texto traduzido com Comic Sans MS Bold
@@ -1726,7 +1883,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             
             for line_idx, line in enumerate(lines):
                 ly = start_y + (line_idx * line_h)
-                draw.text((safe_cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=stroke_w, stroke_fill=(255, 255, 255), anchor="mm")
+                draw_manga_text_line(draw, (safe_cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=stroke_w, stroke_fill=(255, 255, 255), anchor="mm")
                 
         out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
         img_pil.save(out_file, quality=95)

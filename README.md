@@ -8,6 +8,9 @@ date_added: "2026-09-21"
 
 # Manga Translator & Scanlation Pipeline (PT-BR) 🐬
 
+[![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
+[![Abrir Servidor IA no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Dolphin_Server.ipynb)
+
 Pipeline profissional de scanlation para processar mangás e doujinshis estrangeiros, extrair textos com OCR (RapidOCR ou Mokuro), traduzir com **IA sem censura (Dolphin 2.9)**, limpar cirurgicamente os balões de diálogo e diagramar em português com qualidade editorial.
 
 ---

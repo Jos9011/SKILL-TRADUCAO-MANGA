@@ -1702,10 +1702,14 @@ def detect_manga_language_and_engine(manga_dir):
         full_sample_text = " ".join([box[1] for box in res])
         korean_count = len(re.findall(r'[\uac00-\ud7af]', full_sample_text))
         japanese_count = len(re.findall(r'[\u3040-\u30ff]', full_sample_text))
+        chinese_count = len(re.findall(r'[\u4e00-\u9fff]', full_sample_text))
         latin_count = len(re.findall(r'[a-zA-Z]', full_sample_text))
 
         if korean_count > 0:
             return "korean"
+        if japanese_count == 0 and chinese_count >= 3:
+            print("[+] Obra identificada como CHINÊS (Hanzi) sem kana -> Usando RapidOCR Universal.")
+            return "rapidocr"
         if latin_count > 10 and latin_count > (japanese_count * 2):
             return "rapidocr"
         return "mokuro"

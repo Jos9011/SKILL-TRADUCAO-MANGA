@@ -54,12 +54,63 @@ except Exception:
 BASE_OUTPUT_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
+
+def load_config(cli_args=None):
+    """Carrega as configurações com prioridade: CLI > Variáveis de Ambiente > config.json > Padrões."""
+    cfg = {
+        "provider": "auto",
+        "openrouter_api_key": "",
+        "openrouter_model": "cognitivecomputations/dolphin-mistral-24b-venice-edition",
+        "ollama_host": "http://localhost:11434",
+        "ollama_model": "dolphin-llama3:latest",
+        "temperature": 0.0
+    }
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                user_cfg = json.load(f)
+                cfg.update(user_cfg)
+        except Exception as e:
+            print(f"[*] Aviso ao ler config.json: {e}")
+
+    # Variáveis de ambiente
+    if os.environ.get("OPENROUTER_API_KEY"):
+        cfg["openrouter_api_key"] = os.environ.get("OPENROUTER_API_KEY")
+    if os.environ.get("OLLAMA_HOST"):
+        cfg["ollama_host"] = os.environ.get("OLLAMA_HOST")
+    if os.environ.get("TRANSLATE_PROVIDER"):
+        cfg["provider"] = os.environ.get("TRANSLATE_PROVIDER")
+    if os.environ.get("MANGA_TRANSLATE_MODEL"):
+        cfg["ollama_model"] = os.environ.get("MANGA_TRANSLATE_MODEL")
+        cfg["openrouter_model"] = os.environ.get("MANGA_TRANSLATE_MODEL")
+
+    # Argumentos CLI
+    if cli_args:
+        if cli_args.get("provider"):
+            cfg["provider"] = cli_args["provider"]
+        if cli_args.get("model"):
+            cfg["ollama_model"] = cli_args["model"]
+            cfg["openrouter_model"] = cli_args["model"]
+        if cli_args.get("host"):
+            cfg["ollama_host"] = cli_args["host"]
+        if cli_args.get("key"):
+            cfg["openrouter_api_key"] = cli_args["key"]
+
+    return cfg
+
 FONT_DIR = os.path.join(SCRIPT_DIR, "fonts")
+ANIME_ACE_FONT = os.path.join(FONT_DIR, "animeace2_reg.ttf")
+KOMIKA_FONT = os.path.join(FONT_DIR, "Komika_Axis.ttf")
+ANIME_ACE_ITALIC = os.path.join(FONT_DIR, "animeace_i.ttf")
+MANGA_TEMPLE_ITALIC = os.path.join(FONT_DIR, "mangati.ttf")
+SHOUT_FONT = os.path.join(FONT_DIR, "shout.ttf")
 DIALOGUE_FONT = os.path.join(FONT_DIR, "dialogue.ttf")
 DIALOGUE_ITALIC_FONT = os.path.join(FONT_DIR, "dialogue_italic.ttf")
-SHOUT_FONT = os.path.join(FONT_DIR, "shout.ttf")
 
 FONT_CANDIDATES = [
+    ANIME_ACE_FONT,
+    KOMIKA_FONT,
     DIALOGUE_FONT,
     r"C:\Windows\Fonts\comicbd.ttf",   # Comic Sans MS Bold
     r"C:\Windows\Fonts\segoeuib.ttf",  # Segoe UI Bold
@@ -73,24 +124,34 @@ def get_best_font():
     return "arial.ttf"
 
 def select_font_for_bubble(text, is_shout=False, is_thought=False):
-    """Seleciona dinamicamente a melhor fonte tipográfica de scanlation para o balão."""
+    """Seleciona dinamicamente a melhor fonte tipográfica de scanlation profissional para o balão."""
     clean = text.strip()
     
     # 1. Gritos, exclamações enfáticas ou onomatopeias
     if is_shout or clean.endswith('!!') or clean.endswith('!?') or clean.endswith('!?!') or (clean.endswith('!') and len(clean.split()) <= 4 and clean.isupper()):
         if os.path.exists(SHOUT_FONT):
             return SHOUT_FONT
+        if os.path.exists(KOMIKA_FONT):
+            return KOMIKA_FONT
         if os.path.exists(r"C:\Windows\Fonts\impact.ttf"):
             return r"C:\Windows\Fonts\impact.ttf"
             
-    # 2. Pensamentos, sussurros, notas e diálogos suaves
+    # 2. Pensamentos, sussurros, notas e diálogos suaves (itálico)
     if is_thought or (clean.startswith('(') and clean.endswith(')')) or '~' in clean or clean.startswith('*'):
+        if os.path.exists(ANIME_ACE_ITALIC):
+            return ANIME_ACE_ITALIC
+        if os.path.exists(MANGA_TEMPLE_ITALIC):
+            return MANGA_TEMPLE_ITALIC
         if os.path.exists(DIALOGUE_ITALIC_FONT):
             return DIALOGUE_ITALIC_FONT
         if os.path.exists(r"C:\Windows\Fonts\comici.ttf"):
             return r"C:\Windows\Fonts\comici.ttf"
             
-    # 3. Diálogo padrão de scanlation
+    # 3. Diálogo padrão de scanlation profissional (Anime Ace 2.0 BB -> Komika Axis -> Comic Neue)
+    if os.path.exists(ANIME_ACE_FONT):
+        return ANIME_ACE_FONT
+    if os.path.exists(KOMIKA_FONT):
+        return KOMIKA_FONT
     if os.path.exists(DIALOGUE_FONT):
         return DIALOGUE_FONT
         
@@ -618,7 +679,7 @@ def clean_speech_bubble(img, box):
         img[y0:y1, x0:x1] = cv2.inpaint(roi, mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
 
 def wrap_text_to_width(draw, text, font, max_w):
-    """Quebra texto por palavras usando largura em pixels real da fonte (sem deformações)."""
+    """Quebra texto por palavras usando largura em pixels real da fonte com balanceamento anti-viúvas/órfãos."""
     paragraphs = text.split('\n')
     all_lines = []
     for p in paragraphs:
@@ -640,29 +701,46 @@ def wrap_text_to_width(draw, text, font, max_w):
                     curr = []
         if curr:
             all_lines.append(' '.join(curr))
+            
+    # Rebalanceamento anti-órfão: evita que a última linha fique com 1 única palavra solta de até 5 letras
+    if len(all_lines) >= 2:
+        last_words = all_lines[-1].split()
+        prev_words = all_lines[-2].split()
+        if len(last_words) == 1 and len(last_words[0]) <= 5 and len(prev_words) >= 3:
+            word_to_shift = prev_words[-1]
+            cand_prev = ' '.join(prev_words[:-1])
+            cand_last = word_to_shift + ' ' + all_lines[-1]
+            bb_last = draw.textbbox((0, 0), cand_last, font=font)
+            if (bb_last[2] - bb_last[0]) <= max_w:
+                all_lines[-2] = cand_prev
+                all_lines[-1] = cand_last
+                
     return all_lines
 
 def wrap_text_diamond(draw, text, font, max_w, max_h):
-    """Quebra texto no formato de diamante/elipse típico dos balões de mangá com suporte a hifenização PT-BR."""
+    """Quebra texto no formato de diamante/elipse típico dos balões de mangá com suporte a hifenização PT-BR e anti-órfãos."""
     words = text.split()
     if not words:
         return []
         
     line_bbox = draw.textbbox((0, 0), "Ag", font=font)
-    line_h = (line_bbox[3] - line_bbox[1]) * 1.20
+    line_h = (line_bbox[3] - line_bbox[1]) * 1.15
     max_k = max(1, int(max_h / line_h))
     
     single_bbox = draw.textbbox((0, 0), text, font=font)
-    if (single_bbox[2] - single_bbox[0]) <= max_w * 0.90:
+    if (single_bbox[2] - single_bbox[0]) <= max_w:
         return [text]
 
     def get_allowed_w(li, total_lines):
         if total_lines <= 1:
             return max_w
-        # y varia de -0.85 a +0.85 (curvatura da elipse)
+        # y varia de -0.85 a +0.85 (curvatura da elipse do balão)
         y = ((li + 0.5) - total_lines / 2.0) / (total_lines / 2.0) * 0.85
-        factor = math.sqrt(max(0.20, 1.0 - y * y))
+        factor = math.sqrt(max(0.25, 1.0 - y * y))
         return max_w * factor
+
+    best_lines = None
+    best_penalty = float('inf')
 
     # Testa números de linhas de 2 até max_k
     for k in range(2, max_k + 1):
@@ -670,6 +748,7 @@ def wrap_text_diamond(draw, text, font, max_w, max_h):
         w_idx = 0
         possible = True
         words_copy = list(words)
+        
         for li in range(k):
             allowed_w = get_allowed_w(li, k)
             curr = []
@@ -681,94 +760,202 @@ def wrap_text_diamond(draw, text, font, max_w, max_h):
                     curr.append(w)
                     w_idx += 1
                 else:
-                    # Tenta hifenização silábica se a palavra for longa e faltar pouco para caber
+                    # Tenta hifenização silábica segura (anti-órfão: ambas as partes com >= 3 caracteres)
                     if _pyphen_dic and len(w) >= 7 and not curr:
                         hyphenated = _pyphen_dic.inserted(w).split('-')
                         if len(hyphenated) > 1:
                             part1 = ""
                             p_idx = 0
                             while p_idx < len(hyphenated) - 1:
-                                test_part = part1 + hyphenated[p_idx]
-                                if (draw.textbbox((0, 0), test_part + "-", font=font)[2] - draw.textbbox((0, 0), test_part + "-", font=font)[0]) <= allowed_w:
-                                    part1 = test_part
-                                    p_idx += 1
+                                candidate = part1 + hyphenated[p_idx]
+                                rem = "".join(hyphenated[p_idx + 1:])
+                                if len(candidate) >= 3 and len(rem) >= 3:
+                                    bb = draw.textbbox((0, 0), candidate + "-", font=font)
+                                    if (bb[2] - bb[0]) <= allowed_w:
+                                        part1 = candidate
+                                        p_idx += 1
+                                    else:
+                                        break
                                 else:
-                                    break
+                                    p_idx += 1
                             if part1:
                                 part2 = "".join(hyphenated[p_idx:])
-                                curr.append(part1 + "-")
-                                words_copy[w_idx] = part2
-                                continue
+                                if len(part2) >= 3:
+                                    curr.append(part1 + "-")
+                                    words_copy[w_idx] = part2
+                                    continue
                     break
             if curr:
                 lines.append(' '.join(curr))
             elif w_idx < len(words_copy):
                 possible = False
                 break
+                
         if possible and w_idx == len(words_copy):
+            # Verifica se todas as linhas cabem na largura útil
             all_fit = True
-            for li, l_str in enumerate(lines):
+            for l_str in lines:
                 bb = draw.textbbox((0, 0), l_str, font=font)
                 if (bb[2] - bb[0]) > max_w:
                     all_fit = False
                     break
             if all_fit:
-                return lines
+                penalty = 0
+                last_words = lines[-1].split()
+                if len(last_words) == 1 and len(lines) > 1:
+                    if len(last_words[0]) <= 3:
+                        penalty += 50
+                    else:
+                        penalty += 15
+                if penalty < best_penalty:
+                    best_penalty = penalty
+                    best_lines = lines
+                    if penalty == 0:
+                        return lines
+                        
+    if best_lines:
+        return best_lines
                 
     # Fallback para quebra proporcional linear se diamond estrito não encaixar
     return wrap_text_to_width(draw, text, font, max_w)
 
 def fit_text_to_box(draw, text, max_w, max_h, font_path):
-    """Ajusta proporcionalmente o tamanho da fonte e quebras de linha para preencher o balão esteticamente."""
-    # Sanitiza pontuação asiática, números de largura total e macrons para evitar retângulos 'tofu'
+    """Ajusta proporcionalmente o tamanho da fonte e quebras de linha com 18% de breathing room e leading de scanlation."""
     text = sanitize_lettering_text(text).strip()
     words = text.split()
     if not words:
         return ImageFont.truetype(font_path, 12), []
         
-    ideal_max = int(min(max_h * 0.45, max_w * 0.35, 68))
-    max_font_size = max(24, min(ideal_max, 68))
+    # Margens de segurança de scanlation (18% horizontal e 20% vertical de breathing room)
+    usable_w = max(24, int(max_w * 0.82))
+    usable_h = max(24, int(max_h * 0.80))
+
+    ideal_max = int(min(usable_h * 0.45, usable_w * 0.35, 56))
+    max_font_size = max(18, min(ideal_max, 56))
     
-    for font_size in range(max_font_size, 9, -2):
+    # Busca tamanho ideal com passo 1 para ajuste contínuo suave
+    for font_size in range(max_font_size, 7, -1):
         font = ImageFont.truetype(font_path, font_size)
-        line_h = (draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]) * 1.22
-        max_possible_lines = int(max_h / line_h)
+        line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+        line_h = (line_bbox[3] - line_bbox[1]) * 1.15
+        max_possible_lines = int(usable_h / line_h)
         if max_possible_lines < 1:
             continue
             
-        candidate_lines = wrap_text_diamond(draw, text, font, max_w, max_h)
+        candidate_lines = wrap_text_diamond(draw, text, font, usable_w, usable_h)
         if candidate_lines and len(candidate_lines) <= max_possible_lines:
-            return font, candidate_lines
+            # Verifica se todas as linhas respeitam estritamente a largura útil
+            if all((draw.textbbox((0, 0), l, font=font)[2] - draw.textbbox((0, 0), l, font=font)[0]) <= usable_w for l in candidate_lines):
+                return font, candidate_lines
             
-    # Fallback dinâmico usando tamanho 10 e wrapping proporcional
-    font = ImageFont.truetype(font_path, 10)
-    fallback_lines = wrap_text_to_width(draw, text, font, max_w)
-    return font, fallback_lines
+    # Fallback dinâmico linear se o diamante for restritivo demais para balões estreitos
+    for fallback_size in range(12, 7, -1):
+        font = ImageFont.truetype(font_path, fallback_size)
+        fallback_lines = wrap_text_to_width(draw, text, font, usable_w)
+        line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+        line_h = (line_bbox[3] - line_bbox[1]) * 1.15
+        if len(fallback_lines) * line_h <= usable_h:
+            return font, fallback_lines
 
-def check_ollama_available(prefer_uncensored=False):
-    """Verifica se o servidor Ollama local está ativo e seleciona o modelo ideal priorizando fluência em PT-BR."""
+    font = ImageFont.truetype(font_path, 8)
+    return font, wrap_text_to_width(draw, text, font, usable_w)
+
+def check_openrouter_available(api_key, model_name):
+    """Verifica se a chave OpenRouter é válida."""
+    if not api_key or not api_key.strip():
+        return False
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags")
-        with urllib.request.urlopen(req, timeout=3) as response:
+        url = "https://openrouter.ai/api/v1/auth/key"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key.strip()}",
+                "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+                "X-Title": "Manga Translator PT-BR"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=6) as response:
+            if response.status == 200:
+                return True
+    except Exception:
+        try:
+            test_req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=json.dumps({
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5
+                }).encode('utf-8'),
+                headers={
+                    "Authorization": f"Bearer {api_key.strip()}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+                    "X-Title": "Manga Translator PT-BR"
+                }
+            )
+            with urllib.request.urlopen(test_req, timeout=10) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            return False
+    return False
+
+def query_openrouter_chat(messages, model_name, api_key, temperature=0.0, max_tokens=1024, timeout=75):
+    """Executa requisição à API do OpenRouter."""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode('utf-8'),
+        headers={
+            "Authorization": f"Bearer {api_key.strip()}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+            "X-Title": "Manga Translator PT-BR"
+        }
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        res = json.loads(resp.read().decode('utf-8'))
+        return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434", custom_model=None):
+    """Verifica se o servidor Ollama (local ou remoto) está ativo e seleciona o modelo ideal priorizando Dolphin 2.9 em modo sem censura."""
+    try:
+        host = host.rstrip('/')
+        req = urllib.request.Request(f"{host}/api/tags")
+        with urllib.request.urlopen(req, timeout=5) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
                 models = [m["name"] for m in data.get("models", [])]
                 if models:
-                    # Modelos multilíngues de alta qualidade comprovada em Português
-                    best_pt_models = ["llama3.1", "qwen2.5", "mistral", "gemma2", "llama3.2", "llama3"]
                     selected_model = None
-                    
-                    # 1. Procura primeiro modelos limpos oficiais (evita viés de chatbot/alucinação de 'dolphin')
-                    for pref in best_pt_models:
+
+                    # 1. Se foi pedido um modelo específico na config
+                    if custom_model:
                         for m in models:
-                            if pref in m.lower() and "dolphin" not in m.lower():
+                            if custom_model.lower() in m.lower():
                                 selected_model = m
                                 break
-                        if selected_model:
-                            break
-                            
-                    # 2. Se não encontrar sem dolphin, busca qualquer um que coincida
+
+                    # 2. Se prioriza sem censura, busca especificamente variantes do Dolphin 2.9
+                    if not selected_model and prefer_uncensored:
+                        dolphin_candidates = ["dolphin-llama3", "dolphin-2.9", "dolphin", "uncensored"]
+                        for pref in dolphin_candidates:
+                            for m in models:
+                                if pref in m.lower():
+                                    selected_model = m
+                                    break
+                            if selected_model:
+                                break
+
+                    # 3. Modelos multilíngues de alta qualidade para PT-BR
                     if not selected_model:
+                        best_pt_models = ["dolphin-llama3", "dolphin", "qwen2.5", "llama3.1", "mistral", "gemma2", "llama3.2", "llama3"]
                         for pref in best_pt_models:
                             for m in models:
                                 if pref in m.lower():
@@ -776,15 +963,15 @@ def check_ollama_available(prefer_uncensored=False):
                                     break
                             if selected_model:
                                 break
-                                
+
                     if not selected_model:
                         selected_model = models[0]
-                        
+
                     # Executa aquecimento (warm-up) e ativa keep_alive: 60m para pré-carregar o modelo na VRAM
-                    print(f"[*] Pré-carregando modelo local '{selected_model}' na VRAM (keep_alive: 60m)...")
+                    print(f"[*] Conectado ao Ollama em '{host}'. Modelo selecionado: '{selected_model}'")
                     try:
                         warm_req = urllib.request.Request(
-                            "http://localhost:11434/api/chat",
+                            f"{host}/api/chat",
                             data=json.dumps({
                                 "model": selected_model,
                                 "messages": [{"role": "user", "content": "oi"}],
@@ -795,14 +982,64 @@ def check_ollama_available(prefer_uncensored=False):
                         )
                         with urllib.request.urlopen(warm_req, timeout=120) as warm_resp:
                             pass
-                        print(f"[+] Modelo '{selected_model}' ativo na memória com sucesso!")
+                        print(f"[+] Modelo '{selected_model}' ativo com sucesso!")
                     except Exception as we:
                         print(f"[*] Aviso no warm-up do Ollama: {we}")
-                        
+
                     return True, selected_model
         return False, None
     except Exception:
         return False, None
+
+def query_ollama_chat(messages, model_name, host="http://localhost:11434", temperature=0.0, num_predict=1024, timeout=75):
+    """Executa requisição à API do Ollama."""
+    host = host.rstrip('/')
+    url = f"{host}/api/chat"
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "stream": False,
+        "keep_alive": "60m",
+        "options": {
+            "temperature": temperature,
+            "num_predict": num_predict
+        }
+    }
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        res = json.loads(resp.read().decode('utf-8'))
+        return res.get("message", {}).get("content", "").strip()
+
+def init_ai_translation_engine(cfg, is_adult=True):
+    """
+    Inicializa o melhor motor de IA disponível com base em config.json.
+    Retorna: (engine_type, model_name, engine_opts)
+    engine_type pode ser: 'openrouter', 'ollama', ou None (fallback)
+    """
+    provider = cfg.get("provider", "auto").lower()
+
+    # 1. OpenRouter (100% Nuvem - Sem usar recursos do PC)
+    if provider in ("openrouter", "cloud") or (provider == "auto" and cfg.get("openrouter_api_key")):
+        key = cfg.get("openrouter_api_key", "").strip()
+        model = cfg.get("openrouter_model", "cognitivecomputations/dolphin-mistral-24b-venice-edition")
+        if key:
+            print(f"[*] Verificando conexão com OpenRouter Cloud (Modelo: {model})...")
+            if check_openrouter_available(key, model):
+                return "openrouter", model, {"api_key": key, "temperature": cfg.get("temperature", 0.0)}
+            else:
+                print(f"[!] Chave OpenRouter inválida ou indisponível. Tentando próximo motor...")
+        elif provider in ("openrouter", "cloud"):
+            print(f"[!] Erro: Provedor configurado como 'openrouter', mas 'openrouter_api_key' está vazia em config.json.")
+
+    # 2. Ollama (Remoto na Nuvem / Colab ou Local)
+    host = cfg.get("ollama_host", "http://localhost:11434")
+    model_pref = cfg.get("ollama_model", "dolphin-llama3:latest")
+    print(f"[*] Verificando conexão com Ollama em '{host}'...")
+    ollama_ok, selected_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=model_pref)
+    if ollama_ok:
+        return "ollama", selected_model, {"host": host, "temperature": cfg.get("temperature", 0.0)}
+
+    return None, None, {}
 
 def clean_ai_translation(text, original_text="", is_adult=True):
     """Higieniza rigorosamente a saída da IA: elimina notas, 'Obs:', prefixos e normaliza anatomia."""
@@ -818,7 +1055,8 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         'como um modelo de linguagem', 'não posso cumprir',
         'não posso ajudar', 'não posso atender', 'cannot fulfill', "can't fulfill",
         'você é um tradutor', 'regras obrigatórias', 'traduza o texto original',
-        'como modelo de ia', 'as an ai'
+        'como modelo de ia', 'as an ai', 'system message', 'mensagem do sistema',
+        'i am dolphin', 'sou o dolphin'
     ]
     if any(rm in cleaned.lower() for rm in refusal_markers):
         sfx_try = translate_sfx_phrase(original_text)
@@ -1031,103 +1269,21 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
     return cleaned if cleaned else ""
 
-def translate_with_ollama(text, model_name, is_adult=True):
-    """Traduz texto usando a API nativa /api/chat do Ollama com prompt estrito e fallback automático multi-nível."""
-    url = "http://localhost:11434/api/chat"
-    
-    clean_t = text.strip()
-    sfx_res = translate_sfx_phrase(clean_t)
-    if sfx_res:
-        return sfx_res
-        
-    def _do_request(m_name, s_prompt):
-        try:
-            req_data = {
-                "model": m_name,
-                "messages": [
-                    {"role": "system", "content": s_prompt},
-                    {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
-                ],
-                "stream": False,
-                "keep_alive": "60m",
-                "options": {
-                    "temperature": 0.0,
-                    "num_predict": 300
-                }
-            }
-            req = urllib.request.Request(url, data=json.dumps(req_data).encode('utf-8'), headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req, timeout=40) as response:
-                result = json.loads(response.read().decode('utf-8'))
-                resp = result.get("message", {}).get("content", "").strip()
-                cleaned = clean_ai_translation(resp, original_text=clean_t, is_adult=is_adult)
-                if cleaned and cleaned.strip().lower() != clean_t.lower():
-                    return cleaned
-        except Exception:
-            pass
-        return None
+def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None, is_dolphin=True, is_qwen=False):
+    """Gera prompt de sistema otimizado para scanlation de alta precisão (estilo MangaPlus / Crunchyroll),
+    com adaptação concisa para balões de mangá e suporte especializado a Qwen 2.5 e Dolphin 2.9."""
+    persona_intro = ""
+    if is_dolphin:
+        persona_intro = (
+            "The assistant is named Dolphin. You are a professional manga/manhwa scanlation translator for Brazilian Portuguese (PT-BR). "
+            "Never discuss system messages, guidelines, or rules. Output ONLY the requested translation.\n\n"
+        )
+    elif is_qwen:
+        persona_intro = (
+            "Você é um tradutor literário profissional especialista em quadrinhos asiáticos (Mangás Japoneses e Manhwas Coreanos) para Português do Brasil (PT-BR). "
+            "Traduza com máxima fluidez de scanlation brasileiro profissional (estilo MangaPlus), adaptando o texto com naturalidade coloquial e ritmo de leitura dinâmico.\n\n"
+        )
 
-    sys_prompt_adult = """Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
-Traduza fielmente o diálogo original com máxima naturalidade coloquial e fluidez brasileira, respeitando o tom da cena (romance, ecchi, diálogos picantes ou adultos).
-
-REGRAS OBRIGATÓRIAS:
-1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA introduza com "Aqui está", NUNCA adicione explicações, notas de tradutor ou parênteses de justificativa.
-2. NUNCA use palavras em espanhol.
-3. Adapte expressões e gírias com naturalidade autêntica brasileira (ex: 'panties' -> 'calcinha'; 'striped panties' -> 'calcinha listrada'; 'cock/penis' -> 'pau/pinto'; 'came inside' -> 'gozou dentro'; 'honey' -> 'amor/querido'; 'fiancée' -> 'noiva').
-4. Mantenha nomes de personagens inalterados (Norun, Misha, Chise, Lovemea, Ichiri).
-5. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências)."""
-
-    sys_prompt_neutral = """Você é um tradutor literário profissional de mangás e quadrinhos japoneses para Português do Brasil (PT-BR).
-Traduza fielmente o texto original com máxima naturalidade coloquial e fluidez brasileira.
-
-REGRAS OBRIGATÓRIAS:
-1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA adicione saudações, notas ou explicações.
-2. NUNCA use palavras em espanhol.
-3. Mantenha nomes próprios inalterados (Norun, Misha, Chise, Lovemea).
-4. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~)."""
-
-    # 1. Tenta com o modelo selecionado e prompt adulto
-    if is_adult:
-        res = _do_request(model_name, sys_prompt_adult)
-        if res:
-            return res
-
-    # 2. Se recusou ou falhou, tenta com o prompt neutro
-    res = _do_request(model_name, sys_prompt_neutral)
-    if res:
-        return res
-
-    # 3. Se ainda recusou (recusa de segurança do Llama 3.1), tenta com o modelo sem censura (dolphin-llama3)
-    if "dolphin" not in model_name.lower():
-        res = _do_request("dolphin-llama3:latest", sys_prompt_neutral)
-        if res:
-            return res
-
-    return None
-
-def translate_page_dialogue_with_ollama(bubbles_to_trans, model_name, is_adult=True, glossary=None):
-    """Traduz todas as falas de uma página em lote com Ollama mantendo coerência narrativa e de personagens."""
-    if not bubbles_to_trans:
-        return {}
-        
-    url = "http://localhost:11434/api/chat"
-    dialogue_map = {}
-    
-    # 1. Resolução imediata de SFX/Onomatopeias sem gastar chamada à IA
-    results = {}
-    needed = {}
-    for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
-        key = str(idx + 1)
-        sfx_res = translate_sfx_phrase(orig_text)
-        if sfx_res:
-            results[orig_text] = sfx_res
-        else:
-            needed[key] = orig_text
-            dialogue_map[key] = orig_text
-            
-    if not needed:
-        return results
-
-    # 2. Monta prompt com glossário da obra se disponível
     glossary_rules = ""
     if glossary:
         chars = glossary.get("characters", {})
@@ -1139,75 +1295,188 @@ def translate_page_dialogue_with_ollama(bubbles_to_trans, model_name, is_adult=T
             for k, v in terms.items():
                 glossary_rules += f"- Termo '{k}': traduzir/adaptar como '{v}'\n"
 
-    adult_instructions = ""
-    if is_adult:
-        adult_instructions = (
-            "Traduza mantendo o tom adulto (+18), sem censura e com gírias brasileiras autênticas "
-            "(ex: 'panties' -> 'calcinha', 'cock' -> 'pau/pinto', 'came inside' -> 'gozou dentro', 'tip' -> 'ponta/glande'). "
-        )
+    concision_rule = (
+        "PRINCÍPIO DE SCANLATION - ECONOMIA DE TEXTO E CABIMENTO NO BALÃO:\n"
+        "- Balões de quadrinhos são pequenos. Evite frases excessivamente longas, prolixas ou literais que transbordem o espaço do balão.\n"
+        "- Prefira diálogos ágeis, naturais e concisos em português brasileiro coloquial (ex: use 'O que cê tá fazendo?' em vez de 'O que é que você está fazendo aqui agora?', 'Não pode ser!' em vez de 'Isso de maneira alguma é possível!').\n"
+        "- Elimine rodeios e palavras desnecessárias sem perder o significado original e a carga emocional da cena.\n"
+        "- Mantenha a pontuação expressiva de mangá (!, ?, ..., ~)."
+    )
 
-    sys_prompt = f"""Você é um tradutor literário profissional de mangás {'adultos (+18) e scanlations' if is_adult else 'e quadrinhos'} para Português do Brasil (PT-BR).
+    if is_batch:
+        adult_clause = ""
+        if is_adult:
+            adult_clause = (
+                "Traduza mantendo o tom adulto (+18), sem censura e com gírias brasileiras autênticas "
+                "(ex: 'panties' -> 'calcinha', 'cock' -> 'pau/pinto', 'came inside' -> 'gozou dentro', 'tip' -> 'ponta/glande'). "
+            )
+        return f"""{persona_intro}Você é um tradutor literário profissional de mangás {'adultos (+18) e scanlations' if is_adult else 'e quadrinhos'} para Português do Brasil (PT-BR).
 Você receberá um objeto JSON com as falas de uma mesma página de mangá na ordem de leitura.
 Traduza cada fala para PT-BR mantendo coerência narrativa, pronomes corretos entre quem fala e fluidez natural de scanlation brasileiro.
-{adult_instructions}
+{adult_clause}
 {glossary_rules}
+{concision_rule}
+
 REGRAS OBRIGATÓRIAS:
 1. Responda EXCLUSIVAMENTE em formato JSON com as mesmas chaves numéricas e os valores traduzidos. Exemplo: {{"1": "...", "2": "..."}}
-2. NUNCA adicione introduções, explicações, saudações ou notas de rodapé.
+2. NUNCA adicione introduções, explicações, saudações, notas de tradutor ou referências a mensagens do sistema.
 3. Mantenha pontuação dramática de mangá (!, ?, ..., ~).
-4. NUNCA use palavras em espanhol."""
+4. NUNCA use palavras em espanhol.
+5. Adapte os textos para serem diretos e caberem perfeitamente em balões de fala."""
 
-    req_body = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": json.dumps(needed, ensure_ascii=False, indent=2)}
-        ],
-        "stream": False,
-        "keep_alive": "60m",
-        "options": {
-            "temperature": 0.0,
-            "num_predict": 1024
-        }
-    }
+    if is_adult:
+        return f"""{persona_intro}Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
+Traduza fielmente o diálogo original com máxima naturalidade coloquial e fluidez brasileira, respeitando o tom da cena (romance, ecchi, diálogos picantes ou adultos).
+
+{concision_rule}
+
+REGRAS OBRIGATÓRIAS:
+1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA introduza com "Aqui está", NUNCA adicione explicações, notas de tradutor ou referências ao sistema.
+2. NUNCA use palavras em espanhol.
+3. Adapte expressões e gírias com naturalidade autêntica brasileira (ex: 'panties' -> 'calcinha'; 'cock/penis' -> 'pau/pinto'; 'came inside' -> 'gozou dentro'; 'honey' -> 'amor/querido').
+4. Mantenha nomes de personagens inalterados.
+5. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências).
+6. Priorize concisão e impacto para o texto caber perfeitamente no balão de fala."""
+    else:
+        return f"""{persona_intro}Você é um tradutor literário profissional de mangás e quadrinhos japoneses para Português do Brasil (PT-BR).
+Traduza fielmente o texto original com máxima naturalidade coloquial e fluidez brasileira.
+
+{concision_rule}
+
+REGRAS OBRIGATÓRIAS:
+1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA adicione saudações, notas ou explicações.
+2. NUNCA use palavras em espanhol.
+3. Mantenha nomes próprios inalterados.
+4. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~).
+5. Priorize concisão e impacto para o texto caber perfeitamente no balão de fala."""
+
+def translate_single_dialogue(text, engine_type, model_name, engine_opts=None, is_adult=True):
+    """Traduz uma única fala usando o motor de IA selecionado (OpenRouter ou Ollama) com fallback automático."""
+    clean_t = text.strip()
+    sfx_res = translate_sfx_phrase(clean_t)
+    if sfx_res:
+        return sfx_res
+
+    if not engine_type:
+        return None
+
+    engine_opts = engine_opts or {}
+    is_dolphin = "dolphin" in model_name.lower()
+    is_qwen = "qwen" in model_name.lower()
     
+    def _do_call(s_prompt):
+        try:
+            messages = [
+                {"role": "system", "content": s_prompt},
+                {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
+            ]
+            temp = engine_opts.get("temperature", 0.0)
+            if engine_type == "openrouter":
+                raw_resp = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=300)
+            elif engine_type == "ollama":
+                raw_resp = query_ollama_chat(messages, model_name, host=engine_opts.get("host", "http://localhost:11434"), temperature=temp, num_predict=300)
+            else:
+                return None
+                
+            cleaned = clean_ai_translation(raw_resp, original_text=clean_t, is_adult=is_adult)
+            if cleaned and cleaned.strip().lower() != clean_t.lower():
+                return cleaned
+        except Exception:
+            pass
+        return None
+
+    # 1. Tenta prompt adulto
+    if is_adult:
+        p_adult = build_translation_system_prompt(is_adult=True, is_batch=False, is_dolphin=is_dolphin, is_qwen=is_qwen)
+        res = _do_call(p_adult)
+        if res:
+            return res
+
+    # 2. Fallback neutro
+    p_neutral = build_translation_system_prompt(is_adult=False, is_batch=False, is_dolphin=is_dolphin, is_qwen=is_qwen)
+    res = _do_call(p_neutral)
+    if res:
+        return res
+
+    return None
+
+def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_opts=None, is_adult=True, glossary=None):
+    """Traduz todas as falas de uma página em lote (JSON) com OpenRouter ou Ollama para máxima coerência narrativa."""
+    if not bubbles_to_trans:
+        return {}
+
+    engine_opts = engine_opts or {}
+    results = {}
+    needed = {}
+    dialogue_map = {}
+
+    # 1. Resolve SFX e onomatopeias primeiro
+    for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
+        key = str(idx + 1)
+        sfx_res = translate_sfx_phrase(orig_text)
+        if sfx_res:
+            results[orig_text] = sfx_res
+        else:
+            needed[key] = orig_text
+            dialogue_map[key] = orig_text
+
+    if not needed:
+        return results
+
+    if not engine_type:
+        return results
+
+    is_dolphin = "dolphin" in model_name.lower()
+    is_qwen = "qwen" in model_name.lower()
+    sys_prompt = build_translation_system_prompt(is_adult=is_adult, is_batch=True, glossary=glossary, is_dolphin=is_dolphin, is_qwen=is_qwen)
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": json.dumps(needed, ensure_ascii=False, indent=2)}
+    ]
+
+    temp = engine_opts.get("temperature", 0.0)
     try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(req_body).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}
-        )
-        with urllib.request.urlopen(req, timeout=75) as response:
-            res = json.loads(response.read().decode('utf-8'))
-            resp_content = res.get("message", {}).get("content", "").strip()
-            
-            # Extrai o bloco JSON
-            json_match = re.search(r'\{.*\}', resp_content, flags=re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group(0))
-                for k, trans in parsed.items():
-                    if k in dialogue_map:
-                        orig = dialogue_map[k]
-                        cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
-                        if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
-                            results[orig] = cleaned_trans
+        if engine_type == "openrouter":
+            resp_content = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=1024)
+        elif engine_type == "ollama":
+            resp_content = query_ollama_chat(messages, model_name, host=engine_opts.get("host", "http://localhost:11434"), temperature=temp, num_predict=1024)
+        else:
+            resp_content = ""
+
+        json_match = re.search(r'\{.*\}', resp_content, flags=re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group(0))
+            for k, trans in parsed.items():
+                if k in dialogue_map:
+                    orig = dialogue_map[k]
+                    cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                    if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
+                        results[orig] = cleaned_trans
     except Exception:
         pass
 
-    # 3. Fallback para qualquer fala que não tenha sido traduzida pelo JSON ou tenha sido recusada
+    # 2. Fallback balão a balão para falas que não vieram no JSON
     for key, orig in needed.items():
         if orig not in results or results[orig].strip().lower() == orig.strip().lower():
-            fallback_res = translate_with_ollama(orig, model_name, is_adult=is_adult)
-            if fallback_res and fallback_res.strip().lower() != orig.strip().lower():
-                results[orig] = fallback_res
-                
+            fb_res = translate_single_dialogue(orig, engine_type, model_name, engine_opts=engine_opts, is_adult=is_adult)
+            if fb_res and fb_res.strip().lower() != orig.strip().lower():
+                results[orig] = fb_res
+
     return results
 
-def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
-    """Traduz lista de textos usando Ollama local (prioritário, offline, sem erros 401) com fallback para Google."""
+def translate_with_ollama(text, model_name, is_adult=True):
+    """Alias retrocompatível para tradução de fala única."""
+    return translate_single_dialogue(text, "ollama", model_name, {"host": "http://localhost:11434"}, is_adult=is_adult)
+
+def translate_page_dialogue_with_ollama(bubbles_to_trans, model_name, is_adult=True, glossary=None):
+    """Alias retrocompatível para tradução de lote por página."""
+    return translate_page_dialogue(bubbles_to_trans, "ollama", model_name, {"host": "http://localhost:11434"}, is_adult=is_adult, glossary=glossary)
+
+def translate_batch_texts(text_list, src_lang="auto", is_adult=True, engine_type=None, model_name=None, engine_opts=None):
+    """Traduz lista de textos usando o motor selecionado (OpenRouter/Ollama) com fallback para Google/MyMemory."""
     if not text_list:
         return []
-        
+
     if src_lang == "auto":
         src_lang = detect_language_from_samples(text_list)
     elif src_lang == "ja":
@@ -1220,43 +1489,30 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
         src_lang = "zh-CN"
     elif src_lang == "es":
         src_lang = "es-ES"
-        
-    print(f"[*] Idioma de origem detectado/configurado: {src_lang} -> pt-BR")
-    print(f"[*] Modo de Conteúdo: {'ADULTO / +18 (Sem Censura)' if is_adult else 'NORMAL / PADRAO'}")
-    
-    ollama_active, ollama_model = check_ollama_available(prefer_uncensored=is_adult)
-    if ollama_active:
-        print(f"[+] OLLAMA ATIVO! Motor de IA Local ({ollama_model}) selecionado para máxima privacidade e precisão.")
-    else:
-        print(f"[*] Ollama não detectado. Usando modo de tradução em nuvem (MyMemory/Google).")
-    
+
     translator = MyMemoryTranslator(source=src_lang, target='pt-BR')
     results = []
-    
+
     for i, t in enumerate(tqdm(text_list, desc="Traduzindo", unit="balão")):
         clean_t = t.strip()
         if not clean_t or clean_t in ("...", "…", "!!", "!?"):
             results.append(clean_t)
             continue
-            
-        # 0. Checagem SFX composta ou simples direta
+
         sfx_res = translate_sfx_phrase(clean_t)
         if sfx_res:
             results.append(sfx_res)
             continue
-            
+
         norm_sfx = re.sub(r'[^A-Z]', '', clean_t.upper())
         if norm_sfx in SFX_DICTIONARY:
             results.append(SFX_DICTIONARY[norm_sfx])
             continue
-            
+
         res = None
-        
-        # 1. Tenta IA Local (Ollama)
-        if ollama_active:
-            res = translate_with_ollama(clean_t, ollama_model, is_adult=is_adult)
-            
-        # 2. Fallback Nuvem
+        if engine_type:
+            res = translate_single_dialogue(clean_t, engine_type, model_name, engine_opts=engine_opts, is_adult=is_adult)
+
         if not res:
             try:
                 res = translator.translate(clean_t)
@@ -1269,12 +1525,12 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True):
                     res = GoogleTranslator(source='auto', target='pt').translate(clean_t)
                 except Exception:
                     res = clean_t
-                    
+
         if res:
             res = clean_ai_translation(res, original_text=clean_t, is_adult=is_adult)
-            
+
         results.append(res)
-                
+
     return results
 
 def create_html_reader(images_dir, title):
@@ -1370,38 +1626,96 @@ def create_html_reader(images_dir, title):
         f.write(html_content)
     print(f"[+] Leitor interativo criado: {leitor_file}")
 
-def check_needs_rapidocr(manga_dir):
-    """Analisa imagens para determinar se o conteúdo é ocidental/latino."""
+KOREAN_MODEL_DIR = os.path.join(SCRIPT_DIR, "models", "korean")
+KOREAN_REC_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_mobile_v2.0_rec_infer.onnx")
+KOREAN_DICT_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_dict.txt")
+
+def ensure_korean_ocr_model():
+    """Garante que os arquivos do modelo de OCR Coreano (ONNX + dict) estejam baixados."""
+    os.makedirs(KOREAN_MODEL_DIR, exist_ok=True)
+    if not os.path.exists(KOREAN_REC_PATH):
+        try:
+            print("[*] Baixando modelo de OCR Coreano (korean_mobile_v2.0_rec_infer.onnx)...")
+            url_m = "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv1/korean_mobile_v2.0_rec_infer.onnx"
+            req = urllib.request.Request(url_m, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=30) as resp, open(KOREAN_REC_PATH, 'wb') as f:
+                f.write(resp.read())
+        except Exception as e:
+            print(f"[!] Erro ao baixar modelo coreano: {e}")
+    if not os.path.exists(KOREAN_DICT_PATH):
+        try:
+            print("[*] Baixando dicionário de Hangul Coreano...")
+            url_d = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/dict/korean_dict.txt"
+            req = urllib.request.Request(url_d, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=15) as resp, open(KOREAN_DICT_PATH, 'wb') as f:
+                f.write(resp.read())
+        except Exception as e:
+            print(f"[!] Erro ao baixar dicionário coreano: {e}")
+    return os.path.exists(KOREAN_REC_PATH) and os.path.exists(KOREAN_DICT_PATH)
+
+def get_rapidocr_engine(is_korean=False):
+    """Instancia o RapidOCR com suporte a Coreano ou padrão universal."""
+    if is_korean:
+        if ensure_korean_ocr_model():
+            try:
+                return RapidOCR(rec_model_path=KOREAN_REC_PATH, rec_keys_path=KOREAN_DICT_PATH)
+            except Exception as e:
+                print(f"[!] Aviso ao iniciar RapidOCR Coreano: {e}")
+    return RapidOCR()
+
+def detect_manga_language_and_engine(manga_dir):
+    """
+    Detecta automaticamente o idioma da obra e seleciona o motor ideal:
+    - 'korean': Manhwa / Coreano (Hangul) -> Usa RapidOCR Coreano (NUNCA usa Mokuro)
+    - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (manga-ocr)
+    - 'rapidocr': Ocidental / Inglês / Espanhol -> Usa RapidOCR padrão
+    """
+    folder_name = os.path.basename(manga_dir)
+    # 1. Se o nome da pasta contiver Hangul coreano (ex: 두근두근 공부 시간)
+    if re.search(r'[\uac00-\ud7af]', folder_name) or "manhwa" in folder_name.lower() or "webtoon" in folder_name.lower():
+        print("[+] Idioma detectado pelo título: COREANO (Hangul) -> Usando RapidOCR Coreano.")
+        return "korean"
+
+    # 2. Se o próprio nome contiver Kana japonês
+    if re.search(r'[\u3040-\u30ff]', folder_name):
+        return "mokuro"
+
+    # 3. Analisa amostra de imagem
     try:
         import glob
         img_files = glob.glob(os.path.join(manga_dir, "*.*"))
         img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
-        if not img_files: return False
-        
-        sample_idx = min(len(img_files)//2, len(img_files)-1)
+        if not img_files:
+            return "mokuro"
+
+        sample_idx = min(len(img_files) // 2, len(img_files) - 1)
         src_path = img_files[sample_idx]
-        
+
         engine = RapidOCR()
-        try:
-            with open(src_path, "rb") as f:
-                img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-            res, _ = engine(img_cv)
-        except Exception:
-            return False
-            
-        if not res: return False
-        
-        latin_count = 0
-        asian_count = 0
-        for box in res:
-            text = box[1]
-            latin_count += len(re.findall(r'[a-zA-Z]', text))
-            asian_count += len(re.findall(r'[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', text))
-            
-        return latin_count > 10 and latin_count > (asian_count * 2)
+        with open(src_path, "rb") as f:
+            img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
+            img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        res, _ = engine(img_cv)
+        if not res:
+            return "mokuro"
+
+        full_sample_text = " ".join([box[1] for box in res])
+        korean_count = len(re.findall(r'[\uac00-\ud7af]', full_sample_text))
+        japanese_count = len(re.findall(r'[\u3040-\u30ff]', full_sample_text))
+        latin_count = len(re.findall(r'[a-zA-Z]', full_sample_text))
+
+        if korean_count > 0:
+            return "korean"
+        if latin_count > 10 and latin_count > (japanese_count * 2):
+            return "rapidocr"
+        return "mokuro"
     except Exception:
-        return False
+        return "mokuro"
+
+def check_needs_rapidocr(manga_dir):
+    """Analisa imagens para determinar se o conteúdo é ocidental/latino ou coreano."""
+    engine = detect_manga_language_and_engine(manga_dir)
+    return engine != "mokuro"
 
 def is_ocr_noise(text, score):
     """Filtra ruídos de OCR para não apagar detalhes de arte ou fundos."""
@@ -1412,29 +1726,30 @@ def is_ocr_noise(text, score):
         sc = float(score)
     except Exception:
         sc = 1.0
-    if sc < 0.45:
+    if sc < 0.42:
         return True
     has_letters = bool(re.search(r'[a-zA-Z\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', t))
     if not has_letters and sc < 0.75:
         return True
-    if len(t) <= 1 and sc < 0.65:
+    if len(t) <= 1 and sc < 0.60:
         return True
     if len(set(t)) <= 2 and len(t) >= 4 and sc < 0.75:
         return True
     return False
 
-def generate_rapidocr_json(manga_dir, output_json_path):
-    """Extrai textos usando RapidOCR com pré-processamento que realça textos coloridos (ex: rosa/vermelho)."""
+def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False):
+    """Extrai textos usando RapidOCR (com suporte a Hangul Coreano e detecção de textos coloridos)."""
     import glob
     
     img_files = glob.glob(os.path.join(manga_dir, "*.*"))
     img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
     img_files.sort(key=natural_sort_key)
     
-    engine = RapidOCR()
+    engine = get_rapidocr_engine(is_korean=is_korean)
     pages = []
     
-    print("[*] Extraindo textos usando RapidOCR (com detecção avançada de textos coloridos)...")
+    desc_msg = "OCR Coreano (Hangul)" if is_korean else "OCR Universal (RapidOCR)"
+    print(f"[*] Extraindo textos usando {desc_msg}...")
     for img_path in tqdm(img_files, desc="OCR Pages"):
         img_name = os.path.basename(img_path)
         try:
@@ -1451,7 +1766,13 @@ def generate_rapidocr_json(manga_dir, output_json_path):
         min_ch = img_cv.min(axis=2)
         min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
         
-        res, _ = engine(min_bgr)
+        # Para Coreano, combina detecção no original e no min_bgr
+        res, _ = engine(img_cv)
+        if not res or len(res) < 2:
+            res_alt, _ = engine(min_bgr)
+            if res_alt and len(res_alt) > (len(res) if res else 0):
+                res = res_alt
+
         blocks_for_grouping = []
         if res:
             for box_data in res:
@@ -1465,7 +1786,7 @@ def generate_rapidocr_json(manga_dir, output_json_path):
                 xs = [p[0] for p in coords]
                 ys = [p[1] for p in coords]
                 
-                clean_ocr_text = repair_glued_text(text, src_lang="en-US")
+                clean_ocr_text = repair_glued_text(text, src_lang="ko-KR" if is_korean else "en-US")
                 blocks_for_grouping.append({
                     "box": [min(xs), min(ys), max(xs), max(ys)],
                     "text": clean_ocr_text
@@ -1485,7 +1806,7 @@ def generate_rapidocr_json(manga_dir, output_json_path):
             "blocks": final_blocks
         })
         
-    mokuro_data = {"version": "rapidocr", "pages": pages}
+    mokuro_data = {"version": "rapidocr_korean" if is_korean else "rapidocr", "pages": pages}
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
 
@@ -1509,7 +1830,9 @@ def is_credits_page(bubbles):
     matched = sum(1 for m in markers if m in full_text)
     return matched >= 2 or any(m in full_text for m in ["discord.gg", "patreon", "recruiting", "scanlation"])
 
-def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True, config=None):
+    if config is None:
+        config = load_config()
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
         print(f"[!] Erro: Caminho inválido ({manga_dir})")
@@ -1567,16 +1890,23 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         os.makedirs(cache_dir, exist_ok=True)
 
     print(f"[*] Modo OCR selecionado: {ocr_mode.upper()}")
-    use_rapidocr = False
-    if ocr_mode == "rapidocr":
-        use_rapidocr = True
+    if ocr_mode in ("korean", "manhwa"):
+        expected_engine = "rapidocr_korean"
+    elif ocr_mode == "rapidocr":
+        expected_engine = "rapidocr"
     elif ocr_mode == "mokuro":
-        use_rapidocr = False
-    elif ocr_mode == "auto":
-        print("[*] Analisando imagens para escolher o motor OCR ideal...")
-        use_rapidocr = check_needs_rapidocr(manga_dir)
-        
-    expected_engine = "rapidocr" if use_rapidocr else "mokuro"
+        expected_engine = "mokuro"
+    else:
+        print("[*] Analisando nome da obra e imagens para escolher o motor OCR ideal...")
+        auto_lang = detect_manga_language_and_engine(manga_dir)
+        if auto_lang == "korean":
+            expected_engine = "rapidocr_korean"
+        elif auto_lang == "rapidocr":
+            expected_engine = "rapidocr"
+        else:
+            expected_engine = "mokuro"
+
+    print(f"[+] Motor OCR definido: {expected_engine.upper()}")
 
     needs_new_ocr = True
     if not force_ocr and os.path.exists(mokuro_path):
@@ -1584,23 +1914,32 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             with open(mokuro_path, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
             file_version = str(existing_data.get("version", ""))
-            is_file_rapidocr = (file_version == "rapidocr")
             pages = existing_data.get("pages", [])
             total_blocks = sum(len(p.get("blocks", [])) for p in pages)
             
-            if total_blocks > 0 and ((use_rapidocr and is_file_rapidocr) or (not use_rapidocr and not is_file_rapidocr)):
+            engine_matches = (
+                (expected_engine == "rapidocr_korean" and file_version == "rapidocr_korean") or
+                (expected_engine == "rapidocr" and file_version == "rapidocr") or
+                (expected_engine == "mokuro" and file_version not in ("rapidocr", "rapidocr_korean"))
+            )
+            
+            if total_blocks > 0 and engine_matches:
                 print(f"[+] Cache OCR ({expected_engine.upper()}) encontrado ({total_blocks} balões). Reutilizando...")
                 needs_new_ocr = False
             else:
-                os.remove(mokuro_path)
+                try: os.remove(mokuro_path)
+                except Exception: pass
                 needs_new_ocr = True
         except Exception:
             needs_new_ocr = True
 
     if needs_new_ocr:
-        if use_rapidocr:
-            print("[+] Executando RapidOCR com detecção de textos coloridos...")
-            generate_rapidocr_json(manga_dir, mokuro_path)
+        if expected_engine == "rapidocr_korean":
+            print("[+] Executando RapidOCR Coreano (Hangul)...")
+            generate_rapidocr_json(manga_dir, mokuro_path, is_korean=True)
+        elif expected_engine == "rapidocr":
+            print("[+] Executando RapidOCR Universal com detecção de textos coloridos...")
+            generate_rapidocr_json(manga_dir, mokuro_path, is_korean=False)
         else:
             print("[*] Executando motor Asiático especializado (Mokuro)...")
             import subprocess
@@ -1672,7 +2011,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             corrupt_markers = [
                 'delfim perverso', 'o gato está sentado', 'vem lá, meu amigo',
                 'estou traduzindo o texto', 'com base nas regras', 'ok, vamos traduzir',
-                'traduza o texto original', 'como uma inteligência artificial', 'regras obrigatórias'
+                'traduza o texto original', 'como uma inteligência artificial', 'regras obrigatórias',
+                'system message', 'mensagem do sistema'
             ]
             for k, v in raw_cache.items():
                 if not any(cm in v.lower() for cm in corrupt_markers):
@@ -1680,11 +2020,13 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         except Exception:
             pass
             
-    ollama_active, ollama_model = check_ollama_available(prefer_uncensored=is_adult)
-    if ollama_active:
-        print(f"[+] OLLAMA ATIVO! Motor de IA Local ({ollama_model}) com Tradução Contextual por Página.")
+    engine_type, model_name, engine_opts = init_ai_translation_engine(config, is_adult=is_adult)
+    if engine_type == "openrouter":
+        print(f"[+] MOTOR ATIVO: OpenRouter Cloud (Nuvem) -> Modelo: '{model_name}' (Sem usar recursos do PC)")
+    elif engine_type == "ollama":
+        print(f"[+] MOTOR ATIVO: Ollama ({engine_opts.get('host')}) -> Modelo: '{model_name}'")
     else:
-        print(f"[*] Modo Fallback de Tradução Nuvem ativado.")
+        print(f"[*] Modo Fallback de Tradução Nuvem ativado (MyMemory/Google).")
 
     # Traduz página por página com coerência narrativa e suporte a glossário
     for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
@@ -1699,8 +2041,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 untranslated.append((orig_text, b))
                 
         if untranslated:
-            if ollama_active:
-                batch_res = translate_page_dialogue_with_ollama(untranslated, ollama_model, is_adult=is_adult, glossary=glossary)
+            if engine_type:
+                batch_res = translate_page_dialogue(untranslated, engine_type, model_name, engine_opts=engine_opts, is_adult=is_adult, glossary=glossary)
                 for orig, trans in batch_res.items():
                     if trans and trans.strip().lower() != orig.strip().lower():
                         cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
@@ -1708,7 +2050,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             # Se ainda houver textos sem tradução, tenta o fallback
             still_untranslated = [item[0] for item in untranslated if item[0] not in cache or (cache[item[0]].strip().lower() == item[0].lower() and len(item[0].split()) > 1)]
             if still_untranslated:
-                cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult)
+                cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult, engine_type=engine_type, model_name=model_name, engine_opts=engine_opts)
                 for orig, trans in zip(still_untranslated, cloud_res):
                     if trans and trans.strip().lower() != orig.strip().lower():
                         cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
@@ -1815,6 +2157,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 
             safe_cx = cx
             safe_cy = cy
+            safe_min_x, safe_max_x = xmin, xmax
+            safe_min_y, safe_max_y = ymin, ymax
             target_w = bw
             target_h = max(bh * 1.20, 50)
 
@@ -1822,6 +2166,19 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 # Detecta limites do balão branco respeitando estritamente a partição dos vizinhos
                 gray_c = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
                 icx, icy = int(np.clip(cx, 0, w_img - 1)), int(np.clip(cy, 0, h_img - 1))
+                
+                # Se o pixel central for escuro por arte ou ruído residual, localiza pixel semente claro
+                if gray_c[icy, icx] <= 185:
+                    y_s0, y_s1 = max(0, int(ymin)), min(h_img, int(ymax))
+                    x_s0, x_s1 = max(0, int(xmin)), min(w_img, int(xmax))
+                    roi_s = gray_c[y_s0:y_s1, x_s0:x_s1]
+                    if roi_s.size > 0:
+                        bright_pts = np.argwhere(roi_s > 200)
+                        if len(bright_pts) > 0:
+                            mid_pt = bright_pts[len(bright_pts) // 2]
+                            icy = y_s0 + mid_pt[0]
+                            icx = x_s0 + mid_pt[1]
+
                 if gray_c[icy, icx] > 185:
                     b_left = icx
                     while b_left > x_min_limit and gray_c[icy, b_left] > 185: b_left -= 1
@@ -1832,51 +2189,66 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                     b_bottom = icy
                     while b_bottom < y_max_limit and gray_c[b_bottom, icx] > 185: b_bottom += 1
 
-                    pad = 8
-                    safe_min_x = max(b_left + pad, x_min_limit)
-                    safe_max_x = min(b_right - pad, x_max_limit)
-                    if safe_max_x > safe_min_x + 25:
-                        safe_cx = (safe_min_x + safe_max_x) / 2
-                        safe_w = safe_max_x - safe_min_x
-                        target_w = min(safe_w, max(bw * 1.10, 80))
-                    else:
-                        target_w = bw
+                    safe_min_x = max(b_left + 4, x_min_limit)
+                    safe_max_x = min(b_right - 4, x_max_limit)
+                    safe_min_y = max(b_top + 4, y_min_limit)
+                    safe_max_y = min(b_bottom - 4, y_max_limit)
 
-                    safe_min_y = max(b_top + pad, y_min_limit)
-                    safe_max_y = min(b_bottom - pad, y_max_limit)
-                    if safe_max_y > safe_min_y + 20:
+                    if safe_max_x > safe_min_x + 20 and safe_max_y > safe_min_y + 20:
+                        safe_cx = (safe_min_x + safe_max_x) / 2
                         safe_cy = (safe_min_y + safe_max_y) / 2
-                        target_h = max(bh * 1.20, safe_max_y - safe_min_y)
+                        target_w = safe_max_x - safe_min_x
+                        target_h = safe_max_y - safe_min_y
                     else:
+                        target_w = max(bw * 1.25, 70)
                         target_h = max(bh * 1.20, 50)
+                else:
+                    target_w = max(bw * 1.25, 70)
+                    target_h = max(bh * 1.20, 50)
             else:
-                target_w = bw
-                target_h = max(bh * 1.15, 50)
+                target_w = max(bw * 1.25, 70)
+                target_h = max(bh * 1.20, 50)
             
             # Margem de segurança na largura considerando os limites da partição e da página
             max_avail_w = min(
-                (safe_cx - x_min_limit) * 2 - 10,
-                (x_max_limit - safe_cx) * 2 - 10,
-                min(safe_cx, w_img - safe_cx) * 2 - 20
+                (safe_cx - x_min_limit) * 2 - 8,
+                (x_max_limit - safe_cx) * 2 - 8,
+                min(safe_cx, w_img - safe_cx) * 2 - 16
             )
-            if max_avail_w > 40:
+            if max_avail_w > 30:
                 target_w = min(target_w, max_avail_w)
             
-            # Seleciona a melhor fonte tipográfica para a fala (Anime/Comic Neue, Bangers/Shout ou Itálico)
+            # Seleciona a melhor fonte tipográfica profissional para a fala
             chosen_font_path = select_font_for_bubble(text)
             font, lines = fit_text_to_box(draw, text, target_w, target_h, chosen_font_path)
             if not lines:
                 continue
                 
-            line_h = (draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]) * 1.22
+            line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+            line_h = (line_bbox[3] - line_bbox[1]) * 1.15
             total_h = len(lines) * line_h
-            start_y = safe_cy - (total_h / 2) + (line_h / 2)
+            start_y = safe_cy - (total_h / 2.0) + (line_h / 2.0)
             
-            # Margem de segurança vertical para não ultrapassar topo ou base da página
-            if start_y < 15:
-                start_y = 15
-            elif start_y + total_h > h_img - 15:
-                start_y = max(15, h_img - total_h - 15)
+            # Margem de segurança de respiro (breathing room) de 10% no topo e base do balão
+            pad_y_balloon = max(4, int(target_h * 0.10))
+            balloon_top = safe_min_y + pad_y_balloon
+            balloon_bottom = safe_max_y - pad_y_balloon
+            
+            # Garante que a primeira linha nunca ultrapasse o topo do balão
+            first_line_top = start_y - (line_h / 2.0)
+            if first_line_top < balloon_top:
+                start_y += (balloon_top - first_line_top)
+                
+            # Garante que a última linha nunca ultrapasse o fundo do balão
+            last_line_bottom = start_y + (len(lines) - 1) * line_h + (line_h / 2.0)
+            if last_line_bottom > balloon_bottom:
+                start_y -= (last_line_bottom - balloon_bottom)
+                
+            # Margem global de proteção para bordas da imagem da página
+            if start_y - (line_h / 2.0) < 12:
+                start_y = 12 + (line_h / 2.0)
+            elif start_y + (len(lines) - 1) * line_h + (line_h / 2.0) > h_img - 12:
+                start_y = h_img - 12 - (len(lines) - 1) * line_h - (line_h / 2.0)
                 
             font_size = getattr(font, 'size', 20)
             stroke_w = 1 if is_white_bg else max(2, int(round(font_size * 0.08)))
@@ -1952,16 +2324,24 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     except Exception:
         pass
         
-    return True
+    return {"success": True, "output_dir": output_dir, "cbz_path": cbz_dest_path}
 
 if __name__ == "__main__":
     force_ocr_flag = False
     chosen_mode = "auto"
     is_adult_flag = True
+    cli_provider = None
+    cli_model = None
+    cli_host = None
+    cli_key = None
     
     if len(sys.argv) > 1:
         args = sys.argv[1:]
-        if "--rapidocr" in args:
+        if "--korean" in args or "--manhwa" in args:
+            chosen_mode = "korean"
+            if "--korean" in args: args.remove("--korean")
+            if "--manhwa" in args: args.remove("--manhwa")
+        elif "--rapidocr" in args:
             chosen_mode = "rapidocr"
             args.remove("--rapidocr")
         elif "--mokuro" in args:
@@ -1983,6 +2363,28 @@ if __name__ == "__main__":
             is_adult_flag = True
             if "--adult" in args: args.remove("--adult")
             if "--18" in args: args.remove("--18")
+
+        if "--openrouter" in args:
+            cli_provider = "openrouter"
+            args.remove("--openrouter")
+        elif "--ollama" in args:
+            cli_provider = "ollama"
+            args.remove("--ollama")
+
+        # Parsing de argumentos chave-valor
+        i = 0
+        while i < len(args):
+            if args[i] == "--model" and i + 1 < len(args):
+                cli_model = args[i + 1]
+                del args[i:i+2]
+            elif args[i] == "--host" and i + 1 < len(args):
+                cli_host = args[i + 1]
+                del args[i:i+2]
+            elif args[i] == "--key" and i + 1 < len(args):
+                cli_key = args[i + 1]
+                del args[i:i+2]
+            else:
+                i += 1
             
         target = " ".join(args).strip()
     else:
@@ -1991,7 +2393,15 @@ if __name__ == "__main__":
         print("=" * 60)
         target = input("Arraste ou digite o caminho da pasta do manga: ").strip()
 
+    cli_opts = {}
+    if cli_provider: cli_opts["provider"] = cli_provider
+    if cli_model: cli_opts["model"] = cli_model
+    if cli_host: cli_opts["host"] = cli_host
+    if cli_key: cli_opts["key"] = cli_key
+
+    cfg = load_config(cli_opts)
+
     if target:
-        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, is_adult=is_adult_flag)
+        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, is_adult=is_adult_flag, config=cfg)
     else:
         print("[!] Nenhuma pasta informada.")

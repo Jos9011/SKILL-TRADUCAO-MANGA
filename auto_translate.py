@@ -186,6 +186,7 @@ def sanitize_lettering_text(text):
         '–': '-',
         '〜': '~',
         '～': '~',
+        '〰': '~',
         '“': '"',
         '”': '"',
         '‘': "'",
@@ -194,13 +195,35 @@ def sanitize_lettering_text(text):
         '」': '"',
         '『': "'",
         '』': "'",
+        '【': '[',
+        '】': ']',
+        '〔': '[',
+        '〕': ']',
+        '《': '"',
+        '》': '"',
+        '〈': "'",
+        '〉': "'",
+        '：': ':',
+        '；': ';',
+        '，': ',',
+        '。': '.',
+        '！': '!',
+        '？': '?',
         '・': '·',
         '♥': '♡',
+        '●': '·',
+        '◎': '·',
+        '▼': '·',
+        '♪': '♪',
+        '°': '°',
     }
     for k, v in trans_punct.items():
         text = text.replace(k, v)
         
     return text
+
+_NOTDEF_CACHE = {}
+_FALLBACK_CACHE = {}
 
 def is_char_supported(char, font, default_font_path=None):
     try:
@@ -213,40 +236,59 @@ def is_char_supported(char, font, default_font_path=None):
     except Exception:
         return False
 
+def get_glyph_font(char, primary_font):
+    """Encontra a melhor fonte da cadeia tipográfica para o caractere, garantindo ZERO quadrados 'tofu'."""
+    if is_char_supported(char, primary_font):
+        return primary_font
+        
+    fsize = getattr(primary_font, 'size', 20)
+    
+    # Cadeia de fontes de fallback profissionais do Windows:
+    # 1. Símbolos, corações, notas musicais, estrelas
+    # 2. Caracteres CJK (chinês, japonês, coreano) para nunca virar caixa preta
+    # 3. Segoe UI padrão e Emoji
+    fallback_candidates = [
+        ("sym", r"C:\Windows\Fonts\seguisym.ttf"),
+        ("cjk", r"C:\Windows\Fonts\msyh.ttc"),
+        ("cjk_jp", r"C:\Windows\Fonts\msgothic.ttc"),
+        ("segoe", r"C:\Windows\Fonts\segoeui.ttf"),
+        ("emj", r"C:\Windows\Fonts\seguiemj.ttf")
+    ]
+    
+    for key_name, fpath in fallback_candidates:
+        if os.path.exists(fpath):
+            cache_k = (key_name, fsize)
+            if cache_k not in _FALLBACK_CACHE:
+                try:
+                    _FALLBACK_CACHE[cache_k] = ImageFont.truetype(fpath, fsize)
+                except Exception:
+                    continue
+            cand_font = _FALLBACK_CACHE[cache_k]
+            if is_char_supported(char, cand_font, fpath):
+                return cand_font
+                
+    return None
+
 def draw_manga_text_line(draw, xy, line, font, fill=(0, 0, 0), stroke_width=0, stroke_fill=(255, 255, 255), anchor="mm"):
-    """Desenha uma linha de texto tipográfico com suporte a fallback de fontes (para corações e glifos especiais) e garantia contra 'tofu'."""
+    """Desenha linha tipográfica com suporte multi-fonte transparente e garantia anti-tofu absoluta (zero quadrados)."""
     line = sanitize_lettering_text(line)
     if not line:
         return
-        
-    # Verifica se há caracteres não suportados pela fonte principal
-    unsupported = [c for c in line if not c.isspace() and not is_char_supported(c, font)]
-    if not unsupported:
-        draw.text(xy, line, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, anchor=anchor)
-        return
-
-    # Se há caracteres não suportados, tenta usar fonte de fallback (Segoe UI) ou filtra glifos desconhecidos
-    fb_path = r"C:\Windows\Fonts\segoeui.ttf"
-    font_size = getattr(font, 'size', 20)
-    if font_size not in _FALLBACK_FONTS:
-        if os.path.exists(fb_path):
-            _FALLBACK_FONTS[font_size] = ImageFont.truetype(fb_path, font_size)
-        else:
-            _FALLBACK_FONTS[font_size] = font
-    fb_font = _FALLBACK_FONTS[font_size]
 
     char_widths = []
     for c in line:
-        if is_char_supported(c, font):
-            use_f = font
-        elif is_char_supported(c, fb_font, fb_path):
-            use_f = fb_font
-        else:
-            # Se nem a fonte principal nem o fallback suportam, ignora o glifo para nunca desenhar caixa preta/tofu
+        if c.isspace():
+            bb = draw.textbbox((0, 0), " ", font=font)
+            char_widths.append((c, font, max(4, bb[2] - bb[0])))
+            continue
+            
+        use_f = get_glyph_font(c, font)
+        if use_f is None:
+            # Nunca desenha caixa preta ou caractere corrompido
             continue
             
         bb = draw.textbbox((0, 0), c, font=use_f)
-        char_widths.append((c, use_f, bb[2] - bb[0]))
+        char_widths.append((c, use_f, max(1, bb[2] - bb[0])))
 
     if not char_widths:
         return
@@ -254,11 +296,11 @@ def draw_manga_text_line(draw, xy, line, font, fill=(0, 0, 0), stroke_width=0, s
     tot_w = sum(w for _, _, w in char_widths)
     cx, cy = xy
     if anchor == "mm":
-        curr_x = cx - (tot_w / 2)
+        curr_x = cx - (tot_w / 2.0)
     elif anchor == "lm":
         curr_x = cx
     else:
-        curr_x = cx - (tot_w / 2)
+        curr_x = cx - (tot_w / 2.0)
 
     for c, use_f, w in char_widths:
         if c.isspace():
@@ -298,6 +340,96 @@ def load_project_glossary(manga_dir):
             except Exception as e:
                 print(f"[*] Aviso ao ler glossário ({c}): {e}")
     return glossary
+
+LEARNED_RULES_TXT = os.path.join(SCRIPT_DIR, "aprendizado.txt")
+GLOBAL_TRANSLATION_MEMORY = os.path.join(SCRIPT_DIR, "memoria_traducoes.json")
+
+def load_learning_rules():
+    """Lê as diretrizes de aprendizado humano de aprendizado.txt para injetar nos prompts da IA."""
+    if not os.path.exists(LEARNED_RULES_TXT):
+        initial_content = """# =====================================================================
+# 🧠 MEMÓRIA E APRENDIZADO DA IA (MANGÁS & MANHWAS)
+# Edite este arquivo para ensinar a IA o que ela DEVE e o que NÃO DEVE fazer!
+# O tradutor lê este arquivo automaticamente a cada tradução.
+# =====================================================================
+
+[O QUE FAZER - REGRAS E TERMOS APROVADOS]
+- Adapte os diálogos para português brasileiro coloquial, direto e conciso
+- Use contrações e oralidade autêntica: tá, pra, cê, valeu, peraí, rolando
+- Nomes de personagens e termos fixos:
+  * 大哥哥 -> irmãozinho, maninho
+  * 小麥 -> Komugi
+  * 先輩 / 선배 -> veterano(a), senpai
+- Em cenas adultas (+18): mantenha o tom cru, explícito e sem censura
+
+[O QUE NÃO FAZER - PROIBIÇÕES E ERROS A EVITAR]
+- NUNCA use palavras em espanhol (como "pero", "entonces", "ahora", "mira")
+- NUNCA adicione introduções ou notas de tradutor (como "Aqui está a tradução:")
+- NUNCA use palavras excessivamente formais ou arcaicas como "deleite", "aprumar", "ademais"
+- NUNCA deixe frases em chinês, japonês ou coreano sem traduzir
+"""
+        try:
+            with open(LEARNED_RULES_TXT, "w", encoding="utf-8") as f:
+                f.write(initial_content)
+        except Exception:
+            pass
+
+    dos = []
+    donts = []
+    current_sec = None
+    if os.path.exists(LEARNED_RULES_TXT):
+        try:
+            with open(LEARNED_RULES_TXT, "r", encoding="utf-8") as f:
+                for line in f:
+                    line_str = line.strip()
+                    if not line_str or line_str.startswith("#") or line_str.startswith("="):
+                        continue
+                    if "[O QUE FAZER" in line_str.upper():
+                        current_sec = "do"
+                        continue
+                    elif "[O QUE NÃO FAZER" in line_str.upper() or "[O QUE NAO FAZER" in line_str.upper():
+                        current_sec = "dont"
+                        continue
+                    
+                    if current_sec == "do":
+                        dos.append(line_str)
+                    elif current_sec == "dont":
+                        donts.append(line_str)
+        except Exception:
+            pass
+            
+    return dos, donts
+
+def lookup_translation_memory(orig_text):
+    """Consulta a memória global de tradução para reutilizar frases aprendidas perfeitamente."""
+    if not os.path.exists(GLOBAL_TRANSLATION_MEMORY):
+        return None
+    try:
+        with open(GLOBAL_TRANSLATION_MEMORY, "r", encoding="utf-8") as f:
+            mem = json.load(f)
+        return mem.get(orig_text.strip())
+    except Exception:
+        return None
+
+def update_global_translation_memory(new_translations):
+    """Guarda frases traduzidas na memória global persistente."""
+    if not new_translations:
+        return
+    mem = {}
+    if os.path.exists(GLOBAL_TRANSLATION_MEMORY):
+        try:
+            with open(GLOBAL_TRANSLATION_MEMORY, "r", encoding="utf-8") as f:
+                mem = json.load(f)
+        except Exception:
+            mem = {}
+    for orig, trans in new_translations.items():
+        if trans and orig != trans and len(orig) >= 2:
+            mem[orig.strip()] = trans.strip()
+    try:
+        with open(GLOBAL_TRANSLATION_MEMORY, "w", encoding="utf-8") as f:
+            json.dump(mem, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 def create_cbz_archive(source_dir, output_cbz_path):
     """Cria um arquivo .cbz (Comic Book Zip) compacto para leitura direta em apps móveis."""
@@ -1303,6 +1435,15 @@ def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None
         "- Mantenha a pontuação expressiva de mangá (!, ?, ..., ~)."
     )
 
+    dos, donts = load_learning_rules()
+    learned_rules_text = ""
+    if dos or donts:
+        learned_rules_text = "\nMEMÓRIA E APRENDIZADO CONTÍNUO DO USUÁRIO:\n"
+        if dos:
+            learned_rules_text += "[O QUE VOCÊ DEVE FAZER E PRIORIZAR]:\n" + "\n".join(f"- {d}" for d in dos) + "\n"
+        if donts:
+            learned_rules_text += "[O QUE VOCÊ NUNCA DEVE FAZER / PROIBIÇÕES]:\n" + "\n".join(f"- {d}" for d in donts) + "\n"
+
     if is_batch:
         adult_clause = ""
         if is_adult:
@@ -1316,6 +1457,7 @@ Traduza cada fala para PT-BR mantendo coerência narrativa, pronomes corretos en
 {adult_clause}
 {glossary_rules}
 {concision_rule}
+{learned_rules_text}
 
 REGRAS OBRIGATÓRIAS:
 1. Responda EXCLUSIVAMENTE em formato JSON com as mesmas chaves numéricas e os valores traduzidos. Exemplo: {{"1": "...", "2": "..."}}
@@ -1329,6 +1471,7 @@ REGRAS OBRIGATÓRIAS:
 Traduza fielmente o diálogo original com máxima naturalidade coloquial e fluidez brasileira, respeitando o tom da cena (romance, ecchi, diálogos picantes ou adultos).
 
 {concision_rule}
+{learned_rules_text}
 
 REGRAS OBRIGATÓRIAS:
 1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA introduza com "Aqui está", NUNCA adicione explicações, notas de tradutor ou referências ao sistema.
@@ -1342,6 +1485,7 @@ REGRAS OBRIGATÓRIAS:
 Traduza fielmente o texto original com máxima naturalidade coloquial e fluidez brasileira.
 
 {concision_rule}
+{learned_rules_text}
 
 REGRAS OBRIGATÓRIAS:
 1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA adicione saudações, notas ou explicações.
@@ -2040,6 +2184,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         untranslated = []
         for b in p["bubbles"]:
             orig_text = b["combined_text"].strip()
+            # 1. Consulta memória global persistente de tradução aprendida
+            if orig_text not in cache:
+                mem_hit = lookup_translation_memory(orig_text)
+                if mem_hit:
+                    cache[orig_text] = mem_hit
             # Se não está no cache, OU se o cache tem o texto original idêntico em inglês (>1 palavra)
             if orig_text not in cache or (cache[orig_text].strip().lower() == orig_text.lower() and len(orig_text.split()) > 1):
                 untranslated.append((orig_text, b))
@@ -2062,6 +2211,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     try:
         with open(cache_file, "w", encoding="utf-8") as cf:
             json.dump(cache, cf, ensure_ascii=False, indent=2)
+        # Salva novas traduções aprovadas na memória global de aprendizado
+        update_global_translation_memory(cache)
     except Exception as e:
         print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
 

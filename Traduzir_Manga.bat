@@ -30,8 +30,14 @@ echo [4] OCIDENTAL / UNIVERSAL (RapidOCR) - Ingles, Chines, etc.
 echo [5] LIMPAR CACHE E REFAZER TUDO (Automatico)
 echo [6] LIMPAR CACHE E REFAZER EM COREANO (Hangul)
 echo [7] LIMPAR CACHE E REFAZER EM JAPONES (Mokuro)
+echo [8] ENSINAR A IA (Abrir aprendizado.txt para editar regras e termos)
 echo =====================================================================
-set /p OCR_MODE=">> Digite de 1 a 7 (Padrao: 1): "
+set /p OCR_MODE=">> Digite de 1 a 8 (Padrao: 1): "
+
+if "%OCR_MODE%"=="8" (
+    start notepad.exe "%~dp0aprendizado.txt"
+    goto FIM
+)
 
 set OCR_FLAG=
 set FORCE_FLAG=

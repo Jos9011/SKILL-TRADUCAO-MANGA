@@ -4,6 +4,6 @@
   "openrouter_model": "qwen/qwen-2.5-72b-instruct",
   "openrouter_fallback_model": "cognitivecomputations/dolphin-mistral-24b-venice-edition",
   "ollama_host": "http://localhost:11434",
-  "ollama_model": "qwen2.5:latest",
+  "ollama_model": "dolphin-llama3:latest",
   "temperature": 0.0
 }

@@ -20,6 +20,7 @@ import time
 import json
 import cv2
 import shutil
+import subprocess
 import math
 import zipfile
 import unicodedata
@@ -1121,6 +1122,29 @@ def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434
                     return True, selected_model
         return False, None
     except Exception:
+        # Se for localhost e o servidor não estiver respondendo, tenta iniciar automaticamente
+        if "localhost" in host or "127.0.0.1" in host:
+            ollama_exe_paths = [
+                r"C:\Users\ja329\AppData\Local\Programs\Ollama\ollama.exe",
+                shutil.which("ollama")
+            ]
+            for o_path in ollama_exe_paths:
+                if o_path and os.path.exists(o_path):
+                    try:
+                        print("[*] Servidor Ollama local desligado. Iniciando serviço em segundo plano...")
+                        subprocess.Popen([o_path, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        for _ in range(8):
+                            time.sleep(1)
+                            try:
+                                with urllib.request.urlopen(f"{host}/api/tags", timeout=2) as r:
+                                    if r.status == 200:
+                                        print("[+] Servidor Ollama iniciado e pronto com sucesso!")
+                                        return check_ollama_available(prefer_uncensored=prefer_uncensored, host=host, custom_model=custom_model)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    break
         return False, None
 
 def query_ollama_chat(messages, model_name, host="http://localhost:11434", temperature=0.0, num_predict=1024, timeout=75):
@@ -2224,6 +2248,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                         cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
 
     try:
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         with open(cache_file, "w", encoding="utf-8") as cf:
             json.dump(cache, cf, ensure_ascii=False, indent=2)
         # Salva novas traduções aprovadas na memória global de aprendizado
@@ -2236,7 +2261,12 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             orig_text = b["combined_text"].strip()
             cached_val = cache.get(orig_text, "")
             cleaned_val = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult) if cached_val else ""
-            b["translated_text"] = cleaned_val if cleaned_val else (cached_val or orig_text)
+            if cleaned_val and is_valid_translation(orig_text, cleaned_val):
+                b["translated_text"] = cleaned_val
+            elif cached_val and is_valid_translation(orig_text, cached_val):
+                b["translated_text"] = cached_val
+            else:
+                b["translated_text"] = ""
 
     # 4. Diagramação e Inpainting
     print(f"[*] Iniciando limpeza profissional de balões e diagramação...")
@@ -2265,19 +2295,24 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             img_pil.save(out_file, quality=95)
             continue
         
-        # 4.1 Limpar balões com algoritmo seguro
+        # 4.1 Limpar balões com algoritmo seguro (Apenas se foi traduzido com sucesso)
         for b in bubbles:
+            trans_txt = b.get("translated_text", "").strip()
+            if not trans_txt or not is_valid_translation(b["combined_text"], trans_txt):
+                continue
             for r_box in b.get("raw_boxes", [b["box"]]):
                 clean_speech_bubble(cleaned, r_box)
             clean_speech_bubble(cleaned, b["box"])
                 
-        # 4.2 Desenhar texto traduzido com Comic Sans MS Bold
+        # 4.2 Desenhar texto traduzido
         img_pil = Image.fromarray(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
         
         for i, b in enumerate(bubbles):
             text = b.get("translated_text", "").strip().upper()
             if not text or text in ("...", "…"):
+                continue
+            if not is_valid_translation(b["combined_text"], text):
                 continue
                 
             xmin, ymin, xmax, ymax = b["box"]

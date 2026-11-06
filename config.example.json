@@ -1,0 +1,9 @@
+{
+  "provider": "openrouter",
+  "openrouter_api_key": "",
+  "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
+  "openrouter_fallback_model": "google/gemma-4-31b-it:free",
+  "ollama_host": "http://localhost:11434",
+  "ollama_model": "dolphin-llama3:latest",
+  "temperature": 0.0
+}

@@ -27,14 +27,15 @@ echo [1] AUTOMATICO INTELIGENTE (Detecta Coreano, Japones ou Ingles)
 echo [2] JAPONES (Mokuro) - Mangas japoneses com leitura vertical
 echo [3] COREANO / MANHWA (RapidOCR Hangul) - Manhwas e Webtoons Coreanos
 echo [4] OCIDENTAL / UNIVERSAL (RapidOCR) - Ingles, Chines, etc.
-echo [5] LIMPAR CACHE E REFAZER TUDO (Automatico)
-echo [6] LIMPAR CACHE E REFAZER EM COREANO (Hangul)
-echo [7] LIMPAR CACHE E REFAZER EM JAPONES (Mokuro)
-echo [8] ENSINAR A IA (Abrir aprendizado.txt para editar regras e termos)
+echo [5] RETRADUZIR RAPIDO (Reutiliza OCR existente e traduz com nova IA)
+echo [6] LIMPAR CACHE E REFAZER TUDO (Automatico)
+echo [7] LIMPAR CACHE E REFAZER EM COREANO (Hangul)
+echo [8] LIMPAR CACHE E REFAZER EM JAPONES (Mokuro)
+echo [9] ENSINAR A IA (Abrir aprendizado.txt para editar regras e termos)
 echo =====================================================================
-set /p OCR_MODE=">> Digite de 1 a 8 (Padrao: 1): "
+set /p OCR_MODE=">> Digite de 1 a 9 (Padrao: 1): "
 
-if "%OCR_MODE%"=="8" (
+if "%OCR_MODE%"=="9" (
     start notepad.exe "%~dp0aprendizado.txt"
     goto FIM
 )
@@ -60,13 +61,17 @@ if "%OCR_MODE%"=="4" (
 )
 if "%OCR_MODE%"=="5" (
     set OCR_FLAG=
-    set FORCE_FLAG=--force-ocr
+    set FORCE_FLAG=--retranslate
 )
 if "%OCR_MODE%"=="6" (
-    set OCR_FLAG=--korean
+    set OCR_FLAG=
     set FORCE_FLAG=--force-ocr
 )
 if "%OCR_MODE%"=="7" (
+    set OCR_FLAG=--korean
+    set FORCE_FLAG=--force-ocr
+)
+if "%OCR_MODE%"=="8" (
     set OCR_FLAG=--mokuro
     set FORCE_FLAG=--force-ocr
 )

@@ -24,6 +24,7 @@ import subprocess
 import math
 import zipfile
 import unicodedata
+import html
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
@@ -165,6 +166,14 @@ def sanitize_lettering_text(text):
     """Normaliza caracteres asiáticos (zenkaku), macrons e pontuações para compatibilidade total com fontes TrueType sem gerar quadrados 'tofu'."""
     if not text:
         return ""
+    # 0. Decodifica entidades HTML e elimina vazamentos web tipo &#13;, &#x20;, &nbsp;, etc.
+    text = html.unescape(text)
+    text = re.sub(r'&#[0-9]+;', ' ', text)
+    text = re.sub(r'&#x[0-9a-fA-F]+;', ' ', text)
+    text = re.sub(r'&[a-zA-Z]+;', ' ', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = text.replace('\r', ' ').replace('\n', ' ')
+
     # 1. Normalização NFKC: converte zenkaku (largura total) para caracteres padrão (ASCII)
     # Transforma ．．． -> ..., ： -> :, ！ -> !, ？ -> ?, １２３ -> 123
     text = unicodedata.normalize('NFKC', text)
@@ -499,6 +508,7 @@ SFX_DICTIONARY = {
     'BOING': 'BOING',
     'FLASH': 'FLASH',
     'DRIP': 'PINGA',
+    'DROP': 'PINGA',
     'SCRATCH': 'RASC',
     'STRETCH': 'ESTICA',
     'PUAH': 'PUAH',
@@ -530,6 +540,7 @@ SFX_DICTIONARY = {
     'TWITCH': 'TREME',
     'THROB': 'PULSA',
     'PINCH': 'BELISCA',
+    'FLICK': 'PETELECO',
     'RUB': 'ESFREGA',
     'FAP': 'FAP',
     'ZUP': 'ZUP',
@@ -547,6 +558,56 @@ SFX_DICTIONARY = {
     'FREEZE': 'CONGELA',
     'JOLT': 'SOBRESSALTO',
     'SHIVER': 'TREME',
+    'SHAKE': 'TREME',
+    'STEP': 'TOC TOC',
+    'STEPS': 'TOC TOC',
+    'GRAB': 'AGARRA',
+    'CRAB': 'AGARRA',
+    'SQUEEZE': 'APERTA',
+    'POUND': 'TUM TUM',
+    'PLOP': 'PLOP',
+    'SQUIRT': 'JATO',
+    'RUSTLE': 'FARFALHA',
+    'GLANCE': 'OLHADA',
+    'CHOKE': 'COF COF',
+    'COUGH': 'COF COF',
+    'SNORT': 'SNORT',
+    'BOOM': 'BUM',
+    'CLICK': 'CLIQUE',
+    'CLACK': 'CLAC',
+    'TAP': 'TOC',
+    'PAT': 'PAT',
+    'STROKE': 'ACARICIA',
+    'SWOOSH': 'VUUSH',
+    'WHOOSH': 'VUUSH',
+    'ZOOM': 'ZUM',
+    'THUD': 'TUM',
+    'CRASH': 'CRASH',
+    'SLOSH': 'CHUÁ',
+    'SQUISH': 'SQUISH',
+    'WOBBLE': 'BALANÇA',
+    'FLUTTER': 'TREMULA',
+    'JIGGLE': 'BALANÇA',
+    'BOUNCE': 'QUICA',
+    'NOM': 'NHAC',
+    'BITE': 'MORDE',
+    'CHEW': 'MASTIGA',
+    'GLIDE': 'DESLIZA',
+    'SLIDE': 'DESLIZA',
+    'PUSH': 'EMPURRA',
+    'PULL': 'PUXA',
+    'TREMBLE': 'TREME',
+    'GROAN': 'GEMIDO',
+    'MOAN': 'GEMIDO',
+    'WHIMPER': 'CHORAMINGA',
+    'BLUSH': 'CORA',
+    'STARE': 'ENCARA',
+    'PEEK': 'ESPIA',
+    'GLARE': 'OLHAR',
+    'WINK': 'PISCA',
+    'NOD': 'ACENA',
+    'WAVE': 'ACENA',
+    'SPLAT': 'SPLAT',
     'SPLRT': 'SPLASH',
     'SPLRRT': 'SPLASH',
     'SPLRCH': 'SPLASH',
@@ -557,7 +618,8 @@ SFX_DICTIONARY = {
 
 COMMON_SOUNDS = set(SFX_DICTIONARY.keys()) | {
     'AH', 'HAH', 'AHN', 'MNH', 'UGH', 'NGH', 'AAH', 'AHA', 'FWAA', 'NYAA',
-    'HYAH', 'NYAH', 'FUH', 'JYAA', 'CHOP', 'DROP', 'FREEZE', 'SLIP', 'SHH'
+    'HYAH', 'NYAH', 'FUH', 'JYAA', 'CHOP', 'DROP', 'FREEZE', 'SLIP', 'SHH',
+    'OH', 'OOH', 'WOAH', 'HMM', 'TCH'
 }
 
 def translate_sfx_phrase(text):
@@ -597,11 +659,23 @@ def repair_glued_text(text, src_lang="en-US"):
     if re.match(r'^(?:https?://|www\.|discord\.gg)', text, re.IGNORECASE):
         return text
 
-    # Corrige falta de espaço após pontuação: 'PANTIES,AND' -> 'PANTIES, AND'
+    # 1. Corrige quebras de linha com hífens (ex: 'MON- ARCH' -> 'MONARCH')
+    text = re.sub(r'([A-Za-z]+)-\s+([A-Za-z]+)', r'\1\2', text)
+
+    # 2. Corrige pronomes e nomes divididos erroneamente pelo OCR
+    text = re.sub(r'\bS\s+he\b', 'She', text)
+    text = re.sub(r'\bs\s+he\b', 'she', text)
+    text = re.sub(r'\bH\s+e\b', 'He', text)
+    text = re.sub(r'\bh\s+e\b', 'he', text)
+    text = re.sub(r'\bI\s+t\b', 'It', text)
+    text = re.sub(r'\bi\s+t\b', 'it', text)
+    text = re.sub(r'\bNo\s+run\b', 'Norun', text, flags=re.IGNORECASE)
+
+    # 3. Corrige falta de espaço após pontuação: 'PANTIES,AND' -> 'PANTIES, AND'
     text = re.sub(r'([,;:!?])([A-Za-z])', r'\1 \2', text)
     text = re.sub(r'(\.{2,})([A-Za-z])', r'\1 \2', text)
 
-    # Separa CamelCase ou colagens óbvias com números
+    # 4. Separa CamelCase ou colagens óbvias com números (ex: 'Ofroyalty' -> 'Of royalty')
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
     text = re.sub(r'([A-Za-z])(\d)', r'\1 \2', text)
     text = re.sub(r'(\d)([A-Za-z])', r'\1 \2', text)
@@ -614,17 +688,21 @@ def repair_glued_text(text, src_lang="en-US"):
     
     for token in tokens:
         clean_tok = re.sub(r'[^a-zA-Z]', '', token)
-        # Se a palavra for longa e não for termo reservado
-        if len(clean_tok) >= 10 and clean_tok.upper() not in PRESERVE_WORDS:
+        # Se a palavra tiver 4+ letras e não for nome/termo reservado
+        if len(clean_tok) >= 4 and clean_tok.upper() not in PRESERVE_WORDS:
             splits = wordninja.split(clean_tok)
-            if len(splits) >= 2:
+            if len(splits) >= 2 and len(splits) < len(clean_tok):
+                prefix = re.match(r'^[^a-zA-Z]+', token)
+                suffix = re.search(r'[^a-zA-Z]+$', token)
+                p_str = prefix.group(0) if prefix else ''
+                s_str = suffix.group(0) if suffix else ''
                 if token.isupper():
                     fixed_tok = ' '.join(s.upper() for s in splits)
                 elif token.islower():
                     fixed_tok = ' '.join(s.lower() for s in splits)
                 else:
                     fixed_tok = ' '.join(splits)
-                fixed_tokens.append(fixed_tok)
+                fixed_tokens.append(p_str + fixed_tok + s_str)
                 continue
         fixed_tokens.append(token)
         
@@ -2017,7 +2095,7 @@ def is_valid_translation(orig_text, trans_text):
             return False
     return True
 
-def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True, config=None):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None):
     if config is None:
         config = load_config()
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
@@ -2070,11 +2148,16 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     html_dest = os.path.join(cache_dir, manga_name + "_mokuro.html")
     
     if force_ocr:
-        print("[!] LIMPEZA DE CACHE ATIVADA: Regerando OCR e traduções...")
+        print("[!] LIMPEZA TOTAL DE CACHE: Regerando OCR e traduções...")
         if os.path.exists(cache_dir):
             try: shutil.rmtree(cache_dir)
             except Exception: pass
         os.makedirs(cache_dir, exist_ok=True)
+    elif retranslate:
+        print("[!] RETRADUÇÃO RÁPIDA: Reutilizando OCR existente e regerando traduções com nova IA...")
+        if os.path.exists(cache_file):
+            try: os.remove(cache_file)
+            except Exception: pass
 
     print(f"[*] Modo OCR selecionado: {ocr_mode.upper()}")
     if ocr_mode in ("korean", "manhwa"):
@@ -2533,6 +2616,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 
 if __name__ == "__main__":
     force_ocr_flag = False
+    retranslate_flag = False
     chosen_mode = "auto"
     is_adult_flag = True
     cli_provider = None
@@ -2559,6 +2643,10 @@ if __name__ == "__main__":
         elif "--clean-cache" in args:
             force_ocr_flag = True
             args.remove("--clean-cache")
+        elif "--retranslate" in args or "--retrans" in args:
+            retranslate_flag = True
+            if "--retranslate" in args: args.remove("--retranslate")
+            if "--retrans" in args: args.remove("--retrans")
             
         if "--normal" in args or "--safe" in args:
             is_adult_flag = False
@@ -2607,6 +2695,6 @@ if __name__ == "__main__":
     cfg = load_config(cli_opts)
 
     if target:
-        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, is_adult=is_adult_flag, config=cfg)
+        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, retranslate=retranslate_flag, is_adult=is_adult_flag, config=cfg)
     else:
         print("[!] Nenhuma pasta informada.")

@@ -1978,6 +1978,21 @@ def is_credits_page(bubbles):
     matched = sum(1 for m in markers if m in full_text)
     return matched >= 2 or any(m in full_text for m in ["discord.gg", "patreon", "recruiting", "scanlation"])
 
+def is_valid_translation(orig_text, trans_text):
+    """Verifica se a tradução é válida e não é uma falha, ruído ou cópia do texto asiático/estrangeiro não traduzido."""
+    if not trans_text or not str(trans_text).strip():
+        return False
+    clean_orig = str(orig_text).strip()
+    clean_trans = str(trans_text).strip()
+    # Se a tradução ainda contém ideogramas chineses, kana japoneses ou hangul coreano, NÃO foi traduzida para português
+    if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', clean_trans):
+        return False
+    # Se for idêntico ao original e contiver letras ou caracteres asiáticos, não houve tradução
+    if clean_trans.lower() == clean_orig.lower():
+        if re.search(r'[a-zA-Z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', clean_orig):
+            return False
+    return True
+
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, is_adult=True, config=None):
     if config is None:
         config = load_config()
@@ -2163,7 +2178,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 'system message', 'mensagem do sistema'
             ]
             for k, v in raw_cache.items():
-                if not any(cm in v.lower() for cm in corrupt_markers):
+                if not any(cm in v.lower() for cm in corrupt_markers) and is_valid_translation(k, v):
                     cache[k] = v
         except Exception:
             pass
@@ -2185,27 +2200,27 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         for b in p["bubbles"]:
             orig_text = b["combined_text"].strip()
             # 1. Consulta memória global persistente de tradução aprendida
-            if orig_text not in cache:
+            if orig_text not in cache or not is_valid_translation(orig_text, cache.get(orig_text, "")):
                 mem_hit = lookup_translation_memory(orig_text)
-                if mem_hit:
+                if mem_hit and is_valid_translation(orig_text, mem_hit):
                     cache[orig_text] = mem_hit
-            # Se não está no cache, OU se o cache tem o texto original idêntico em inglês (>1 palavra)
-            if orig_text not in cache or (cache[orig_text].strip().lower() == orig_text.lower() and len(orig_text.split()) > 1):
+            # Se não está no cache ou o que está no cache não é uma tradução válida para PT
+            if orig_text not in cache or not is_valid_translation(orig_text, cache[orig_text]):
                 untranslated.append((orig_text, b))
                 
         if untranslated:
             if engine_type:
                 batch_res = translate_page_dialogue(untranslated, engine_type, model_name, engine_opts=engine_opts, is_adult=is_adult, glossary=glossary)
                 for orig, trans in batch_res.items():
-                    if trans and trans.strip().lower() != orig.strip().lower():
+                    if trans and is_valid_translation(orig, trans):
                         cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
                         
-            # Se ainda houver textos sem tradução, tenta o fallback
-            still_untranslated = [item[0] for item in untranslated if item[0] not in cache or (cache[item[0]].strip().lower() == item[0].lower() and len(item[0].split()) > 1)]
+            # Se ainda houver textos sem tradução válida, tenta o fallback
+            still_untranslated = [item[0] for item in untranslated if item[0] not in cache or not is_valid_translation(item[0], cache[item[0]])]
             if still_untranslated:
                 cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult, engine_type=engine_type, model_name=model_name, engine_opts=engine_opts)
                 for orig, trans in zip(still_untranslated, cloud_res):
-                    if trans and trans.strip().lower() != orig.strip().lower():
+                    if trans and is_valid_translation(orig, trans):
                         cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
 
     try:

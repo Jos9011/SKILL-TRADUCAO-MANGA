@@ -10,12 +10,17 @@
 - Adapte os diálogos para português brasileiro coloquial, direto e conciso
 - Use contrações e oralidade natural: tá, pra, cê, valeu, peraí, rolando, caramba
 - Nomes de personagens e termos fixos:
-  * 大哥哥 -> irmãozinho, maninho
-  * 小麥 / 麥麥 -> Komugi, Maimai
+  * 大哥哥 -> irmãozinho, maninho (ou onii-san)
+  * 小麥 / 麦麦 / 麥麥 -> Komugi, Maimai
+  * 變變 / 便便 / 変変 (ruído de OCR de 麥麥) -> Maimai
+  * 獣耳少女 / 獸耳少女 -> garota com orelhas de animal
   * 先輩 / 선배 -> veterano(a), senpai
   * お兄ちゃん / 오빠 -> maninho, irmãozinho
+  * 同事 -> colega de trabalho
+  * 巧克力 -> chocolate
 - Em mangás e manhwas adultos (+18): preserve o tom sem censura e sem pudor, usando gírias eróticas brasileiras naturais da cena (ex: calcinha, pau, gozou, etc.)
 - Adapte balões pequenos para frases curtas de forte impacto visual
+- Mantenha sempre a pontuação expressiva original (♡, ♥, ~, ♪, !, ?)
 
 [O QUE NÃO FAZER - PROIBIÇÕES E ERROS A EVITAR]
 - NUNCA use palavras em espanhol (como "pero", "entonces", "ahora", "mira", "despacio")
@@ -23,3 +28,4 @@
 - NUNCA use linguagem arcaica ou artificial (como "deleite", "aprumar", "ademais", "outrossim")
 - NUNCA deixe frases em chinês, japonês ou coreano sem traduzir
 - NUNCA use eufemismos infantis ou moralistas em cenas adultas (+18)
+- NUNCA repita o texto original na resposta traduzida

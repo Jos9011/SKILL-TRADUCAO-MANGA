@@ -1190,12 +1190,15 @@
               </div>
             </div>
 
-            <div style="display: flex; gap: 14px; align-items: center;">
+            <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
               <button class="btn-spotify" id="btn-start" onclick="startTranslation()" style="padding: 14px 36px; font-size: 1.05rem;">
                 <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                 INICIAR TRADUÇÃO
               </button>
               <button class="btn-secondary" onclick="resetSelection()">Trocar Obra</button>
+              <button class="btn-secondary" style="border-color: rgba(255,85,85,0.4); color: #ff5555;" onclick="deleteSelectedManga()" title="Excluir permanentemente estes arquivos do servidor">
+                🗑️ Excluir Mangá
+              </button>
             </div>
           </div>
         </div>
@@ -1310,6 +1313,36 @@
             <svg viewBox="0 0 24 24"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm2 16H5V5h11.17L19 7.83V19zm-7-7c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3zM6 6h9v4H6z"/></svg>
             Salvar Configurações
           </button>
+        </div>
+
+        <!-- CARD: PERFIL & SINCRONIZAÇÃO PERMANENTE DE CHAVES -->
+        <div class="quota-card" style="margin-bottom: 24px; border: 1px solid rgba(29, 185, 84, 0.35); background: linear-gradient(180deg, #152217 0%, #111411 100%);">
+          <div class="quota-card-header">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <h3 style="margin: 0;">👤 Seu Perfil & Sincronização Permanente de Chaves</h3>
+              <span class="meta-badge highlight" id="profile-drive-badge">☁️ Google Drive Vinculado</span>
+            </div>
+            <button class="btn-secondary" style="font-size: 0.82rem; padding: 6px 14px; border-color: rgba(29, 185, 84, 0.5); color: var(--spotify-green);" onclick="syncBrowserProfileToServer()" title="Sincronizar chaves salvas neste navegador com o servidor">
+              ⚡ Sincronizar Chaves do Navegador
+            </button>
+          </div>
+          <p style="font-size: 0.85rem; color: var(--text-subdued); margin-bottom: 16px; line-height: 1.5;">
+            Suas chaves de IA (Groq e OpenRouter) são sincronizadas com seu <strong>Google Drive</strong> (pasta <code>.manga_studio</code>) e salvas no armazenamento permanente deste navegador. Você <strong>nunca mais precisará pegar nova chave na Groq</strong> toda vez que abrir o site ou o Colab!
+          </p>
+
+          <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+            <button class="btn-spotify" style="padding: 8px 18px; font-size: 0.84rem;" onclick="saveConfig(true)" title="Salva chaves no servidor e no perfil do seu navegador">
+              💾 Salvar Chaves no Meu Perfil
+            </button>
+            <button class="btn-secondary" style="padding: 8px 16px; font-size: 0.84rem;" onclick="exportProfileJson()" title="Baixar arquivo de backup do seu perfil com todas as chaves">
+              📥 Exportar Backup (.json)
+            </button>
+            <button class="btn-secondary" style="padding: 8px 16px; font-size: 0.84rem;" onclick="document.getElementById('import-profile-input').click()" title="Importar arquivo de backup do seu perfil">
+              📤 Importar Backup
+            </button>
+            <input type="file" id="import-profile-input" accept=".json" style="display: none;" onchange="importProfileJson(event)">
+            <span id="profile-sync-msg" style="font-size: 0.84rem; color: var(--spotify-green); font-weight: 700; margin-left: 6px;"></span>
+          </div>
         </div>
 
         <!-- CARD: PASTAS DO SISTEMA (ORIGINAL E TRADUZIDO) -->
@@ -2168,6 +2201,9 @@
             <button class="card-action-btn" title="Baixar no formato Comic Book (CBZ)" onclick="event.stopPropagation(); downloadCbz('${escapeQuotes(m.cbz_path || m.path)}');">
               📦 CBZ
             </button>
+            <button class="card-action-btn" title="Excluir este mangá traduzido" onclick="event.stopPropagation(); confirmDeleteManga('${escapeQuotes(m.path)}', '${escapeQuotes(m.clean_name)}');" style="color: #ff5555; border-color: rgba(255,85,85,0.3);">
+              🗑️
+            </button>
           </div>
         </div>
       `).join('');
@@ -2187,6 +2223,9 @@
           <div class="card-actions-row">
             <button class="card-action-btn primary" title="Configurar e traduzir este mangá" onclick="event.stopPropagation(); inspectFolder('${escapeQuotes(m.path)}'); switchTab('translate');">
               ⚡ Traduzir
+            </button>
+            <button class="card-action-btn" title="Excluir esta obra enviada" onclick="event.stopPropagation(); confirmDeleteManga('${escapeQuotes(m.path)}', '${escapeQuotes(m.name)}');" style="color: #ff5555; border-color: rgba(255,85,85,0.3);">
+              🗑️ Excluir
             </button>
           </div>
         </div>
@@ -2218,6 +2257,37 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
       }).catch(() => {});
+    }
+
+    // CONFIRM AND DELETE MANGA
+    function confirmDeleteManga(path, name) {
+      if (!path) return;
+      if (!confirm(`Deseja realmente excluir permanentemente o mangá "${name}"?\nEsta ação apagará todos os arquivos desta obra.`)) {
+        return;
+      }
+      fetch('/api/delete_manga', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          alert(`✅ Mangá "${name}" excluído com sucesso!`);
+          loadLibrary();
+          if (currentSelectedManga && currentSelectedManga.path === path) {
+            resetSelection();
+          }
+        } else {
+          alert('Erro ao excluir mangá: ' + (data.error || 'Erro desconhecido.'));
+        }
+      })
+      .catch(err => alert('Erro de conexão ao excluir: ' + err));
+    }
+
+    function deleteSelectedManga() {
+      if (!currentSelectedManga || !currentSelectedManga.path) return;
+      confirmDeleteManga(currentSelectedManga.path, currentSelectedManga.name || 'Obra Selecionada');
     }
 
     // QUOTAS & STATUS
@@ -2460,6 +2530,49 @@
         if (document.getElementById('cfg-translated-mangas-dir')) {
           document.getElementById('cfg-translated-mangas-dir').value = currentConfig.translated_mangas_dir || 'C:\\Users\\ja329\\OneDrive\\Documentos\\MANGAS';
         }
+
+        // Auto-sincronização com o perfil permanente salvo no navegador (localStorage)
+        const hasServerKeys = (currentConfig.groq_api_keys && currentConfig.groq_api_keys.length > 0) || (currentConfig.openrouter_api_keys && currentConfig.openrouter_api_keys.length > 0);
+        if (!hasServerKeys) {
+          const savedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
+          if (savedProfileRaw) {
+            try {
+              const p = JSON.parse(savedProfileRaw);
+              if (p.groq_api_keys && p.groq_api_keys.length > 0) {
+                currentConfig.groq_api_keys = p.groq_api_keys;
+                currentConfig.groq_api_key = p.groq_api_keys[0];
+                if (p.openrouter_api_keys && p.openrouter_api_keys.length > 0) {
+                  currentConfig.openrouter_api_keys = p.openrouter_api_keys;
+                  currentConfig.openrouter_api_key = p.openrouter_api_keys[0];
+                }
+                fetch('/api/config', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(currentConfig)
+                }).then(() => {
+                  renderKeyLists();
+                  loadStatus();
+                  console.log("⚡ Chaves restauradas automaticamente do perfil salvo no navegador!");
+                }).catch(() => {});
+              }
+            } catch (e) {}
+          }
+        } else {
+          // Servidor possui chaves válidas; atualiza o backup deste navegador
+          saveBrowserProfile(currentConfig, false);
+        }
+
+        // Atualiza status do badge de Google Drive
+        const driveBadge = document.getElementById('profile-drive-badge');
+        if (driveBadge) {
+          if (currentConfig.drive_connected) {
+            driveBadge.innerText = '☁️ Google Drive Vinculado & Ativo';
+            driveBadge.className = 'meta-badge highlight';
+          } else {
+            driveBadge.innerText = '💾 Perfil Local / Navegador';
+            driveBadge.className = 'meta-badge';
+          }
+        }
       } catch (e) {
         console.error("Erro ao carregar configurações:", e);
       }
@@ -2619,7 +2732,7 @@
       }
     }
 
-    async function saveConfig() {
+    async function saveConfig(showProfileMsg = false) {
       try {
         currentConfig.groq_model = document.getElementById('cfg-groq-model').value;
         currentConfig.openrouter_model = document.getElementById('cfg-openrouter-model').value;
@@ -2643,7 +2756,10 @@
           body: JSON.stringify(currentConfig)
         });
         if (saveRes.ok) {
-          alert("✅ Todas as configurações, diretórios e chaves foram salvos com sucesso!");
+          saveBrowserProfile(currentConfig, showProfileMsg);
+          if (!showProfileMsg) {
+            alert("✅ Todas as configurações, diretórios e chaves foram salvos com sucesso!");
+          }
           loadStatus();
           loadLibrary();
         } else {
@@ -2652,6 +2768,120 @@
       } catch (e) {
         alert("Erro de conexão ao salvar configurações.");
       }
+    }
+
+    // PROFILE & KEY PERSISTENCE (LOCALSTORAGE & DRIVE)
+    const PROFILE_STORAGE_KEY = 'manga_studio_profile_v1';
+
+    function saveBrowserProfile(cfg, showFeedback = true) {
+      try {
+        const payload = {
+          groq_api_keys: cfg.groq_api_keys || [],
+          openrouter_api_keys: cfg.openrouter_api_keys || [],
+          groq_model: cfg.groq_model || 'qwen/qwen3.8-27b',
+          openrouter_model: cfg.openrouter_model || 'nvidia/nemotron-3.5-lightning:free',
+          ollama_host: cfg.ollama_host || 'http://localhost:11434',
+          updated_at: new Date().toISOString()
+        };
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(payload));
+        if (showFeedback) {
+          const badge = document.getElementById('profile-sync-msg');
+          if (badge) {
+            badge.innerText = '✅ Perfil salvo no navegador e no Google Drive!';
+            setTimeout(() => { badge.innerText = ''; }, 4000);
+          } else {
+            alert('✅ Perfil e chaves salvos no seu navegador e no Google Drive com sucesso!');
+          }
+        }
+      } catch (e) {
+        console.error('Erro ao salvar no localStorage:', e);
+      }
+    }
+
+    async function syncBrowserProfileToServer() {
+      try {
+        const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+        if (!raw) {
+          alert('Nenhum perfil salvo foi encontrado neste navegador ainda.\nInsira suas chaves e clique em "Salvar Chaves no Meu Perfil" primeiro!');
+          return;
+        }
+        const profile = JSON.parse(raw);
+        if (!currentConfig) currentConfig = {};
+        if (Array.isArray(profile.groq_api_keys) && profile.groq_api_keys.length > 0) {
+          currentConfig.groq_api_keys = profile.groq_api_keys;
+          currentConfig.groq_api_key = profile.groq_api_keys[0];
+        }
+        if (Array.isArray(profile.openrouter_api_keys) && profile.openrouter_api_keys.length > 0) {
+          currentConfig.openrouter_api_keys = profile.openrouter_api_keys;
+          currentConfig.openrouter_api_key = profile.openrouter_api_keys[0];
+        }
+        if (profile.groq_model) currentConfig.groq_model = profile.groq_model;
+        if (profile.openrouter_model) currentConfig.openrouter_model = profile.openrouter_model;
+
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(currentConfig)
+        });
+        if (res.ok) {
+          alert('⚡ Perfil sincronizado com sucesso!\nSuas chaves de IA foram restauradas no servidor e estão prontas.');
+          renderKeyLists();
+          loadStatus();
+        } else {
+          alert('Erro ao enviar chaves para o servidor.');
+        }
+      } catch (e) {
+        alert('Erro ao sincronizar perfil: ' + e);
+      }
+    }
+
+    function exportProfileJson() {
+      const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+      const dataToExport = raw ? JSON.parse(raw) : currentConfig;
+      const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'manga_studio_perfil.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function importProfileJson(evt) {
+      const file = evt.target.files && evt.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const imported = JSON.parse(e.target.result);
+          if (imported.groq_api_keys || imported.groq_api_key) {
+            const keys = imported.groq_api_keys || [imported.groq_api_key];
+            currentConfig.groq_api_keys = keys;
+            currentConfig.groq_api_key = keys[0];
+          }
+          if (imported.openrouter_api_keys || imported.openrouter_api_key) {
+            const orKeys = imported.openrouter_api_keys || [imported.openrouter_api_key];
+            currentConfig.openrouter_api_keys = orKeys;
+            currentConfig.openrouter_api_key = orKeys[0];
+          }
+          if (imported.groq_model) currentConfig.groq_model = imported.groq_model;
+          if (imported.openrouter_model) currentConfig.openrouter_model = imported.openrouter_model;
+
+          saveBrowserProfile(currentConfig, false);
+          await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(currentConfig)
+          });
+          alert('✅ Perfil importado com sucesso!\nSuas chaves foram restauradas.');
+          renderKeyLists();
+          loadStatus();
+        } catch (err) {
+          alert('Erro ao importar arquivo de perfil: ' + err);
+        }
+      };
+      reader.readAsText(file);
+      evt.target.value = '';
     }
 
     // UTILS

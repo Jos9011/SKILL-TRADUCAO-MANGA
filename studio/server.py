@@ -874,23 +874,80 @@ def api_config():
         try:
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(new_cfg, f, indent=2, ensure_ascii=False)
-            for extra_p in [
+            extra_paths = [
                 r"C:\Users\ja329\tools\manga-translator\config.json",
-                os.path.join(r"C:\Users\ja329\.gemini\antigravity\scratch\SKILL-TRADUCAO-MANGA", "config.json")
-            ]:
-                if os.path.exists(os.path.dirname(extra_p)):
-                    try:
+                os.path.join(r"C:\Users\ja329\.gemini\antigravity\scratch\SKILL-TRADUCAO-MANGA", "config.json"),
+                "/content/drive/MyDrive/.manga_studio/config.json",
+                "/content/drive/MyDrive/MANGAS [PT-BR]/.config.json"
+            ]
+            for extra_p in extra_paths:
+                try:
+                    p_dir = os.path.dirname(extra_p)
+                    if os.path.exists(p_dir):
                         with open(extra_p, "w", encoding="utf-8") as ef:
                             json.dump(new_cfg, ef, indent=2, ensure_ascii=False)
-                    except Exception: pass
+                except Exception: pass
             return jsonify({"success": True})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     else:
         cfg = auto_translate.load_config()
+        # Se as chaves locais estiverem vazias, mas houver perfil salvo no Google Drive:
+        drive_cfg = "/content/drive/MyDrive/.manga_studio/config.json"
+        if (not cfg.get("groq_api_keys") and not cfg.get("groq_api_key")) and os.path.exists(drive_cfg):
+            try:
+                with open(drive_cfg, "r", encoding="utf-8") as df:
+                    d_data = json.load(df)
+                    cfg.update(d_data)
+            except Exception: pass
         cfg["app_version"] = APP_VERSION
         cfg["app_version_name"] = APP_VERSION_NAME
+        cfg["drive_connected"] = os.path.exists("/content/drive/MyDrive")
         return jsonify(cfg)
+
+@app.route("/api/delete_manga", methods=["POST"])
+def api_delete_manga():
+    """Exclui com segurança uma pasta de mangá (enviada ou traduzida) da biblioteca."""
+    data = request.json or {}
+    raw_path = data.get("path", "").strip('\"\'')
+    if not raw_path:
+        return jsonify({"success": False, "error": "Caminho não fornecido."}), 400
+
+    abs_p = os.path.abspath(raw_path)
+    if not os.path.exists(abs_p):
+        return jsonify({"success": False, "error": "Pasta ou arquivo não encontrado."}), 404
+
+    # Proteção de segurança: impede que caminhos críticos do sistema ou raízes sejam apagados
+    forbidden_roots = [
+        os.path.abspath("/"),
+        os.path.abspath("C:\\"),
+        os.path.abspath("C:\\Windows"),
+        os.path.abspath("C:\\Users"),
+        os.path.abspath(SYS_DIR),
+        os.path.abspath("/content"),
+        os.path.abspath("/content/drive"),
+        os.path.abspath("/content/drive/MyDrive"),
+        os.path.abspath("/content/manga-translator")
+    ]
+    for fb in forbidden_roots:
+        if abs_p == fb:
+            return jsonify({"success": False, "error": "Operação não permitida neste diretório de sistema."}), 403
+
+    try:
+        if os.path.isdir(abs_p):
+            shutil.rmtree(abs_p)
+        elif os.path.isfile(abs_p):
+            os.remove(abs_p)
+
+        # Se houver arquivo CBZ associado com o mesmo nome base, remove também
+        cbz_cand = abs_p.rstrip("/\\") + ".cbz"
+        if os.path.exists(cbz_cand):
+            try: os.remove(cbz_cand)
+            except Exception: pass
+
+        return jsonify({"success": True, "message": "Obra excluída com sucesso."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/aprendizado", methods=["GET", "POST"])
 def api_aprendizado():

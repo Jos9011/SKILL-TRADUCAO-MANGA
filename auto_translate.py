@@ -109,6 +109,15 @@ def load_config(cli_args=None):
         "ollama_model": "dolphin-llama3:latest",
         "temperature": 0.0
     }
+    # Restaura perfil salvo no Google Drive se disponível
+    drive_profile_cfg = "/content/drive/MyDrive/.manga_studio/config.json"
+    if os.path.exists(drive_profile_cfg):
+        try:
+            with open(drive_profile_cfg, "r", encoding="utf-8") as df:
+                cfg.update(json.load(df))
+        except Exception:
+            pass
+
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:

@@ -63,6 +63,9 @@ def load_config(cli_args=None):
     """Carrega as configurações com prioridade: CLI > Variáveis de Ambiente > config.json > Padrões."""
     cfg = {
         "provider": "auto",
+        "groq_api_key": "",
+        "groq_model": "openai/gpt-oss-120b",
+        "groq_fallback_model": "qwen/qwen3.8-27b",
         "openrouter_api_key": "",
         "openrouter_api_keys": [],
         "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
@@ -80,6 +83,10 @@ def load_config(cli_args=None):
             print(f"[*] Aviso ao ler config.json: {e}")
 
     # Variáveis de ambiente
+    if os.environ.get("GROQ_API_KEY"):
+        cfg["groq_api_key"] = os.environ.get("GROQ_API_KEY")
+    if os.environ.get("GROQ_MODEL"):
+        cfg["groq_model"] = os.environ.get("GROQ_MODEL")
     if os.environ.get("OPENROUTER_API_KEY"):
         cfg["openrouter_api_key"] = os.environ.get("OPENROUTER_API_KEY")
     if os.environ.get("OPENROUTER_API_KEYS"):
@@ -91,6 +98,7 @@ def load_config(cli_args=None):
     if os.environ.get("MANGA_TRANSLATE_MODEL"):
         cfg["ollama_model"] = os.environ.get("MANGA_TRANSLATE_MODEL")
         cfg["openrouter_model"] = os.environ.get("MANGA_TRANSLATE_MODEL")
+        cfg["groq_model"] = os.environ.get("MANGA_TRANSLATE_MODEL")
 
     # Argumentos CLI
     if cli_args:
@@ -99,10 +107,15 @@ def load_config(cli_args=None):
         if cli_args.get("model"):
             cfg["ollama_model"] = cli_args["model"]
             cfg["openrouter_model"] = cli_args["model"]
+            cfg["groq_model"] = cli_args["model"]
         if cli_args.get("host"):
             cfg["ollama_host"] = cli_args["host"]
         if cli_args.get("key"):
             cfg["openrouter_api_key"] = cli_args["key"]
+            if str(cli_args["key"]).startswith("gsk_"):
+                cfg["groq_api_key"] = cli_args["key"]
+        if cli_args.get("groq_key"):
+            cfg["groq_api_key"] = cli_args["groq_key"]
 
     # Consolidação do Pool de Chaves sem duplicatas
     keys_pool = []
@@ -1097,6 +1110,79 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
     font = ImageFont.truetype(font_path, 8)
     return font, wrap_text_to_width(draw, text, font, usable_w)
 
+def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
+    """Verifica se a chave da API do Groq é válida e se o modelo responde."""
+    if not api_key or not str(api_key).strip():
+        return False, "Chave vazia"
+    api_key = str(api_key).strip()
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 5
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode('utf-8'),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                return True, "Chave válida e pronta"
+    except urllib.error.HTTPError as e:
+        if e.code == 404 and model_name != "qwen/qwen3.8-27b":
+            return check_groq_available(api_key, model_name="qwen/qwen3.8-27b")
+        return False, f"Erro HTTP {e.code}"
+    except Exception as e:
+        return False, f"Erro de conexão: {e}"
+    return False, "Sem resposta"
+
+def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=1024, timeout=45, fallback_model="qwen/qwen3.8-27b"):
+    """Executa requisição à API ultra-rápida do Groq Cloud com fallback automático entre modelos."""
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    target_models = [model_name]
+    if fallback_model and fallback_model != model_name:
+        target_models.append(fallback_model)
+
+    last_err = None
+    for m in target_models:
+        payload = {
+            "model": m,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                "Authorization": f"Bearer {api_key.strip()}",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                res = json.loads(resp.read().decode('utf-8'))
+                return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code in (404, 500, 502, 503) and len(target_models) > 1:
+                continue
+            raise e
+        except Exception as e:
+            last_err = e
+            raise e
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Falha na consulta ao Groq.")
+
 def check_openrouter_key_status(api_key, model_name=None):
     """
     Verifica se a chave OpenRouter é válida e se possui saldo/limite diário restante.
@@ -1408,7 +1494,31 @@ def init_ai_translation_engine(cfg, is_adult=True):
     model = cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free")
     fallback_model = cfg.get("openrouter_fallback_model", "google/gemma-4-31b-it:free")
 
-    # 1. OpenRouter (100% Nuvem - Sem usar recursos do PC)
+    # 1. Groq Cloud (Ultra-Rápido, 100% Nuvem, Zero Censura)
+    groq_key = cfg.get("groq_api_key", "").strip()
+    groq_model = cfg.get("groq_model", "openai/gpt-oss-120b")
+    groq_fallback = cfg.get("groq_fallback_model", "qwen/qwen3.8-27b")
+
+    if provider in ("groq", "fast") or (provider == "auto" and groq_key):
+        if groq_key:
+            print(f"[*] Verificando conexão com Groq Cloud (Modelo: {groq_model})...")
+            g_ok, g_msg = check_groq_available(groq_key, groq_model)
+            if g_ok:
+                masked_g = groq_key[:8] + "..." + groq_key[-4:] if len(groq_key) > 12 else "***"
+                print(f"[+] Motor Groq Cloud Ativo com Chave ({masked_g}) | Modelo: '{groq_model}' (Zero Censura | Nuvem)")
+                engine_opts = {
+                    "api_key": groq_key,
+                    "fallback_model": groq_fallback,
+                    "temperature": cfg.get("temperature", 0.0),
+                    "cfg": cfg
+                }
+                return "groq", groq_model, engine_opts
+            else:
+                print(f"[!] Groq Cloud indisponível [{g_msg}]. Tentando próximo motor...")
+        elif provider in ("groq", "fast"):
+            print(f"[!] Erro: Provedor configurado como 'groq', mas 'groq_api_key' está vazia em config.json.")
+
+    # 2. OpenRouter (100% Nuvem - Sem usar recursos do PC)
     if provider in ("openrouter", "cloud") or (provider == "auto" and keys):
         if keys:
             print(f"[*] Analisando Pool de Chaves OpenRouter ({len(keys)} chave(s) configurada(s))...")
@@ -1798,7 +1908,17 @@ def translate_single_dialogue(text, engine_type, model_name, engine_opts=None, i
                 {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
             ]
             temp = engine_opts.get("temperature", 0.0)
-            if engine_type == "openrouter":
+            if engine_type == "groq":
+                try:
+                    raw_resp = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=300, fallback_model=engine_opts.get("fallback_model"))
+                except Exception as g_err:
+                    cfg = engine_opts.get("cfg", {})
+                    or_keys = cfg.get("openrouter_api_keys", [])
+                    if or_keys:
+                        raw_resp = query_openrouter_chat(messages, cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free"), api_key=or_keys[0], temperature=temp, max_tokens=300, engine_opts=engine_opts)
+                    else:
+                        raise g_err
+            elif engine_type == "openrouter":
                 try:
                     raw_resp = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=300, engine_opts=engine_opts)
                 except Exception as o_err:
@@ -1872,7 +1992,18 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
 
     temp = engine_opts.get("temperature", 0.0)
     try:
-        if engine_type == "openrouter":
+        if engine_type == "groq":
+            try:
+                resp_content = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=1024, fallback_model=engine_opts.get("fallback_model"))
+            except Exception as g_err:
+                cfg = engine_opts.get("cfg", {})
+                or_keys = cfg.get("openrouter_api_keys", [])
+                if or_keys:
+                    print(f"\n[*] Groq indisponível -> Alternando para OpenRouter...")
+                    resp_content = query_openrouter_chat(messages, cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free"), api_key=or_keys[0], temperature=temp, max_tokens=1024, engine_opts=engine_opts)
+                else:
+                    raise g_err
+        elif engine_type == "openrouter":
             try:
                 resp_content = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=1024, engine_opts=engine_opts)
             except Exception as o_err:
@@ -2491,7 +2622,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             pass
             
     engine_type, model_name, engine_opts = init_ai_translation_engine(config, is_adult=is_adult)
-    if engine_type == "openrouter":
+    if engine_type == "groq":
+        print(f"[+] MOTOR ATIVO: Groq Cloud Ultra-Rápido -> Modelo: '{model_name}' (Zero Censura | Nuvem)")
+    elif engine_type == "openrouter":
         print(f"[+] MOTOR ATIVO: OpenRouter Cloud (Nuvem) -> Modelo: '{model_name}' (Sem usar recursos do PC)")
     elif engine_type == "ollama":
         print(f"[+] MOTOR ATIVO: Ollama ({engine_opts.get('host')}) -> Modelo: '{model_name}'")
@@ -2857,7 +2990,10 @@ if __name__ == "__main__":
             if "--adult" in args: args.remove("--adult")
             if "--18" in args: args.remove("--18")
 
-        if "--openrouter" in args:
+        if "--groq" in args:
+            cli_provider = "groq"
+            args.remove("--groq")
+        elif "--openrouter" in args:
             cli_provider = "openrouter"
             args.remove("--openrouter")
         elif "--ollama" in args:

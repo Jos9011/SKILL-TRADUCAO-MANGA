@@ -95,17 +95,19 @@ if "%CONTENT_MODE%"=="1" (
 
 echo.
 echo =====================================================================
-echo PASSO 3: ONDE RODAR A IA (QWEN 2.5 / DOLPHIN SEM CENSURA)
+echo PASSO 3: ONDE RODAR A IA (ZERO CENSURA / ALTA VELOCIDADE)
 echo =====================================================================
-echo [1] AUTOMATICO (Segue a definicao do arquivo config.json)
-echo [2] OPENROUTER NUVEM (100%% Nuvem - Nao usa recursos do PC)
-echo [3] OLLAMA (Google Colab Nuvem, Servidor Remoto ou Local)
+echo [1] AUTOMATICO (Segue config.json - Prioriza Groq Nuvem se configurado)
+echo [2] GROQ NUVEM (Ultra Rapido - GPT-OSS 120B / Qwen 27B Sem Censura)
+echo [3] OPENROUTER NUVEM (Nemotron / Dolphin)
+echo [4] OLLAMA (Google Colab Nuvem, Servidor Remoto ou Local)
 echo =====================================================================
-set /p AI_MODE=">> Digite 1, 2 ou 3 (Padrao: 1): "
+set /p AI_MODE=">> Digite 1, 2, 3 ou 4 (Padrao: 1): "
 
 set AI_FLAG=
-if "%AI_MODE%"=="2" set AI_FLAG=--openrouter
-if "%AI_MODE%"=="3" set AI_FLAG=--ollama
+if "%AI_MODE%"=="2" set AI_FLAG=--groq
+if "%AI_MODE%"=="3" set AI_FLAG=--openrouter
+if "%AI_MODE%"=="4" set AI_FLAG=--ollama
 
 echo.
 echo [*] Iniciando processamento...

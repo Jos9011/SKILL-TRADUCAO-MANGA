@@ -665,6 +665,10 @@ def translate_sfx_phrase(text):
     """Detecta frases compostas de onomatopeias e traduz diretamente sem chamar a IA."""
     if not text:
         return None
+    clean_s = text.strip()
+    # 0. Sequências de 888 / 8888888 (danmaku de palmas / aplausos / sexo pele com pele '啪啪啪' em scans chineses)
+    if re.match(r'^(?:8{2,}|8{2,}[\s8]+)$', clean_s):
+        return "CLAP CLAP"
     raw_clean = re.sub(r'[^A-Za-z0-9\s!?.,~-]', '', text).strip()
     if not raw_clean:
         return None

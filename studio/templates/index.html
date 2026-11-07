@@ -1007,16 +1007,41 @@
       <!-- TAB 1: TRANSLATE -->
       <section class="tab-view active" id="tab-translate">
         <!-- DROPZONE -->
-        <div class="dropzone-container" id="dropzone" onclick="pickFolder()">
+        <div class="dropzone-container" id="dropzone">
+          <input type="file" id="browser-folder-input" webkitdirectory directory multiple style="display: none;">
+          <input type="file" id="browser-zip-input" accept=".zip,.cbz" style="display: none;">
+          
           <div class="dropzone-icon">
             <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
           </div>
           <div class="dropzone-title">Arraste e solte a pasta do Mangá ou Manhwa aqui</div>
-          <div class="dropzone-subtitle">Ou clique no botão abaixo para selecionar no seu computador</div>
-          <button class="btn-spotify" type="button" onclick="event.stopPropagation(); pickFolder();">
-            <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
-            Selecionar Pasta
-          </button>
+          <div class="dropzone-subtitle">Ou escolha uma das opções abaixo no seu computador ou celular:</div>
+          
+          <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 18px;">
+            <button class="btn-spotify" type="button" onclick="triggerFolderSelect()">
+              <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+              Selecionar Pasta
+            </button>
+            <button class="btn-spotify" type="button" style="background-color: var(--surface-subtle); color: white; border: 1px solid var(--border-subtle);" onclick="triggerZipSelect()">
+              <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14h-4v-2h4v2zm0-4h-4v-2h4v2zm0-4h-4V7h4v2z"/></svg>
+              Enviar Arquivo ZIP / CBZ
+            </button>
+            <button id="btn-drive-pick" class="btn-spotify" type="button" style="display: none; background: rgba(66, 133, 244, 0.2); color: #4285F4; border: 1px solid rgba(66, 133, 244, 0.4);" onclick="openDrivePicker()">
+              <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+              Google Drive
+            </button>
+          </div>
+
+          <!-- Upload Progress indicator -->
+          <div id="upload-progress-box" style="display: none; margin-top: 22px; width: 85%; max-width: 440px; margin-left: auto; margin-right: auto; text-align: left;">
+            <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-subdued); margin-bottom: 6px;">
+              <span id="upload-status-text">Enviando arquivos...</span>
+              <span id="upload-pct-text" style="font-weight: 700; color: var(--spotify-green);">0%</span>
+            </div>
+            <div class="meter-bar" style="height: 6px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden;">
+              <div id="upload-progress-fill" style="width: 0%; height: 100%; background: var(--spotify-green); transition: width 0.1s ease;"></div>
+            </div>
+          </div>
         </div>
 
         <!-- SELECTION CARD (HIDDEN UNTIL LOADED) -->
@@ -1378,17 +1403,69 @@
       if (tabId === 'settings') loadConfig();
     }
 
-    // FOLDER PICKER & INSPECT
-    async function pickFolder() {
+    // FOLDER PICKER & UPLOAD MANAGEMENT
+    function triggerFolderSelect() {
+      const isLocalhost = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+      if (isLocalhost) {
+        fetch('/api/pick_folder', { method: 'POST' })
+          .then(r => r.json())
+          .then(data => {
+            if (data.success && data.path) {
+              inspectFolder(data.path);
+            } else if (data.is_headless || !data.success) {
+              document.getElementById('browser-folder-input').click();
+            }
+          })
+          .catch(() => {
+            document.getElementById('browser-folder-input').click();
+          });
+      } else {
+        document.getElementById('browser-folder-input').click();
+      }
+    }
+
+    function triggerZipSelect() {
+      document.getElementById('browser-zip-input').click();
+    }
+
+    async function checkDriveAvailability() {
       try {
-        const res = await fetch('/api/pick_folder', { method: 'POST' });
+        const res = await fetch('/api/drive_folders');
         const data = await res.json();
-        if (data.success && data.path) {
-          inspectFolder(data.path);
+        const driveBtn = document.getElementById('btn-drive-pick');
+        if (driveBtn && data.available) {
+          driveBtn.style.display = 'inline-flex';
+        }
+      } catch (e) {}
+    }
+
+    async function openDrivePicker() {
+      try {
+        const res = await fetch('/api/drive_folders');
+        const data = await res.json();
+        if (data.folders && data.folders.length > 0) {
+          let msg = "Pastas de Mangá encontradas no Google Drive:\n\n";
+          data.folders.forEach((f, idx) => {
+            msg += `${idx + 1}. ${f.name} (${f.pages} págs)\n`;
+          });
+          msg += "\nDigite o número da pasta desejada:";
+          const chosen = prompt(msg, "1");
+          if (!chosen) return;
+          const idx = parseInt(chosen.trim()) - 1;
+          if (!isNaN(idx) && data.folders[idx]) {
+            inspectFolder(data.folders[idx].path);
+          }
+        } else {
+          const manual = prompt("Digite o caminho da pasta dentro do seu Google Drive montado:", "/content/drive/MyDrive/MANGAS/NomeDaObra");
+          if (manual) inspectFolder(manual.trim());
         }
       } catch (e) {
-        console.error("Erro ao selecionar pasta:", e);
+        alert("Erro ao consultar Google Drive: " + e);
       }
+    }
+
+    function pickFolder() {
+      triggerFolderSelect();
     }
 
     function updatePlayerCover(firstImg, mangaName, statusText) {
@@ -1462,6 +1539,138 @@
       document.getElementById('dropzone').style.display = 'block';
     }
 
+    function uploadFilesWithProgress(files, folderName) {
+      return new Promise((resolve, reject) => {
+        const pBox = document.getElementById('upload-progress-box');
+        const pFill = document.getElementById('upload-progress-fill');
+        const pText = document.getElementById('upload-status-text');
+        const pPct = document.getElementById('upload-pct-text');
+
+        pBox.style.display = 'block';
+        pText.innerText = `Enviando ${files.length} imagens...`;
+        pFill.style.width = '0%';
+        pPct.innerText = '0%';
+
+        const formData = new FormData();
+        formData.append('folder_name', folderName);
+        files.forEach(f => formData.append('files[]', f, f.name));
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload', true);
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            pFill.style.width = pct + '%';
+            pPct.innerText = pct + '%';
+          }
+        };
+
+        xhr.onload = () => {
+          pBox.style.display = 'none';
+          if (xhr.status === 200) {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              if (res.success && res.path) {
+                inspectFolder(res.path);
+                resolve(res);
+              } else {
+                alert("Erro ao salvar mangá no servidor: " + (res.error || ""));
+                reject(res);
+              }
+            } catch (err) {
+              alert("Resposta inválida do servidor.");
+              reject(err);
+            }
+          } else {
+            alert("Erro no envio dos arquivos (HTTP " + xhr.status + ").");
+            reject(xhr);
+          }
+        };
+
+        xhr.onerror = () => {
+          pBox.style.display = 'none';
+          alert("Falha de conexão ao enviar arquivos para o servidor.");
+          reject();
+        };
+
+        xhr.send(formData);
+      });
+    }
+
+    function uploadZipWithProgress(file) {
+      return new Promise((resolve, reject) => {
+        const pBox = document.getElementById('upload-progress-box');
+        const pFill = document.getElementById('upload-progress-fill');
+        const pText = document.getElementById('upload-status-text');
+        const pPct = document.getElementById('upload-pct-text');
+
+        pBox.style.display = 'block';
+        pText.innerText = `Enviando ${file.name}...`;
+        pFill.style.width = '0%';
+        pPct.innerText = '0%';
+
+        const formData = new FormData();
+        formData.append('zip_file', file);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload', true);
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            pFill.style.width = pct + '%';
+            pPct.innerText = pct + '%';
+          }
+        };
+
+        xhr.onload = () => {
+          pBox.style.display = 'none';
+          if (xhr.status === 200) {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              if (res.success && res.path) {
+                inspectFolder(res.path);
+                resolve(res);
+              } else {
+                alert("Erro ao descompactar mangá: " + (res.error || ""));
+                reject(res);
+              }
+            } catch (err) {
+              alert("Resposta inválida do servidor.");
+              reject(err);
+            }
+          } else {
+            alert("Erro no envio do ZIP (HTTP " + xhr.status + ").");
+            reject(xhr);
+          }
+        };
+
+        xhr.onerror = () => {
+          pBox.style.display = 'none';
+          alert("Falha de conexão ao enviar ZIP.");
+          reject();
+        };
+
+        xhr.send(formData);
+      });
+    }
+
+    async function traverseFileTree(item, fileList) {
+      if (item.isFile) {
+        const file = await new Promise((res) => item.file(res));
+        if (file && /\.(jpg|jpeg|png|webp|bmp)$/i.test(file.name)) {
+          fileList.push(file);
+        }
+      } else if (item.isDirectory) {
+        const dirReader = item.createReader();
+        const entries = await new Promise((res) => dirReader.readEntries(res));
+        for (const entry of entries) {
+          await traverseFileTree(entry, fileList);
+        }
+      }
+    }
+
     // DRAG AND DROP
     const dropzone = document.getElementById('dropzone');
     dropzone.addEventListener('dragover', (e) => {
@@ -1469,11 +1678,80 @@
       dropzone.classList.add('dragover');
     });
     dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-    dropzone.addEventListener('drop', (e) => {
+    dropzone.addEventListener('drop', async (e) => {
       e.preventDefault();
       dropzone.classList.remove('dragover');
-      // No navegador, caminhos absolutos locais exigem o picker nativo do Windows por restrição de segurança web
-      pickFolder();
+
+      const items = e.dataTransfer.items;
+      if (items && items.length > 0) {
+        const files = [];
+        let zipFile = null;
+        let detectedFolderName = 'Manga_Arrastado';
+
+        for (let i = 0; i < items.length; i++) {
+          const entry = items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
+          if (entry) {
+            if (entry.isDirectory) {
+              detectedFolderName = entry.name;
+              await traverseFileTree(entry, files);
+            } else if (entry.isFile) {
+              const f = items[i].getAsFile();
+              if (f && /\.(zip|cbz)$/i.test(f.name)) {
+                zipFile = f;
+                break;
+              } else if (f && /\.(jpg|jpeg|png|webp|bmp)$/i.test(f.name)) {
+                files.push(f);
+              }
+            }
+          } else {
+            const f = items[i].getAsFile();
+            if (f) {
+              if (/\.(zip|cbz)$/i.test(f.name)) { zipFile = f; break; }
+              else if (/\.(jpg|jpeg|png|webp|bmp)$/i.test(f.name)) files.push(f);
+            }
+          }
+        }
+
+        if (zipFile) {
+          await uploadZipWithProgress(zipFile);
+          return;
+        }
+        if (files.length > 0) {
+          await uploadFilesWithProgress(files, detectedFolderName);
+          return;
+        }
+      }
+
+      triggerFolderSelect();
+    });
+
+    // Registra inputs assim que a página carregar
+    document.addEventListener('DOMContentLoaded', () => {
+      checkDriveAvailability();
+
+      const folderInput = document.getElementById('browser-folder-input');
+      if (folderInput) {
+        folderInput.addEventListener('change', async (e) => {
+          const allFiles = Array.from(e.target.files);
+          const imgFiles = allFiles.filter(f => /\.(jpg|jpeg|png|webp|bmp)$/i.test(f.name));
+          if (imgFiles.length === 0) {
+            alert("Nenhuma imagem válida (JPG, PNG, WEBP) encontrada na pasta selecionada.");
+            return;
+          }
+          const relPath = imgFiles[0].webkitRelativePath || '';
+          const folderName = relPath.split('/')[0] || 'Manga_Upload';
+          await uploadFilesWithProgress(imgFiles, folderName);
+        });
+      }
+
+      const zipInput = document.getElementById('browser-zip-input');
+      if (zipInput) {
+        zipInput.addEventListener('change', async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          await uploadZipWithProgress(file);
+        });
+      }
     });
 
     // OPTIONS TOGGLE

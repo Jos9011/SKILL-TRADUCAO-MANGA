@@ -362,9 +362,99 @@ def pick_folder_native(title="Selecione a Pasta", init_dir=""):
         print(f"[!] Erro ao abrir seletor de pastas: {e}")
         return ""
 
+UPLOAD_DIR = os.path.join(SYS_DIR, "uploads")
+if os.path.exists("/content"):
+    UPLOAD_DIR = "/content/uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    """Recebe arquivos de mangá enviados diretamente pelo navegador (pasta de imagens ou ZIP/CBZ)."""
+    try:
+        # 1. Arquivo ZIP / CBZ
+        if 'zip_file' in request.files:
+            file = request.files['zip_file']
+            filename = file.filename or "manga_upload.zip"
+            base_name = os.path.splitext(filename)[0]
+            base_name = re.sub(r'[\\/*?:"<>|]', "", base_name).strip() or "Manga_Upload"
+            target_dir = os.path.join(UPLOAD_DIR, base_name)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            zip_tmp = os.path.join(UPLOAD_DIR, f"tmp_{filename}")
+            file.save(zip_tmp)
+            with zipfile.ZipFile(zip_tmp, 'r') as z:
+                z.extractall(target_dir)
+            try: os.remove(zip_tmp)
+            except Exception: pass
+            
+            # Se todas as imagens estiverem dentro de uma subpasta única descompactada, traz para a raiz
+            subdirs = [os.path.join(target_dir, d) for d in os.listdir(target_dir) if os.path.isdir(os.path.join(target_dir, d))]
+            root_imgs = [f for f in os.listdir(target_dir) if f.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+            if len(subdirs) == 1 and not root_imgs:
+                only_sub = subdirs[0]
+                for f in os.listdir(only_sub):
+                    shutil.move(os.path.join(only_sub, f), os.path.join(target_dir, f))
+                try: os.rmdir(only_sub)
+                except Exception: pass
+                
+            return jsonify({"success": True, "path": target_dir, "name": base_name})
+            
+        # 2. Upload de Pasta / Várias Imagens
+        files = request.files.getlist("files[]")
+        folder_name = request.form.get("folder_name", "Manga_Upload").strip() or "Manga_Upload"
+        folder_name = re.sub(r'[\\/*?:"<>|]', "", folder_name).strip() or "Manga_Upload"
+        target_dir = os.path.join(UPLOAD_DIR, folder_name)
+        os.makedirs(target_dir, exist_ok=True)
+        
+        saved_count = 0
+        for f in files:
+            fname = os.path.basename(f.filename)
+            if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.bmp')):
+                f.save(os.path.join(target_dir, fname))
+                saved_count += 1
+                
+        if saved_count == 0:
+            return jsonify({"success": False, "error": "Nenhuma imagem válida recebida"}), 400
+            
+        return jsonify({"success": True, "path": target_dir, "name": folder_name, "count": saved_count})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/drive_folders")
+def api_drive_folders():
+    """Lista pastas de mangás disponíveis no Google Drive montado (/content/drive/MyDrive)."""
+    drive_root = "/content/drive/MyDrive"
+    if not os.path.exists(drive_root):
+        return jsonify({"available": False, "folders": []})
+        
+    folders = []
+    search_dirs = [drive_root]
+    manga_sub = os.path.join(drive_root, "MANGAS")
+    if os.path.exists(manga_sub):
+        search_dirs.insert(0, manga_sub)
+        
+    for base in search_dirs:
+        try:
+            for item in sorted(os.listdir(base)):
+                p = os.path.join(base, item)
+                if os.path.isdir(p) and not item.startswith("."):
+                    imgs = [f for f in os.listdir(p) if f.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+                    if imgs:
+                        folders.append({
+                            "name": item,
+                            "path": p,
+                            "pages": len(imgs)
+                        })
+        except Exception:
+            pass
+            
+    return jsonify({"available": True, "folders": folders})
+
 @app.route("/api/pick_folder", methods=["POST"])
 def api_pick_folder():
-    """Abre o diálogo nativo do Windows para selecionar a pasta do mangá."""
+    """Abre o diálogo nativo do Windows para selecionar a pasta do mangá (quando executado localmente)."""
+    if os.name != 'nt':
+        return jsonify({"success": False, "is_headless": True})
     cfg = auto_translate.load_config()
     raw_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
     init_dir = raw_dir if os.path.exists(raw_dir) else (BASE_MANGAS_DIR if os.path.exists(BASE_MANGAS_DIR) else "C:\\")

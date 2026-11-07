@@ -4,6 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Manga Translator Studio</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#121212">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Manga Studio">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="icon" type="image/png" href="/static/logo.png">
   <link rel="shortcut icon" href="/static/favicon.ico">
@@ -985,6 +990,13 @@
           <h1 id="view-title">Traduzir Mangá</h1>
         </div>
         <div class="header-actions">
+          <button id="btn-install-pwa" class="btn-secondary" style="display: none; padding: 7px 14px; font-size: 0.82rem; border-color: rgba(29, 185, 84, 0.5); color: var(--spotify-green);" onclick="installPWA()" title="Instalar Manga Studio como App no Windows">
+            📲 Instalar App
+          </button>
+          <button id="btn-open-app-window" class="btn-secondary" style="padding: 7px 14px; font-size: 0.82rem; display: flex; align-items: center; gap: 6px;" onclick="openAsDesktopWindow()" title="Abrir em Janela Dedicada do Windows (Sem barra de navegador)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 14H5V8h14v10z"/></svg>
+            Modo App Desktop
+          </button>
           <div class="status-pill" id="header-ai-pill">
             <div class="status-dot pulsing"></div>
             <span id="header-ai-label">Groq Cloud • Qwen 27B</span>
@@ -2026,6 +2038,50 @@
     function escapeQuotes(text) {
       if (!text) return '';
       return text.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    }
+
+    // PWA & APP WINDOW
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      const btn = document.getElementById('btn-install-pwa');
+      if (btn) btn.style.display = 'inline-flex';
+    });
+
+    async function installPWA() {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        if (outcome === 'accepted') {
+          const btn = document.getElementById('btn-install-pwa');
+          if (btn) btn.style.display = 'none';
+        }
+        deferredPrompt = null;
+      } else {
+        alert("Para fixar o Manga Studio como aplicativo nativo:\n\n1. Use o atalho oficial 'Manga Studio' que criamos na sua Área de Trabalho!\n2. Ou no menu do navegador (⋮), clique em 'Instalar Manga Studio' ou 'Criar Atalho'.");
+      }
+    }
+
+    async function openAsDesktopWindow() {
+      try {
+        const btn = document.getElementById('btn-open-app-window');
+        if (btn) btn.innerText = "Abrindo Janela...";
+        await fetch('/api/launch_app_window', { method: 'POST' });
+        setTimeout(() => {
+          if (btn) {
+            btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 14H5V8h14v10z"/></svg> Modo App Desktop`;
+          }
+        }, 2000);
+      } catch (e) {
+        console.error("Erro ao abrir janela de app:", e);
+      }
+    }
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW reg error:', err));
+      });
     }
 
     async function checkActiveJob() {

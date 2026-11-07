@@ -1,0 +1,22 @@
+{
+  "name": "Manga Studio",
+  "short_name": "Manga Studio",
+  "description": "Estúdio Profissional de Tradução e Diagramação de Mangás e Manhwas com IA",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "icons": [
+    {
+      "src": "/static/logo.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

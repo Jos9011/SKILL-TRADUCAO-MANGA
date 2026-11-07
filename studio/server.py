@@ -102,6 +102,14 @@ class StreamCapture(io.StringIO):
 def index():
     return render_template("index.html")
 
+@app.route("/manifest.json")
+def manifest():
+    return send_from_directory(os.path.join(app.root_path, "static"), "manifest.json", mimetype="application/manifest+json")
+
+@app.route("/sw.js")
+def service_worker():
+    return send_from_directory(os.path.join(app.root_path, "static"), "sw.js", mimetype="application/javascript")
+
 @app.route("/api/status")
 def api_status():
     """Consulta cotas ao vivo do Groq, OpenRouter e Ollama."""
@@ -432,6 +440,16 @@ def api_open_reader():
         webbrowser.open("file://" + os.path.abspath(path))
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Arquivo não encontrado"}), 404
+
+@app.route("/api/launch_app_window", methods=["POST"])
+def api_launch_app_window():
+    """Abre uma janela de aplicativo dedicada (chromeless app window) usando Chrome ou Edge."""
+    try:
+        from studio import app_launcher
+        app_launcher.launch()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/open_folder", methods=["POST"])
 def api_open_folder():

@@ -2902,7 +2902,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     os.makedirs(cache_dir, exist_ok=True)
     
     import uuid
-    temp_render_dir = os.path.join(os.environ.get("TEMP", "C:\\temp"), f"manga_render_tmp_{uuid.uuid4().hex[:8]}")
+    import tempfile
+    temp_render_dir = os.path.join(tempfile.gettempdir(), f"manga_render_tmp_{uuid.uuid4().hex[:8]}")
     os.makedirs(temp_render_dir, exist_ok=True)
     
     print("=" * 60)

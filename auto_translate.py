@@ -1522,9 +1522,12 @@ def init_ai_translation_engine(cfg, is_adult=True):
     fallback_model = cfg.get("openrouter_fallback_model", "google/gemma-4-31b-it:free")
 
     # 1. Groq Cloud (Ultra-Rápido, 100% Nuvem, Zero Censura)
+    groq_keys = cfg.get("groq_api_keys", [])
     groq_key = cfg.get("groq_api_key", "").strip()
-    groq_model = cfg.get("groq_model", "openai/gpt-oss-120b")
-    groq_fallback = cfg.get("groq_fallback_model", "qwen/qwen3.8-27b")
+    if not groq_key and groq_keys:
+        groq_key = str(groq_keys[0]).strip()
+    groq_model = cfg.get("groq_model", "qwen/qwen3.8-27b")
+    groq_fallback = cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
 
     if provider in ("groq", "fast") or (provider == "auto" and groq_key):
         if groq_key:
@@ -2474,7 +2477,7 @@ def is_valid_translation(orig_text, trans_text):
             return False
     return True
 
-def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None):
     if config is None:
         config = load_config()
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
@@ -2681,6 +2684,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 
     # Traduz página por página com coerência narrativa e suporte a glossário
     for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
+        if progress_cb:
+            try: progress_cb("translation", p["page"], len(pages_data), f"Traduzindo balões: Página {p['page']} de {len(pages_data)}")
+            except Exception: pass
         if is_credits_page(p["bubbles"]):
             continue
             
@@ -2735,6 +2741,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     # 4. Diagramação e Inpainting
     print(f"[*] Iniciando limpeza profissional de balões e diagramação...")
     for idx, p in enumerate(tqdm(pages_data, desc="Diagramação", unit="pág")):
+        if progress_cb:
+            try: progress_cb("diagram", idx + 1, len(pages_data), f"Diagramação e Inpainting: Página {idx + 1} de {len(pages_data)}")
+            except Exception: pass
         img_name = p["img"]
         src_path = os.path.join(manga_dir, img_name)
         
@@ -2993,6 +3002,12 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     except Exception:
         pass
         
+    if progress_cb:
+        try:
+            progress_cb("done", len(pages_data), len(pages_data), "Manga traduzido com sucesso!", result={"output_dir": output_dir, "cbz_path": cbz_dest_path, "reader_path": os.path.join(output_dir, "leitor.html")})
+        except Exception:
+            pass
+            
     return {"success": True, "output_dir": output_dir, "cbz_path": cbz_dest_path}
 
 def show_credits_dashboard(cfg=None):

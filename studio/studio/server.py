@@ -509,15 +509,19 @@ def api_glossary():
 
 def open_chrome_app(url, port=5050):
     """Abre a janela nativa do Chrome em modo Desktop App (sem barra de URL)."""
+    profile_dir = os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "MangaStudioAppProfile")
     chrome_paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
     ]
     for cp in chrome_paths:
         if os.path.exists(cp):
             cmd = [
                 cp,
                 f"--app={url}",
+                f"--user-data-dir={profile_dir}",
                 "--window-size=1280,820",
                 "--window-position=100,60"
             ]
@@ -529,13 +533,22 @@ def open_chrome_app(url, port=5050):
     webbrowser.open(url)
     return False
 
+def is_server_running(port=5050):
+    """Verifica se o backend já está ativo e respondendo na porta."""
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/config")
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
 def kill_existing_on_port(port=5050):
-    """Encerra processos anteriores que estejam segurando a porta 5050."""
+    """Encerra processos anteriores que estejam travando a porta 5050."""
     try:
         import psutil
         curr_pid = os.getpid()
         for p in psutil.process_iter(['pid', 'name']):
-            if p.info['pid'] != curr_pid and 'python' in p.info['name'].lower():
+            if p.info['pid'] != curr_pid and 'python' in (p.info['name'] or '').lower():
                 try:
                     for c in p.net_connections():
                         if c.laddr.port == port:
@@ -547,7 +560,17 @@ def kill_existing_on_port(port=5050):
 
 if __name__ == "__main__":
     port = 5050
+    url = f"http://127.0.0.1:{port}"
+
+    # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
+    if is_server_running(port):
+        print(f"[*] Servidor já ativo em {url}. Abrindo aplicativo...")
+        open_chrome_app(url, port)
+        sys.exit(0)
+
+    # Se a porta estiver presa por processo zumbi, limpa
     kill_existing_on_port(port)
-    url = f"http://localhost:{port}"
+    time.sleep(0.5)
+
     threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

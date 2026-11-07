@@ -1140,9 +1140,9 @@
               <div class="option-card">
                 <span class="option-label">Motor de IA</span>
                 <div class="pill-selector" id="provider-selector">
-                  <div class="pill-btn active" onclick="setOption('provider', 'groq')">Groq Cloud</div>
+                  <div class="pill-btn active" onclick="setOption('provider', 'groq')">Groq Cloud (Híbrido)</div>
+                  <div class="pill-btn" onclick="setOption('provider', 'ollama')">IA Local (GPU Colab)</div>
                   <div class="pill-btn" onclick="setOption('provider', 'openrouter')">OpenRouter</div>
-                  <div class="pill-btn" onclick="setOption('provider', 'ollama')">Ollama</div>
                 </div>
               </div>
             </div>
@@ -1931,8 +1931,8 @@
           }
           const liveEngine = document.getElementById('live-engine-label');
           if (liveEngine) {
-            liveEngine.innerText = selectedOptions.provider === 'groq' ? 'Groq Cloud • Qwen 27B' :
-                                   selectedOptions.provider === 'openrouter' ? 'OpenRouter Cloud' : 'Ollama Local / Colab';
+            liveEngine.innerText = selectedOptions.provider === 'groq' ? 'Groq Cloud (Híbrido • Qwen 27B)' :
+                                   selectedOptions.provider === 'openrouter' ? 'OpenRouter Cloud' : 'IA Local GPU (Ollama)';
           }
 
           // Atualiza barra principal

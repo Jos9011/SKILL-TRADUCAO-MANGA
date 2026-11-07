@@ -1651,6 +1651,25 @@ def init_ai_translation_engine(cfg, is_adult=True):
 
     return None, None, {"cfg": cfg}
 
+def clean_ocr_scan_noise(text):
+    """Limpa artefatos típicos de OCR em scans de mangá em inglês/japonês antes de enviar para a IA."""
+    if not text:
+        return ""
+    t = text
+    # Corrige contrações com apóstrofo quebrado pelo OCR (ex: "Don'+", "can'+", "I+'s")
+    t = re.sub(
+        r"\b(don|can|won|didn|doesn|isn|aren)['\+]+(?:\s*t)?(?=[^a-zA-Z]|$)",
+        lambda m: (m.group(1).capitalize() if m.group(1)[0].isupper() else m.group(1).lower()) + "'t",
+        t,
+        flags=re.IGNORECASE
+    )
+    t = re.sub(r"\bI\s*['\+]+\s*s\b", "It's", t)
+    t = re.sub(r"\bI\s*['\+]+\s*m\b", "I'm", t)
+    t = re.sub(r"['\+]+s\b", "'s", t)
+    t = re.sub(r"\bhit\s*ing\b", "hitting", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bWwa\s*it\b", "Wait", t, flags=re.IGNORECASE)
+    return t
+
 def clean_ai_translation(text, original_text="", is_adult=True):
     """Higieniza rigorosamente a saída da IA: elimina notas, 'Obs:', prefixos e normaliza anatomia."""
     if not text:
@@ -1761,15 +1780,18 @@ def clean_ai_translation(text, original_text="", is_adult=True):
 
     orig_lower = original_text.lower() if original_text else ""
     if is_adult:
-        # Pussy / Cunt -> Buceta (NUNCA pau ou pica)
-        if re.search(r'\b(pussy|cunt|vagina|slit|clit|clitoris)\b', orig_lower):
+        has_female_organ = bool(re.search(r'\b(pussy|cunt|vagina|slit|clit|clitoris)\b', orig_lower))
+        has_male_organ = bool(re.search(r'\b(peepee|pecker|penis|cock|dick|shaft|wiener)\b', orig_lower))
+
+        # Pussy / Cunt -> Buceta (apenas se não houver órgão masculino na mesma frase para evitar conflito)
+        if has_female_organ and not has_male_organ:
             cleaned = _preserve_case(r'\bpica\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bpau\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bpiroca\b', 'buceta', cleaned)
             cleaned = _preserve_case(r'\bcaralho\b', 'buceta', cleaned)
 
-        # Cock / Dick / Shaft / Peepee -> Pau / Pinto (NUNCA peito ou pé de peixe)
-        if re.search(r'\b(peepee|pecker|penis|cock|dick|shaft|wiener)\b', orig_lower):
+        # Cock / Dick / Shaft -> Pau / Pinto (apenas se não houver órgão feminino na mesma frase)
+        if has_male_organ and not has_female_organ:
             cleaned = _preserve_case(r'\bsua\s+bucetinha\b', 'seu pintinho', cleaned)
             cleaned = _preserve_case(r'\bsua\s+buceta\b', 'seu pau', cleaned)
             cleaned = _preserve_case(r'\bbucetinha\b', 'pintinho', cleaned)
@@ -1779,24 +1801,60 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             cleaned = _preserve_case(r'\bpeito\b', 'pau', cleaned)
             cleaned = _preserve_case(r'\bp[ée]\s+de\s+peixe\b', 'pintinho', cleaned)
 
-        # Striped Panties / Panties -> Calcinha listrada / Calcinha (NUNCA cuecas ou estriadas)
-        if re.search(r'\bstriped\s+panties\b', orig_lower):
+        # Correção direta de concordância de gênero de órgãos (ex: 'na pau da mamãe' -> 'na buceta da mamãe')
+        cleaned = re.sub(r'\b(?:na|a|pela)\s+pau\s+da\b', 'na buceta da', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\b(?:no|o|pelo)\s+buceta\s+do\b', 'no pau do', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bna\s+pau\b', 'no pau', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\buma\s+pau\b', 'um pau', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bminha\s+pau\b', 'meu pau', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bsua\s+pau\b', 'seu pau', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bno\s+buceta\b', 'na buceta', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bum\s+buceta\b', 'uma buceta', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bmeu\s+buceta\b', 'minha buceta', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bseu\s+buceta\b', 'sua buceta', cleaned, flags=re.IGNORECASE)
+
+        # Underwear / Panties -> Calcinha / Lingerie (NUNCA cuecas para mulheres)
+        if re.search(r'\b(underwear|lingerie|panties|undies)\b', orig_lower):
             cleaned = _preserve_case(r'\bcuecas?\s+estriadas?\b', 'calcinha listrada', cleaned)
             cleaned = _preserve_case(r'\bcueca\s+listrada\b', 'calcinha listrada', cleaned)
-        if re.search(r'\bpanties\b', orig_lower):
             cleaned = _preserve_case(r'\bcuecas?\b', 'calcinha', cleaned)
+            cleaned = re.sub(r'\bumas\s+calcinhas?\b', 'uma calcinha', cleaned, flags=re.IGNORECASE)
 
         # Fiancée -> Noiva (NUNCA noivo)
         if re.search(r'\bfianc[eé]+e?\b', orig_lower):
             cleaned = _preserve_case(r'\bnoivo\b', 'noiva', cleaned)
 
-        # Came inside -> Gozou dentro / Gozei dentro (NUNCA entrei na mamãe)
-        if re.search(r'\bcame\s+inside\b', orig_lower):
+        # Came / Cum / Climax -> Gozou / Gozar (NUNCA veio ou chegou em contexto erótico)
+        if re.search(r'\b(came|cum|cumming|climax|orgasm)\b', orig_lower):
+            cleaned = _preserve_case(r'\bj[áa]\s+veio\b', 'já gozou', cleaned)
+            cleaned = _preserve_case(r'\bela\s+veio\b', 'ela gozou', cleaned)
+            cleaned = _preserve_case(r'\bele\s+veio\b', 'ele gozou', cleaned)
+            cleaned = _preserve_case(r'\beu\s+vim\b', 'eu gozei', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+antes\b', 'gozou antes', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+primeiro\b', 'gozou primeiro', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+r[áa]pido\b', 'gozou rápido', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+muito\b', 'gozou muito', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+de\s+novo\b', 'gozou de novo', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+duas\s+vezes\b', 'gozou duas vezes', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+para\s+dentro\b', 'gozou dentro', cleaned)
+            cleaned = _preserve_case(r'\bveio\s+dentro\b', 'gozou dentro', cleaned)
             cleaned = _preserve_case(r'\bentrei\s+(?:na|dentro\s+da)\b', 'gozei dentro da', cleaned)
             cleaned = _preserve_case(r'\bentrou\s+(?:na|dentro\s+da)\b', 'gozou dentro da', cleaned)
             cleaned = _preserve_case(r'\bentrou\s+na\s+boca\b', 'gozou dentro', cleaned)
-            cleaned = _preserve_case(r'\bveio\s+para\s+dentro\b', 'gozou dentro', cleaned)
-            cleaned = _preserve_case(r'\bveio\s+dentro\b', 'gozou dentro', cleaned)
+            cleaned = _preserve_case(r'\bvir-me\b', 'gozar', cleaned)
+            cleaned = _preserve_case(r'\bvir-se\b', 'gozar', cleaned)
+
+        # Sow (insulto/fetiche em mangá adulto) -> Porca / Vadia (NUNCA semear)
+        if re.search(r'\bsow\b', orig_lower):
+            cleaned = _preserve_case(r'\bsemear\b', 'porca', cleaned)
+            cleaned = _preserve_case(r'\bsementeira\b', 'porca', cleaned)
+            cleaned = _preserve_case(r'\bsemeadura\b', 'porca', cleaned)
+            if cleaned.strip().lower() in ('semear', 'sementeira', 'semeadura'):
+                cleaned = 'Porca' if cleaned[0].isupper() else 'porca'
+
+        # Limpeza de gemidos repetidos traduzidos mecanicamente como 'você, você'
+        if re.search(r'\bvoc[êe]\b', cleaned, flags=re.IGNORECASE) and not re.search(r'\byou\b', orig_lower):
+            cleaned = re.sub(r'\bvoc[êe]\b', 'uh', cleaned, flags=re.IGNORECASE)
 
         # Honey -> Amor / Querido (NUNCA doce-pessoa)
         if re.search(r'\bhoney\b', orig_lower):
@@ -1943,8 +2001,12 @@ def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None
         adult_clause = ""
         if is_adult:
             adult_clause = (
-                "Traduza mantendo o tom adulto (+18), sem censura e com gírias brasileiras autênticas "
-                "(ex: 'panties' -> 'calcinha', 'cock' -> 'pau/pinto', 'came inside' -> 'gozou dentro', 'tip' -> 'ponta/glande'). "
+                "Traduza mantendo o tom adulto (+18), sem censura e com gírias de scanlation brasileiro:\n"
+                "- ANATOMIA E GÊNERO: 'pussy/cunt' é SEMPRE feminino ('buceta', 'xoxota'); 'cock/dick/penis' é SEMPRE masculino ('pau', 'pinto', 'rola', 'cacete'). NUNCA confunda o gênero em frases com ambos (ex: 'touch her pussy while sucking my dick' -> 'toca na buceta dela enquanto chupa meu pau').\n"
+                "- AÇÕES: 'came / cum / cumming' em contexto sexual é SEMPRE 'gozou', 'gozar', 'gozando' (NUNCA 'veio' ou 'chegou'). 'came inside' -> 'gozou dentro'. 'creampie' -> 'gozada dentro / leitada'.\n"
+                "- VESTIMENTA: 'panties / underwear' para mulher é 'calcinha' ou 'lingerie' (NUNCA 'cuecas').\n"
+                "- FETICHE: 'sow' em mangás adultos é 'porca' ou 'vadia' (NUNCA o verbo 'semear').\n"
+                "- GEMIDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você'."
             )
         return f"""{persona_intro}Você é um tradutor literário profissional de mangás {'adultos (+18) e scanlations' if is_adult else 'e quadrinhos'} para Português do Brasil (PT-BR).
 Você receberá um objeto JSON com as falas de uma mesma página de mangá na ordem de leitura.
@@ -1965,13 +2027,21 @@ REGRAS OBRIGATÓRIAS:
         return f"""{persona_intro}Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
 Traduza fielmente o diálogo original com máxima naturalidade coloquial e fluidez brasileira, respeitando o tom da cena (romance, ecchi, diálogos picantes ou adultos).
 
+VOCABULÁRIO E ADAPTAÇÃO OBRIGATÓRIA:
+- 'pussy/cunt' -> SEMPRE feminino: 'buceta', 'xoxota' (NUNCA use 'pau').
+- 'cock/dick' -> SEMPRE masculino: 'pau', 'pinto', 'rola', 'cacete'.
+- 'came / cum / cumming' em sexo -> 'gozou', 'gozar', 'gozando' (NUNCA use 'veio').
+- 'panties / underwear' (mulher) -> 'calcinha' ou 'lingerie' (NUNCA use 'cuecas').
+- 'sow' (em eromanga) -> 'porca' ou 'vadia' (NUNCA o verbo 'semear').
+- Gemidos ('u u u', 'mph', 'ahn', 'kuh') -> Mantenha o som expressivo do gemido, NUNCA traduza a letra 'u' como 'você'.
+
 {concision_rule}
 {learned_rules_text}
 
 REGRAS OBRIGATÓRIAS:
 1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA introduza com "Aqui está", NUNCA adicione explicações, notas de tradutor ou referências ao sistema.
 2. NUNCA use palavras em espanhol.
-3. Adapte expressões e gírias com naturalidade autêntica brasileira (ex: 'panties' -> 'calcinha'; 'cock/penis' -> 'pau/pinto'; 'came inside' -> 'gozou dentro'; 'honey' -> 'amor/querido').
+3. Adapte expressões e gírias com naturalidade autêntica brasileira (ex: 'came inside' -> 'gozou dentro'; 'honey' -> 'amor/querido').
 4. Mantenha nomes de personagens inalterados.
 5. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências).
 6. Priorize concisão e impacto para o texto caber perfeitamente no balão de fala."""
@@ -2132,7 +2202,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
 
 def translate_single_dialogue(text, engine_type=None, model_name=None, engine_opts=None, is_adult=True):
     """Traduz uma única fala com roteamento resiliente e fallback instantâneo."""
-    clean_t = text.strip()
+    clean_t = clean_ocr_scan_noise(text.strip())
     if is_scan_watermark(clean_t):
         return ""
     sfx_res = translate_sfx_phrase(clean_t)
@@ -2178,14 +2248,15 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
 
     for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
         key = str(idx + 1)
-        if is_scan_watermark(orig_text):
+        cleaned_orig = clean_ocr_scan_noise(orig_text)
+        if is_scan_watermark(cleaned_orig):
             results[orig_text] = ""
             continue
-        sfx_res = translate_sfx_phrase(orig_text)
+        sfx_res = translate_sfx_phrase(cleaned_orig)
         if sfx_res:
             results[orig_text] = sfx_res
         else:
-            needed[key] = orig_text
+            needed[key] = cleaned_orig
             dialogue_map[key] = orig_text
 
     if not needed:

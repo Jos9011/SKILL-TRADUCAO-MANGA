@@ -23,7 +23,10 @@ if SYS_DIR not in sys.path:
 
 import auto_translate
 
-app = Flask(__name__, template_folder="templates")
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+app = Flask(__name__, template_folder=TEMPLATE_DIR)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
 
 # Configurações globais
 BASE_MANGAS_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
@@ -526,8 +529,25 @@ def open_chrome_app(url, port=5050):
     webbrowser.open(url)
     return False
 
+def kill_existing_on_port(port=5050):
+    """Encerra processos anteriores que estejam segurando a porta 5050."""
+    try:
+        import psutil
+        curr_pid = os.getpid()
+        for p in psutil.process_iter(['pid', 'name']):
+            if p.info['pid'] != curr_pid and 'python' in p.info['name'].lower():
+                try:
+                    for c in p.net_connections():
+                        if c.laddr.port == port:
+                            p.kill()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 if __name__ == "__main__":
     port = 5050
+    kill_existing_on_port(port)
     url = f"http://localhost:{port}"
     threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

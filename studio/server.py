@@ -110,56 +110,87 @@ def manifest():
 def service_worker():
     return send_from_directory(os.path.join(app.root_path, "static"), "sw.js", mimetype="application/javascript")
 
+def check_single_groq_key(idx, key):
+    key = str(key).strip()
+    masked = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+    k_data = {
+        "index": idx + 1,
+        "masked_key": masked,
+        "key": key,
+        "ok": True,
+        "models": {}
+    }
+    for m in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0"
+        }
+        data = json.dumps({"model": m, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                k_data["models"][m] = {
+                    "ok": True,
+                    "rem_req": int(resp.headers.get("x-ratelimit-remaining-requests", 1000)),
+                    "lim_req": int(resp.headers.get("x-ratelimit-limit-requests", 1000)),
+                    "rem_tok": int(resp.headers.get("x-ratelimit-remaining-tokens", 8000)),
+                    "lim_tok": int(resp.headers.get("x-ratelimit-limit-tokens", 8000)),
+                    "rst_req": resp.headers.get("x-ratelimit-reset-requests", "0s"),
+                    "rst_tok": resp.headers.get("x-ratelimit-reset-tokens", "0s")
+                }
+        except urllib.error.HTTPError as e:
+            err_text = ""
+            try: err_text = e.read().decode("utf-8", errors="ignore")
+            except Exception: pass
+            is_tpd = "TPD" in err_text or "tokens per day" in err_text.lower()
+            k_data["models"][m] = {
+                "ok": False,
+                "code": e.code,
+                "is_daily_limit": is_tpd,
+                "msg": "Cota diária de 200k tokens atingida" if is_tpd else f"HTTP {e.code}"
+            }
+        except Exception as e:
+            k_data["models"][m] = {"ok": False, "msg": str(e)}
+    return k_data
+
 @app.route("/api/status")
 def api_status():
-    """Consulta cotas ao vivo do Groq, OpenRouter e Ollama."""
+    """Consulta cotas ao vivo de TODAS as chaves cadastradas do Groq, OpenRouter e Ollama."""
     cfg = auto_translate.load_config()
     res = {
-        "groq": {"configured": False, "models": {}},
+        "groq": {
+            "configured": False,
+            "keys": [],
+            "models": {},
+            "total_qwen_remaining": 0,
+            "total_qwen_limit": 0,
+            "active_model": cfg.get("groq_model", "qwen/qwen3.8-27b")
+        },
         "openrouter": {"configured": False, "keys": []},
         "ollama": {"status": "offline", "models": []}
     }
     
-    # 1. GROQ
-    groq_key = cfg.get("groq_api_key", "").strip()
-    if groq_key:
+    # 1. GROQ POOL (MULTI-CHAVES CONCORRENTES)
+    groq_keys = cfg.get("groq_api_keys", [])
+    if not groq_keys and cfg.get("groq_api_key"):
+        groq_keys = [cfg.get("groq_api_key")]
+    
+    if groq_keys:
         res["groq"]["configured"] = True
-        res["groq"]["masked_key"] = groq_key[:8] + "..." + groq_key[-4:] if len(groq_key) > 12 else "***"
-        res["groq"]["active_model"] = cfg.get("groq_model", "qwen/qwen3.8-27b")
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(groq_keys), 6)) as executor:
+            groq_results = list(executor.map(lambda ik: check_single_groq_key(ik[0], ik[1]), enumerate(groq_keys)))
         
-        for m in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {groq_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0"
-            }
-            data = json.dumps({"model": m, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers=headers)
-            try:
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    res["groq"]["models"][m] = {
-                        "ok": True,
-                        "rem_req": int(resp.headers.get("x-ratelimit-remaining-requests", 1000)),
-                        "lim_req": int(resp.headers.get("x-ratelimit-limit-requests", 1000)),
-                        "rem_tok": int(resp.headers.get("x-ratelimit-remaining-tokens", 8000)),
-                        "lim_tok": int(resp.headers.get("x-ratelimit-limit-tokens", 8000)),
-                        "rst_req": resp.headers.get("x-ratelimit-reset-requests", "0s"),
-                        "rst_tok": resp.headers.get("x-ratelimit-reset-tokens", "0s")
-                    }
-            except urllib.error.HTTPError as e:
-                err_text = ""
-                try: err_text = e.read().decode("utf-8", errors="ignore")
-                except Exception: pass
-                is_tpd = "TPD" in err_text or "tokens per day" in err_text.lower()
-                res["groq"]["models"][m] = {
-                    "ok": False,
-                    "code": e.code,
-                    "is_daily_limit": is_tpd,
-                    "msg": "Cota diária de 200k tokens atingida" if is_tpd else f"HTTP {e.code}"
-                }
-            except Exception as e:
-                res["groq"]["models"][m] = {"ok": False, "msg": str(e)}
+        res["groq"]["keys"] = groq_results
+        if groq_results:
+            res["groq"]["models"] = groq_results[0].get("models", {})
+            res["groq"]["masked_key"] = groq_results[0].get("masked_key", "***")
+            
+        total_rem = sum(k["models"].get("qwen/qwen3.8-27b", {}).get("rem_req", 0) for k in groq_results if k["models"].get("qwen/qwen3.8-27b", {}).get("ok"))
+        res["groq"]["total_qwen_remaining"] = total_rem
+        res["groq"]["total_qwen_limit"] = len(groq_results) * 1000
 
     # 2. OPENROUTER
     or_keys = cfg.get("openrouter_api_keys", [])
@@ -167,8 +198,8 @@ def api_status():
         or_keys = [cfg.get("openrouter_api_key")]
     if or_keys:
         res["openrouter"]["configured"] = True
-        for k in or_keys:
-            k_info = {"key": k[:8] + "..." + k[-4:] if len(k) > 12 else "***", "ok": False}
+        for idx, k in enumerate(or_keys):
+            k_info = {"index": idx + 1, "key": k[:8] + "..." + k[-4:] if len(k) > 12 else "***", "ok": False}
             try:
                 req_or = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {k}"})
                 with urllib.request.urlopen(req_or, timeout=5) as resp:
@@ -205,27 +236,30 @@ def api_status():
 
 @app.route("/api/library")
 def api_library():
-    """Retorna mangás traduzidos e obras prontas para traduzir."""
+    """Retorna mangás traduzidos e obras prontas para traduzir, respeitando pastas customizadas."""
+    cfg = auto_translate.load_config()
+    raw_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
+    trans_dir = cfg.get("translated_mangas_dir") or BASE_MANGAS_DIR
+    
     translated = []
     raw = []
-    if os.path.exists(BASE_MANGAS_DIR):
-        for item in sorted(os.listdir(BASE_MANGAS_DIR)):
-            full_p = os.path.join(BASE_MANGAS_DIR, item)
+    
+    def _scan(folder_path):
+        entries = []
+        if not folder_path or not os.path.exists(folder_path):
+            return entries
+        for item in sorted(os.listdir(folder_path)):
+            full_p = os.path.join(folder_path, item)
             if not os.path.isdir(full_p) or item.startswith(".") or item == "_ocr":
                 continue
-                
-            # Conta imagens
             imgs = [f for f in os.listdir(full_p) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
             if not imgs:
                 continue
-                
             has_reader = os.path.exists(os.path.join(full_p, "leitor.html"))
             cbz_path = full_p.rstrip("/\\") + ".cbz"
             has_cbz = os.path.exists(cbz_path)
-            
             first_img = os.path.join(full_p, sorted(imgs)[0])
             mtime = os.path.getmtime(full_p)
-            
             entry = {
                 "name": item,
                 "clean_name": item.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
@@ -238,11 +272,22 @@ def api_library():
                 "mtime": mtime,
                 "first_img": first_img
             }
-            
-            if "[PT-BR]" in item or has_reader:
-                translated.append(entry)
+            entries.append(entry)
+        return entries
+
+    if os.path.abspath(raw_dir) == os.path.abspath(trans_dir):
+        all_m = _scan(raw_dir)
+        for e in all_m:
+            if "[PT-BR]" in e["name"] or e["has_reader"]:
+                translated.append(e)
             else:
-                raw.append(entry)
+                raw.append(e)
+    else:
+        for e in _scan(trans_dir):
+            translated.append(e)
+        for e in _scan(raw_dir):
+            if not e["has_reader"] and "[PT-BR]" not in e["name"]:
+                raw.append(e)
                 
     translated.sort(key=lambda x: x["mtime"], reverse=True)
     raw.sort(key=lambda x: x["mtime"], reverse=True)
@@ -271,6 +316,9 @@ def api_thumb():
 @app.route("/api/pick_folder", methods=["POST"])
 def api_pick_folder():
     """Abre o diálogo nativo do Windows para selecionar a pasta do mangá."""
+    cfg = auto_translate.load_config()
+    raw_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
+    init_dir = raw_dir if os.path.exists(raw_dir) else (BASE_MANGAS_DIR if os.path.exists(BASE_MANGAS_DIR) else "C:\\")
     selected_path = ""
     def _ask():
         nonlocal selected_path
@@ -280,8 +328,8 @@ def api_pick_folder():
         root.withdraw()
         root.attributes("-topmost", True)
         selected_path = filedialog.askdirectory(
-            initialdir=BASE_MANGAS_DIR if os.path.exists(BASE_MANGAS_DIR) else "C:\\",
-            title="Selecione a Pasta do Mangá ou Manhwa"
+            initialdir=init_dir,
+            title="Selecione a Pasta do Mangá Original"
         )
         root.destroy()
         
@@ -292,6 +340,32 @@ def api_pick_folder():
     if selected_path:
         return jsonify({"success": True, "path": selected_path})
     return jsonify({"success": False, "path": ""})
+
+@app.route("/api/pick_path", methods=["POST"])
+def api_pick_path():
+    """Abre caixa de diálogo do Windows para escolher qualquer pasta de configuração."""
+    data = request.json or {}
+    title = data.get("title", "Selecione a Pasta")
+    cfg = auto_translate.load_config()
+    init_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
+    if not os.path.exists(init_dir):
+        init_dir = "C:\\"
+    selected_path = ""
+    def _ask():
+        nonlocal selected_path
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected_path = filedialog.askdirectory(initialdir=init_dir, title=title)
+        root.destroy()
+    t = threading.Thread(target=_ask)
+    t.start()
+    t.join()
+    if selected_path:
+        return jsonify({"success": True, "path": selected_path})
+    return jsonify({"success": False, "error": "Nenhuma pasta selecionada"})
 
 @app.route("/api/inspect_folder", methods=["POST"])
 def api_inspect_folder():

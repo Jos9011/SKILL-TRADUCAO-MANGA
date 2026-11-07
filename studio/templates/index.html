@@ -1186,6 +1186,43 @@
           </button>
         </div>
 
+        <!-- CARD: PASTAS DO SISTEMA (ORIGINAL E TRADUZIDO) -->
+        <div class="quota-card" style="margin-bottom: 24px; border: 1px solid rgba(255, 255, 255, 0.08); background: linear-gradient(180deg, #181818 0%, #141414 100%);">
+          <div class="quota-card-header">
+            <h3>📁 Pastas e Diretórios do Sistema</h3>
+            <span class="meta-badge highlight">Armazenamento</span>
+          </div>
+          <p style="font-size: 0.84rem; color: var(--text-subdued); margin-bottom: 18px;">
+            Defina onde o sistema busca suas obras originais (Raws) e onde serão salvas as versões traduzidas [PT-BR], leitores HTML e arquivos .CBZ.
+          </p>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">
+            <!-- PASTA DE ORIGINAIS -->
+            <div>
+              <label class="option-label" style="margin-bottom: 8px;">Pasta dos Mangás Originais (Língua Original / Raws)</label>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" id="cfg-raw-mangas-dir" placeholder="C:\Users\...\Documentos\MANGAS" style="flex: 1; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-size: 0.86rem; font-family: 'JetBrains Mono', monospace;">
+                <button class="btn-secondary" onclick="browseFolder('raw')" style="white-space: nowrap; padding: 0 16px;">📂 Procurar...</button>
+              </div>
+              <span style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-top: 6px;">
+                Pasta onde você guarda ou baixa os capítulos originais em japonês, coreano ou inglês.
+              </span>
+            </div>
+
+            <!-- PASTA DE TRADUZIDOS -->
+            <div>
+              <label class="option-label" style="margin-bottom: 8px;">Pasta dos Mangás Traduzidos (Destino Final [PT-BR])</label>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" id="cfg-translated-mangas-dir" placeholder="C:\Users\...\Documentos\MANGAS" style="flex: 1; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-size: 0.86rem; font-family: 'JetBrains Mono', monospace;">
+                <button class="btn-secondary" onclick="browseFolder('translated')" style="white-space: nowrap; padding: 0 16px;">📂 Procurar...</button>
+              </div>
+              <span style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-top: 6px;">
+                Onde as pastas traduzidas [PT-BR], o leitor web HTML e os arquivos .CBZ serão gerados.
+              </span>
+            </div>
+          </div>
+        </div>
+
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 24px; margin-bottom: 30px;">
           <!-- CARD 1: GROQ CLOUD -->
           <div class="quota-card">
@@ -1688,81 +1725,126 @@
         const d = await res.json();
         
         let html = '';
-        // GROQ CARD
-        const gModels = d.groq.models || {};
-        const qwen = gModels['qwen/qwen3.8-27b'] || {};
-        const gpt120 = gModels['openai/gpt-oss-120b'] || {};
+        
+        // 1. GROQ CARDS & POOL SUMMARY
+        const groqKeys = d.groq.keys || (d.groq.configured ? [{
+          index: 1,
+          masked_key: d.groq.masked_key,
+          models: d.groq.models
+        }] : []);
 
-        html += `
-          <div class="quota-card">
-            <div class="quota-card-header">
-              <h3>⚡ Groq Cloud (Ultra-Rápido)</h3>
-              <span class="meta-badge highlight">Nuvem • Zero Censura</span>
-            </div>
-            
-            <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 14px;">
-              Chave: <code>${d.groq.masked_key || 'Configurada'}</code>
-            </div>
-
-            <div class="meter-container">
-              <div class="meter-label-row">
-                <span>Qwen 2.5 (27B) - Requisições Hoje</span>
-                <span style="font-weight: 700; color: var(--spotify-green);">${qwen.rem_req || '900+'}/1000</span>
+        if (d.groq.total_qwen_limit) {
+          html += `
+            <div style="grid-column: 1 / -1; background: linear-gradient(90deg, rgba(29, 185, 84, 0.15) 0%, rgba(24, 24, 24, 0.6) 100%); border: 1px solid rgba(29, 185, 84, 0.3); border-radius: 10px; padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 1.4rem;">⚡</span>
+                <div>
+                  <h4 style="font-size: 1rem; font-weight: 800; color: white;">Pool de Chaves Groq Cloud (${groqKeys.length} chave${groqKeys.length > 1 ? 's' : ''} ativa${groqKeys.length > 1 ? 's' : ''})</h4>
+                  <p style="font-size: 0.8rem; color: var(--text-subdued);">Rotação automática inteligente com zero censura</p>
+                </div>
               </div>
-              <div class="meter-bar">
-                <div class="meter-fill" style="width: ${((qwen.rem_req || 900)/1000)*100}%;"></div>
-              </div>
-              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
-                Tokens livres no minuto: ${qwen.rem_tok || 8000}/8000 • Reseta em ${qwen.rst_req || '0s'}
+              <div style="text-align: right;">
+                <div style="font-size: 1.25rem; font-weight: 800; color: var(--spotify-green);">${d.groq.total_qwen_remaining || 0} / ${d.groq.total_qwen_limit || 1000}</div>
+                <div style="font-size: 0.75rem; color: var(--text-muted);">Requisições Diárias Disponíveis</div>
               </div>
             </div>
+          `;
+        }
 
-            <div class="meter-container">
-              <div class="meter-label-row">
-                <span>GPT-OSS 120B - Status Diário</span>
-                <span style="font-weight: 700; color: ${gpt120.ok ? 'var(--spotify-green)' : 'var(--yellow-accent)'};">
-                  ${gpt120.ok ? 'Liberado / Pronto' : (gpt120.msg || 'Aguardando')}
+        groqKeys.forEach((gk) => {
+          const gModels = gk.models || {};
+          const qwen = gModels['qwen/qwen3.8-27b'] || {};
+          const gpt120 = gModels['openai/gpt-oss-120b'] || {};
+          const isExhausted = qwen.rem_req === 0 || !qwen.ok;
+
+          html += `
+            <div class="quota-card">
+              <div class="quota-card-header">
+                <h3>⚡ Groq Cloud • Chave #${gk.index || 1}</h3>
+                <span class="meta-badge ${isExhausted ? '' : 'highlight'}" style="${isExhausted ? 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);' : ''}">
+                  ${isExhausted ? 'Cota Esgotada' : 'Nuvem • Ativa'}
                 </span>
               </div>
-            </div>
-          </div>
-        `;
+              
+              <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 14px;">
+                Chave: <code>${escapeHtml(gk.masked_key || 'Configurada')}</code>
+              </div>
 
-        // OPENROUTER CARD
+              <div class="meter-container">
+                <div class="meter-label-row">
+                  <span>Qwen 2.5 (27B) - Requisições Hoje</span>
+                  <span style="font-weight: 700; color: ${qwen.rem_req > 0 ? 'var(--spotify-green)' : 'var(--red-accent)'};">
+                    ${qwen.rem_req !== undefined ? qwen.rem_req : '1000'}/1000
+                  </span>
+                </div>
+                <div class="meter-bar">
+                  <div class="meter-fill" style="width: ${((qwen.rem_req !== undefined ? qwen.rem_req : 1000)/1000)*100}%; background-color: ${qwen.rem_req > 0 ? 'var(--spotify-green)' : 'var(--red-accent)'};"></div>
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                  Tokens livres no minuto: ${qwen.rem_tok || 8000}/8000 • Reseta em ${qwen.rst_req || '0s'}
+                </div>
+              </div>
+
+              <div class="meter-container">
+                <div class="meter-label-row">
+                  <span>GPT-OSS 120B - Status Diário</span>
+                  <span style="font-weight: 700; color: ${gpt120.ok ? 'var(--spotify-green)' : 'var(--yellow-accent)'};">
+                    ${gpt120.ok ? 'Liberado / Pronto' : (gpt120.msg || 'Aguardando')}
+                  </span>
+                </div>
+              </div>
+            </div>
+          `;
+        });
+
+        // 2. OPENROUTER CARDS (TODAS AS CHAVES)
         const orKeys = d.openrouter.keys || [];
-        const or1 = orKeys[0] || {};
-        html += `
-          <div class="quota-card">
-            <div class="quota-card-header">
-              <h3>🌐 OpenRouter Cloud</h3>
-              <span class="meta-badge">Free & Paid Tier</span>
-            </div>
-            <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 14px;">
-              Chave: <code>${or1.key || 'sk-or-v1...'}</code>
-            </div>
-
-            <div class="meter-container">
-              <div class="meter-label-row">
-                <span>Modelos Gratuitos (50/dia)</span>
-                <span style="font-weight: 700; color: ${or1.free_rem > 0 ? 'var(--spotify-green)' : 'var(--yellow-accent)'};">
-                  ${or1.free_used || 0} de ${or1.free_limit || 50} usados
-                </span>
+        if (orKeys.length === 0) {
+          html += `
+            <div class="quota-card">
+              <div class="quota-card-header">
+                <h3>🌐 OpenRouter Cloud</h3>
+                <span class="meta-badge">Offline</span>
               </div>
-              <div class="meter-bar">
-                <div class="meter-fill" style="width: ${((or1.free_rem || 0)/(or1.free_limit || 50))*100}%; background-color: ${or1.free_rem > 0 ? 'var(--spotify-green)' : 'var(--yellow-accent)'};"></div>
-              </div>
-              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
-                ${or1.free_rem === 0 ? 'Renovação às 21:00 BRT (00:00 UTC)' : `${or1.free_rem} requisições livres hoje`}
-              </div>
+              <p style="font-size: 0.85rem; color: var(--text-subdued);">Nenhuma chave OpenRouter cadastrada.</p>
             </div>
+          `;
+        } else {
+          orKeys.forEach((ork, idx) => {
+            html += `
+              <div class="quota-card">
+                <div class="quota-card-header">
+                  <h3>🌐 OpenRouter • Chave #${ork.index || (idx + 1)}</h3>
+                  <span class="meta-badge">${ork.free_rem > 0 ? 'Free Tier' : 'Limite Atingido'}</span>
+                </div>
+                <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 14px;">
+                  Chave: <code>${escapeHtml(ork.key || 'sk-or-v1...')}</code>
+                </div>
 
-            <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-subtle); font-size: 0.85rem;">
-              Saldo Pago: <strong style="color: white;">$${(or1.credits || 0).toFixed(2)} USD</strong> (R$ ${((or1.credits || 0)*5.8).toFixed(2)})
-            </div>
-          </div>
-        `;
+                <div class="meter-container">
+                  <div class="meter-label-row">
+                    <span>Modelos Gratuitos (50/dia)</span>
+                    <span style="font-weight: 700; color: ${ork.free_rem > 0 ? 'var(--spotify-green)' : 'var(--yellow-accent)'};">
+                      ${ork.free_used || 0} de ${ork.free_limit || 50} usados
+                    </span>
+                  </div>
+                  <div class="meter-bar">
+                    <div class="meter-fill" style="width: ${((ork.free_rem || 0)/(ork.free_limit || 50))*100}%; background-color: ${ork.free_rem > 0 ? 'var(--spotify-green)' : 'var(--yellow-accent)'};"></div>
+                  </div>
+                  <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                    ${ork.free_rem === 0 ? 'Renovação às 21:00 BRT (00:00 UTC)' : `${ork.free_rem} requisições livres hoje`}
+                  </div>
+                </div>
 
-        // OLLAMA CARD
+                <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-subtle); font-size: 0.85rem;">
+                  Saldo Pago: <strong style="color: white;">$${(ork.credits || 0).toFixed(2)} USD</strong> (R$ ${((ork.credits || 0)*5.8).toFixed(2)})
+                </div>
+              </div>
+            `;
+          });
+        }
+
+        // 3. OLLAMA CARD
         html += `
           <div class="quota-card">
             <div class="quota-card-header">
@@ -1868,6 +1950,12 @@
         document.getElementById('cfg-groq-model').value = currentConfig.groq_model || 'qwen/qwen3.8-27b';
         document.getElementById('cfg-openrouter-model').value = currentConfig.openrouter_model || 'nvidia/nemotron-3.5-lightning:free';
         document.getElementById('cfg-ollama-host').value = currentConfig.ollama_host || 'http://localhost:11434';
+        if (document.getElementById('cfg-raw-mangas-dir')) {
+          document.getElementById('cfg-raw-mangas-dir').value = currentConfig.raw_mangas_dir || 'C:\\Users\\ja329\\OneDrive\\Documentos\\MANGAS';
+        }
+        if (document.getElementById('cfg-translated-mangas-dir')) {
+          document.getElementById('cfg-translated-mangas-dir').value = currentConfig.translated_mangas_dir || 'C:\\Users\\ja329\\OneDrive\\Documentos\\MANGAS';
+        }
       } catch (e) {
         console.error("Erro ao carregar configurações:", e);
       }
@@ -2006,11 +2094,42 @@
       }
     }
 
+    async function browseFolder(type) {
+      try {
+        const title = type === 'raw' ? "Selecione a Pasta dos Mangás Originais (Raws)" : "Selecione a Pasta dos Mangás Traduzidos [PT-BR]";
+        const res = await fetch('/api/pick_path', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: title })
+        });
+        const data = await res.json();
+        if (data.success && data.path) {
+          if (type === 'raw') {
+            document.getElementById('cfg-raw-mangas-dir').value = data.path;
+          } else if (type === 'translated') {
+            document.getElementById('cfg-translated-mangas-dir').value = data.path;
+          }
+        }
+      } catch (e) {
+        console.error("Erro ao selecionar pasta:", e);
+      }
+    }
+
     async function saveConfig() {
       try {
         currentConfig.groq_model = document.getElementById('cfg-groq-model').value;
         currentConfig.openrouter_model = document.getElementById('cfg-openrouter-model').value;
         currentConfig.ollama_host = document.getElementById('cfg-ollama-host').value.trim();
+        
+        const rawEl = document.getElementById('cfg-raw-mangas-dir');
+        if (rawEl && rawEl.value.trim()) {
+          currentConfig.raw_mangas_dir = rawEl.value.trim();
+        }
+        const transEl = document.getElementById('cfg-translated-mangas-dir');
+        if (transEl && transEl.value.trim()) {
+          currentConfig.translated_mangas_dir = transEl.value.trim();
+        }
+
         currentConfig.groq_api_key = currentConfig.groq_api_keys[0] || '';
         currentConfig.openrouter_api_key = currentConfig.openrouter_api_keys[0] || '';
 
@@ -2020,8 +2139,9 @@
           body: JSON.stringify(currentConfig)
         });
         if (saveRes.ok) {
-          alert("✅ Todas as configurações e chaves foram salvas com sucesso!");
+          alert("✅ Todas as configurações, diretórios e chaves foram salvos com sucesso!");
           loadStatus();
+          loadLibrary();
         } else {
           alert("Erro ao salvar configurações.");
         }

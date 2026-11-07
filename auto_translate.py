@@ -1980,10 +1980,19 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
     cfg = engine_opts.get("cfg", {})
     temp = engine_opts.get("temperature", 0.0)
 
-    # 1. TENTA GROQ SE AINDA NÃO ESGOTADO
+    # 1. TENTA GROQ SE AINDA NÃO ESGOTADO (COM ROTAÇÃO AUTOMÁTICA DE MÚLTIPLAS CHAVES)
     if "groq" not in exhausted:
-        groq_k = engine_opts.get("api_key") or cfg.get("groq_api_key", "")
-        if groq_k:
+        all_groq_keys = cfg.get("groq_api_keys", [])
+        if not all_groq_keys and cfg.get("groq_api_key"):
+            all_groq_keys = [cfg.get("groq_api_key")]
+        elif engine_opts.get("api_key") and engine_opts.get("api_key") not in all_groq_keys:
+            all_groq_keys.insert(0, engine_opts.get("api_key"))
+
+        exhausted_keys = engine_opts.setdefault("exhausted_groq_keys", set())
+        avail_keys = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
+
+        if avail_keys:
+            groq_k = avail_keys[0]
             model_name = engine_opts.get("active_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
             fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
             try:
@@ -1999,9 +2008,16 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                 if resp:
                     return resp
             except Exception as g_err:
-                exhausted.add("groq")
-                print(f"\n[!] Cota do Groq Cloud saturada ({g_err}).")
-                print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando OpenRouter...")
+                exhausted_keys.add(groq_k)
+                masked_k = groq_k[:8] + "..." + groq_k[-4:] if len(groq_k) > 12 else "***"
+                remaining = [k for k in all_groq_keys if k.strip() not in exhausted_keys]
+                if remaining:
+                    print(f"\n[!] Chave Groq ({masked_k}) com cota saturada. Rotacionando para próxima chave Groq ({len(remaining)} restante(s))...")
+                    return execute_translation_request(messages, engine_opts=engine_opts, is_adult=is_adult, max_tokens=max_tokens, is_batch=is_batch, dialogue_map=dialogue_map)
+                else:
+                    exhausted.add("groq")
+                    print(f"\n[!] Todas as {len(all_groq_keys)} chaves cadastradas do Groq Cloud atingiram as cotas.")
+                    print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando OpenRouter...")
         else:
             exhausted.add("groq")
 
@@ -2560,8 +2576,12 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     # Carrega glossário específico da obra se existir
     glossary = load_project_glossary(manga_dir)
     
-    # 0. Define o diretório de destino
-    base_drive_dir = BASE_OUTPUT_DIR
+    # 0. Define o diretório de destino (respeitando configuração do usuário)
+    cfg_target = config.get("translated_mangas_dir") if config else None
+    if cfg_target and os.path.isdir(cfg_target):
+        base_drive_dir = cfg_target
+    else:
+        base_drive_dir = BASE_OUTPUT_DIR
     try:
         os.makedirs(base_drive_dir, exist_ok=True)
     except Exception as e:

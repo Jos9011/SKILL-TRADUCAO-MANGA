@@ -13,7 +13,7 @@ import sys
 
 VERSION_MAJOR = 0
 VERSION_MINOR = 2
-VERSION_PATCH = 0
+VERSION_PATCH = 1
 VERSION_TAG = "beta"
 
 __version__ = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
@@ -93,7 +93,7 @@ def bump(kind="pequeno"):
         try:
             with open(readme_path, "r", encoding="utf-8") as rf:
                 r_content = rf.read()
-            r_content = re.sub(r"badge/versão-v[0-9\.]+(?:--[a-zA-Z]+)?", f"badge/versão-{new_ver.replace('-', '--')}", r_content)
+            r_content = re.sub(r"badge/versão-v?[0-9\.]+(?:--[a-zA-Z]+)?", f"badge/versão-v{new_ver.replace('-', '--')}", r_content)
             r_content = re.sub(r"# Manga Studio v[0-9\.]+(?:\s+[a-zA-Z]+)?", f"# Manga Studio {new_ver_name}", r_content)
             with open(readme_path, "w", encoding="utf-8") as rf:
                 rf.write(r_content)

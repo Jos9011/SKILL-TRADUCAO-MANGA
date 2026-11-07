@@ -29,15 +29,18 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = SafeDummyStream()
 
-# Inclui diretório principal no path
+# Inclui diretório principal no path e define como cwd
 SYS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(SYS_DIR)
 if SYS_DIR not in sys.path:
     sys.path.insert(0, SYS_DIR)
 
 import auto_translate
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
-app = Flask(__name__, template_folder=TEMPLATE_DIR)
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 
@@ -52,6 +55,7 @@ job_state = {
     "status": "idle",       # "idle", "running", "done", "error"
     "manga_name": "",
     "manga_path": "",
+    "first_img": "",
     "stage": "",            # "ocr", "translation", "diagram", "done"
     "current_page": 0,
     "total_pages": 0,
@@ -319,6 +323,16 @@ def api_start_translation():
     manga_path = data.get("path", "").strip('\"\'')
     if not manga_path or not os.path.exists(manga_path):
         return jsonify({"error": "Caminho do mangá inválido"}), 400
+
+    first_img = data.get("first_img", "")
+    if not first_img and os.path.exists(manga_path):
+        imgs = [os.path.join(manga_path, f) for f in os.listdir(manga_path) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.bmp'))]
+        if imgs:
+            import re
+            def _nat_key(s):
+                return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+            imgs.sort(key=lambda x: _nat_key(os.path.basename(x)))
+            first_img = imgs[0]
         
     with job_lock:
         if job_state["status"] == "running":
@@ -327,6 +341,7 @@ def api_start_translation():
         job_state["status"] = "running"
         job_state["manga_name"] = os.path.basename(manga_path)
         job_state["manga_path"] = manga_path
+        job_state["first_img"] = first_img
         job_state["stage"] = "ocr"
         job_state["current_page"] = 0
         job_state["total_pages"] = 0
@@ -590,18 +605,21 @@ def kill_existing_on_port(port=5050):
         pass
 
 if __name__ == "__main__":
-    port = 5050
-    url = f"http://127.0.0.1:{port}"
+    try:
+        port = 5050
+        url = f"http://127.0.0.1:{port}"
 
-    # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
-    if is_server_running(port):
-        print(f"[*] Servidor já ativo em {url}. Abrindo aplicativo...")
-        open_chrome_app(url, port)
-        sys.exit(0)
+        # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
+        if is_server_running(port):
+            open_chrome_app(url, port)
+            sys.exit(0)
 
-    # Se a porta estiver presa por processo zumbi, limpa
-    kill_existing_on_port(port)
-    time.sleep(0.5)
+        # Se a porta estiver presa por processo zumbi, limpa
+        kill_existing_on_port(port)
+        time.sleep(0.5)
 
-    threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
-    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+        threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
+        app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+    except Exception as e:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"), "w", encoding="utf-8") as f:
+            f.write(traceback.format_exc())

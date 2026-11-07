@@ -41,15 +41,15 @@ if getattr(sys, '__stderr__', None) is None:
     sys.__stderr__ = sys.stderr
 
 try:
-    import tqdm.std
-    _orig_tqdm_init_srv = tqdm.std.tqdm.__init__
+    import tqdm.std as _tqdm_std
+    _orig_tqdm_init_srv = _tqdm_std.tqdm.__init__
     def _safe_tqdm_init_srv(self, *args, **kwargs):
         if kwargs.get('file') is None:
             kwargs['file'] = sys.stderr if sys.stderr is not None else sys.stdout
         if kwargs.get('file') is None:
             kwargs['file'] = SafeDummyStream()
         return _orig_tqdm_init_srv(self, *args, **kwargs)
-    tqdm.std.tqdm.__init__ = _safe_tqdm_init_srv
+    _tqdm_std.tqdm.__init__ = _safe_tqdm_init_srv
 except Exception:
     pass
 

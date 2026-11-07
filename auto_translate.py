@@ -72,15 +72,16 @@ try:
         sys.__stderr__ = sys.stderr
     
     # Protege tqdm contra NoneType.write em ambientes sem terminal (ex: pythonw / threads)
-    import tqdm.std
-    _orig_tqdm_init = tqdm.std.tqdm.__init__
+    import tqdm.std as _tqdm_std
+    _orig_tqdm_init = _tqdm_std.tqdm.__init__
     def _safe_tqdm_init(self, *args, **kwargs):
         if kwargs.get('file') is None:
             kwargs['file'] = sys.stderr if sys.stderr is not None else sys.stdout
         if kwargs.get('file') is None:
             kwargs['file'] = _SafeStreamWrapper()
         return _orig_tqdm_init(self, *args, **kwargs)
-    tqdm.std.tqdm.__init__ = _safe_tqdm_init
+    _tqdm_std.tqdm.__init__ = _safe_tqdm_init
+    from tqdm import tqdm
 except Exception:
     pass
 

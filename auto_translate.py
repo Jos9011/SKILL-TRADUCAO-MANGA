@@ -1835,6 +1835,7 @@ def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None
                 glossary_rules += f"- Personagem '{k}': manter '{v}'\n"
             for k, v in terms.items():
                 glossary_rules += f"- Termo '{k}': traduzir/adaptar como '{v}'\n"
+            glossary_rules += "- GÊNERO: Se uma personagem for veterana/superior feminina (ex: Haruka-senpai), use SEMPRE artigos e adjetivos femininos ('a Senpai', 'dela', 'ela', 'ficou puta/brava').\n"
 
     concision_rule = (
         "PRINCÍPIO DE SCANLATION - ECONOMIA DE TEXTO E CABIMENTO NO BALÃO:\n"
@@ -1906,6 +1907,8 @@ REGRAS OBRIGATÓRIAS:
 def translate_single_dialogue(text, engine_type, model_name, engine_opts=None, is_adult=True):
     """Traduz uma única fala usando o motor de IA selecionado (OpenRouter ou Ollama) com fallback automático."""
     clean_t = text.strip()
+    if is_scan_watermark(clean_t):
+        return ""
     sfx_res = translate_sfx_phrase(clean_t)
     if sfx_res:
         return sfx_res
@@ -1924,19 +1927,20 @@ def translate_single_dialogue(text, engine_type, model_name, engine_opts=None, i
                 {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
             ]
             temp = engine_opts.get("temperature", 0.0)
+            call_max_tokens = 950 if len(clean_t) > 60 else 350
             if engine_type == "groq":
                 try:
-                    raw_resp = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=300, fallback_model=engine_opts.get("fallback_model"))
+                    raw_resp = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=call_max_tokens, fallback_model=engine_opts.get("fallback_model"))
                 except Exception as g_err:
                     cfg = engine_opts.get("cfg", {})
                     or_keys = cfg.get("openrouter_api_keys", [])
                     if or_keys:
-                        raw_resp = query_openrouter_chat(messages, cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free"), api_key=or_keys[0], temperature=temp, max_tokens=300, engine_opts=engine_opts)
+                        raw_resp = query_openrouter_chat(messages, cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free"), api_key=or_keys[0], temperature=temp, max_tokens=call_max_tokens, engine_opts=engine_opts)
                     else:
                         raise g_err
             elif engine_type == "openrouter":
                 try:
-                    raw_resp = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=300, engine_opts=engine_opts)
+                    raw_resp = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=call_max_tokens, engine_opts=engine_opts)
                 except Exception as o_err:
                     cfg = engine_opts.get("cfg", {})
                     host = cfg.get("ollama_host", "http://localhost:11434")
@@ -1982,9 +1986,12 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
     needed = {}
     dialogue_map = {}
 
-    # 1. Resolve SFX e onomatopeias primeiro
+    # 1. Resolve SFX e onomatopeias primeiro, e filtra marcas d'água de grupos chineses
     for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
         key = str(idx + 1)
+        if is_scan_watermark(orig_text):
+            results[orig_text] = ""
+            continue
         sfx_res = translate_sfx_phrase(orig_text)
         if sfx_res:
             results[orig_text] = sfx_res
@@ -2006,11 +2013,14 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
         {"role": "user", "content": json.dumps(needed, ensure_ascii=False, indent=2)}
     ]
 
+    has_long_text = any(len(t) > 60 for t in needed.values())
+    batch_max_tokens = 950 if has_long_text else 600
+
     temp = engine_opts.get("temperature", 0.0)
     try:
         if engine_type == "groq":
             try:
-                resp_content = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=600, fallback_model=engine_opts.get("fallback_model"))
+                resp_content = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=batch_max_tokens, fallback_model=engine_opts.get("fallback_model"))
             except Exception as g_err:
                 cfg = engine_opts.get("cfg", {})
                 or_keys = cfg.get("openrouter_api_keys", [])
@@ -2406,6 +2416,17 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False):
     mokuro_data = {"version": "rapidocr_korean" if is_korean else "rapidocr", "pages": pages}
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
+
+def is_scan_watermark(text):
+    """Detecta marcas d'água puras de grupos scanlators chineses/ocidentais para não poluir balões."""
+    if not text:
+        return False
+    t = str(text).strip()
+    if re.search(r'(?:社具[券费]号|QQ\s*群|汉化组|交流群|扫图|嵌字|图源|禁止转载)[：:]?\s*\d*', t):
+        return True
+    if re.match(r'^(?:春卷\s*)?社具[券费]号[：:]?\s*\d+$', t):
+        return True
+    return False
 
 def is_credits_page(bubbles):
     """Detecta páginas puras de créditos ou recrutamento de scanlators para preservar a arte original."""

@@ -13,8 +13,21 @@ import io
 import urllib.request
 import webbrowser
 import subprocess
+import traceback
 from flask import Flask, render_template, jsonify, request, send_file, Response
 from PIL import Image
+
+# Protege contra execução via pythonw.exe onde sys.stdout e sys.stderr são None
+class SafeDummyStream(io.StringIO):
+    def write(self, s):
+        pass
+    def flush(self):
+        pass
+
+if sys.stdout is None:
+    sys.stdout = SafeDummyStream()
+if sys.stderr is None:
+    sys.stderr = SafeDummyStream()
 
 # Inclui diretório principal no path
 SYS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,7 +36,10 @@ if SYS_DIR not in sys.path:
 
 import auto_translate
 
-app = Flask(__name__, template_folder="templates")
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+app = Flask(__name__, template_folder=TEMPLATE_DIR)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
 
 # Configurações globais
 BASE_MANGAS_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
@@ -48,25 +64,35 @@ job_state = {
 }
 
 class StreamCapture(io.StringIO):
-    """Intercepta stdout para transmitir logs em tempo real ao frontend."""
-    def __init__(self, max_lines=200):
+    """Intercepta stdout e stderr para transmitir logs em tempo real ao frontend."""
+    def __init__(self, original_stream=None, max_lines=300):
         super().__init__()
         self.max_lines = max_lines
-        self.original_stdout = sys.stdout
+        self.original_stream = original_stream
 
     def write(self, text):
-        if text.strip():
-            with job_lock:
-                for line in text.strip().split("\n"):
-                    clean = line.strip()
-                    if clean and not clean.startswith("\r"):
-                        job_state["logs"].append(clean)
-                        if len(job_state["logs"]) > self.max_lines:
-                            job_state["logs"].pop(0)
-        self.original_stdout.write(text)
+        if text:
+            clean_text = str(text)
+            if clean_text.strip():
+                with job_lock:
+                    for line in clean_text.strip().split("\n"):
+                        clean = line.strip()
+                        if clean and not clean.startswith("\r"):
+                            job_state["logs"].append(clean)
+                            if len(job_state["logs"]) > self.max_lines:
+                                job_state["logs"].pop(0)
+        if self.original_stream is not None and hasattr(self.original_stream, 'write'):
+            try:
+                self.original_stream.write(text)
+            except Exception:
+                pass
 
     def flush(self):
-        self.original_stdout.flush()
+        if self.original_stream is not None and hasattr(self.original_stream, 'flush'):
+            try:
+                self.original_stream.flush()
+            except Exception:
+                pass
 
 @app.route("/")
 def index():
@@ -319,9 +345,11 @@ def api_start_translation():
 
     def _worker():
         global job_state
-        capture = StreamCapture()
+        capture = StreamCapture(original_stream=sys.stdout)
         old_stdout = sys.stdout
+        old_stderr = sys.stderr
         sys.stdout = capture
+        sys.stderr = capture
 
         def progress_callback(stage, current, total, text, result=None):
             with job_lock:
@@ -360,12 +388,18 @@ def api_start_translation():
                 if isinstance(res, dict):
                     job_state["result"] = res
         except Exception as e:
+            err_msg = str(e) or e.__class__.__name__
+            tb_msg = traceback.format_exc()
             with job_lock:
                 job_state["status"] = "error"
-                job_state["error"] = str(e)
-                job_state["message"] = f"Erro no processamento: {e}"
+                job_state["error"] = err_msg
+                job_state["message"] = f"Erro no processamento: {err_msg}"
+                job_state["logs"].append(f"[!] Erro fatal: {err_msg}")
+                for tb_line in tb_msg.strip().split("\n"):
+                    job_state["logs"].append(tb_line)
         finally:
-            sys.stdout = old_stdout
+            sys.stdout = old_stdout if old_stdout is not None else SafeDummyStream()
+            sys.stderr = old_stderr if old_stderr is not None else SafeDummyStream()
 
     threading.Thread(target=_worker, daemon=True).start()
     return jsonify({"success": True})
@@ -402,6 +436,55 @@ def api_open_cbz():
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Arquivo CBZ não encontrado"}), 404
 
+@app.route("/api/test_key", methods=["POST"])
+def api_test_key():
+    """Valida chave de API ao vivo consultando a rota oficial da Groq ou OpenRouter."""
+    data = request.json or {}
+    provider = data.get("provider", "groq").lower()
+    key = data.get("key", "").strip()
+    if not key:
+        return jsonify({"valid": False, "msg": "Chave não informada."})
+
+    if provider == "groq":
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0"
+        }
+        test_payload = json.dumps({"model": "qwen/qwen3.8-27b", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode("utf-8")
+        req = urllib.request.Request(url, data=test_payload, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                rem_req = resp.headers.get("x-ratelimit-remaining-requests", "1000")
+                rem_tok = resp.headers.get("x-ratelimit-remaining-tokens", "8000")
+                return jsonify({"valid": True, "msg": f"Chave Groq 100% Válida! {rem_req}/1000 reqs e {rem_tok} tokens disponíveis."})
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                return jsonify({"valid": True, "msg": "Chave Groq Válida! (Porém em limite temporário de tokens no momento)."})
+            return jsonify({"valid": False, "msg": f"Erro de autenticação Groq (HTTP {e.code}). Verifique a chave."})
+        except Exception as e:
+            return jsonify({"valid": False, "msg": f"Erro de conexão: {e}"})
+
+    elif provider == "openrouter":
+        url = "https://openrouter.ai/api/v1/auth/key"
+        headers = {"Authorization": f"Bearer {key}"}
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                kdata = json.loads(resp.read().decode("utf-8")).get("data", {})
+                free_info = kdata.get("free_model_daily_requests", {})
+                f_used = free_info.get("used", 0)
+                f_limit = free_info.get("limit", 50)
+                f_rem = free_info.get("remaining", 0)
+                return jsonify({"valid": True, "msg": f"Chave OpenRouter Válida! {f_rem} reqs gratuitas restantes ({f_used}/{f_limit} usadas hoje)."})
+        except urllib.error.HTTPError as e:
+            return jsonify({"valid": False, "msg": f"Erro HTTP {e.code} no OpenRouter. Chave inválida ou recusada."})
+        except Exception as e:
+            return jsonify({"valid": False, "msg": f"Erro de conexão: {e}"})
+
+    return jsonify({"valid": False, "msg": "Provedor desconhecido."})
+
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
     cfg_path = os.path.join(SYS_DIR, "config.json")
@@ -410,6 +493,15 @@ def api_config():
         try:
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(new_cfg, f, indent=2, ensure_ascii=False)
+            for extra_p in [
+                r"C:\Users\ja329\tools\manga-translator\config.json",
+                os.path.join(r"C:\Users\ja329\.gemini\antigravity\scratch\SKILL-TRADUCAO-MANGA", "config.json")
+            ]:
+                if os.path.exists(os.path.dirname(extra_p)):
+                    try:
+                        with open(extra_p, "w", encoding="utf-8") as ef:
+                            json.dump(new_cfg, ef, indent=2, ensure_ascii=False)
+                    except Exception: pass
             return jsonify({"success": True})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -448,15 +540,19 @@ def api_glossary():
 
 def open_chrome_app(url, port=5050):
     """Abre a janela nativa do Chrome em modo Desktop App (sem barra de URL)."""
+    profile_dir = os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "MangaStudioAppProfile")
     chrome_paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
     ]
     for cp in chrome_paths:
         if os.path.exists(cp):
             cmd = [
                 cp,
                 f"--app={url}",
+                f"--user-data-dir={profile_dir}",
                 "--window-size=1280,820",
                 "--window-position=100,60"
             ]
@@ -468,8 +564,44 @@ def open_chrome_app(url, port=5050):
     webbrowser.open(url)
     return False
 
+def is_server_running(port=5050):
+    """Verifica se o backend já está ativo e respondendo na porta."""
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/config")
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+def kill_existing_on_port(port=5050):
+    """Encerra processos anteriores que estejam travando a porta 5050."""
+    try:
+        import psutil
+        curr_pid = os.getpid()
+        for p in psutil.process_iter(['pid', 'name']):
+            if p.info['pid'] != curr_pid and 'python' in (p.info['name'] or '').lower():
+                try:
+                    for c in p.net_connections():
+                        if c.laddr.port == port:
+                            p.kill()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 if __name__ == "__main__":
     port = 5050
-    url = f"http://localhost:{port}"
+    url = f"http://127.0.0.1:{port}"
+
+    # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
+    if is_server_running(port):
+        print(f"[*] Servidor já ativo em {url}. Abrindo aplicativo...")
+        open_chrome_app(url, port)
+        sys.exit(0)
+
+    # Se a porta estiver presa por processo zumbi, limpa
+    kill_existing_on_port(port)
+    time.sleep(0.5)
+
     threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

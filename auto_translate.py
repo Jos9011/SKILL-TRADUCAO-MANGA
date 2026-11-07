@@ -46,9 +46,15 @@ except ImportError:
     wordninja = None
 
 try:
-    if hasattr(sys.stdout, 'reconfigure'):
+    if sys.stdout is None:
+        import io
+        sys.stdout = io.StringIO()
+    elif hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    if hasattr(sys.stderr, 'reconfigure'):
+    if sys.stderr is None:
+        import io
+        sys.stderr = io.StringIO()
+    elif hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 except Exception:
     pass
@@ -2478,6 +2484,13 @@ def is_valid_translation(orig_text, trans_text):
     return True
 
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None):
+    if sys.stdout is None:
+        import io
+        sys.stdout = io.StringIO()
+    if sys.stderr is None:
+        import io
+        sys.stderr = sys.stdout or io.StringIO()
+
     if config is None:
         config = load_config()
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
@@ -3013,7 +3026,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 def show_credits_dashboard(cfg=None):
     """Exibe painel ao vivo com créditos, cotas diárias e status dos motores de IA."""
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
+        if sys.stdout is not None and hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
     if cfg is None:

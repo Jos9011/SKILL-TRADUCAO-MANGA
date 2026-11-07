@@ -1131,7 +1131,7 @@ def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
         }
     )
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             if resp.status == 200:
                 return True, "Chave válida e pronta"
     except urllib.error.HTTPError as e:
@@ -1142,8 +1142,8 @@ def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
         return False, f"Erro de conexão: {e}"
     return False, "Sem resposta"
 
-def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=1024, timeout=45, fallback_model="qwen/qwen3.8-27b"):
-    """Executa requisição à API ultra-rápida do Groq Cloud com fallback automático entre modelos."""
+def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=600, timeout=45, fallback_model="qwen/qwen3.8-27b", max_retries=3):
+    """Executa requisição à API ultra-rápida do Groq Cloud com resiliência a picos de tokens (TPM) e fallback automático entre modelos."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     target_models = [model_name]
     if fallback_model and fallback_model != model_name:
@@ -1157,27 +1157,39 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=1
             "temperature": temperature,
             "max_tokens": max_tokens
         }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode('utf-8'),
-            headers={
-                "Authorization": f"Bearer {api_key.strip()}",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                res = json.loads(resp.read().decode('utf-8'))
-                return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        except urllib.error.HTTPError as e:
-            last_err = e
-            if e.code in (404, 500, 502, 503) and len(target_models) > 1:
-                continue
-            raise e
-        except Exception as e:
-            last_err = e
-            raise e
+        for attempt in range(max_retries):
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers={
+                    "Authorization": f"Bearer {api_key.strip()}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    res = json.loads(resp.read().decode('utf-8'))
+                    return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            except urllib.error.HTTPError as e:
+                last_err = e
+                if e.code == 429:
+                    wait_sec = 2.5
+                    try:
+                        retry_h = e.headers.get("retry-after")
+                        if retry_h:
+                            wait_sec = float(retry_h) + 0.5
+                    except Exception:
+                        pass
+                    print(f"\n[*] Groq em pausa de tokens por minuto (TPM). Aguardando {wait_sec:.1f}s...")
+                    time.sleep(wait_sec)
+                    continue
+                elif e.code in (404, 500, 502, 503):
+                    break
+                raise e
+            except Exception as e:
+                last_err = e
+                raise e
 
     if last_err:
         raise last_err
@@ -1994,12 +2006,12 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
     try:
         if engine_type == "groq":
             try:
-                resp_content = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=1024, fallback_model=engine_opts.get("fallback_model"))
+                resp_content = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=600, fallback_model=engine_opts.get("fallback_model"))
             except Exception as g_err:
                 cfg = engine_opts.get("cfg", {})
                 or_keys = cfg.get("openrouter_api_keys", [])
                 if or_keys:
-                    print(f"\n[*] Groq indisponível -> Alternando para OpenRouter...")
+                    print(f"\n[*] Groq indisponível ({g_err}) -> Alternando para OpenRouter...")
                     resp_content = query_openrouter_chat(messages, cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free"), api_key=or_keys[0], temperature=temp, max_tokens=1024, engine_opts=engine_opts)
                 else:
                     raise g_err

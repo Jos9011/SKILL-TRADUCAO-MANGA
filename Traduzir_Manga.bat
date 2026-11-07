@@ -112,6 +112,7 @@ if "%AI_MODE%"=="4" set AI_FLAG=--ollama
 echo.
 echo [*] Iniciando processamento...
 set "SCRIPT_PATH=%~dp0auto_translate.py"
+if not exist "%SCRIPT_PATH%" set "SCRIPT_PATH=C:\Users\ja329\OneDrive\Documentos\SISTEMA DE TRADUÇÃO\auto_translate.py"
 if not exist "%SCRIPT_PATH%" set "SCRIPT_PATH=C:\Users\ja329\tools\manga-translator\auto_translate.py"
 "C:\Users\ja329\AppData\Local\Python\bin\python.exe" "%SCRIPT_PATH%" "%TARGET_DIR%" %OCR_FLAG% %FORCE_FLAG% %TYPE_FLAG% %AI_FLAG%
 

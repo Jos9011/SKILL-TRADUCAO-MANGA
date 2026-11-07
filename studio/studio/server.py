@@ -13,18 +13,34 @@ import io
 import urllib.request
 import webbrowser
 import subprocess
+import traceback
 from flask import Flask, render_template, jsonify, request, send_file, Response
 from PIL import Image
 
-# Inclui diretório principal no path
+# Protege contra execução via pythonw.exe onde sys.stdout e sys.stderr são None
+class SafeDummyStream(io.StringIO):
+    def write(self, s):
+        pass
+    def flush(self):
+        pass
+
+if sys.stdout is None:
+    sys.stdout = SafeDummyStream()
+if sys.stderr is None:
+    sys.stderr = SafeDummyStream()
+
+# Inclui diretório principal no path e define como cwd
 SYS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(SYS_DIR)
 if SYS_DIR not in sys.path:
     sys.path.insert(0, SYS_DIR)
 
 import auto_translate
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
-app = Flask(__name__, template_folder=TEMPLATE_DIR)
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 
@@ -39,6 +55,7 @@ job_state = {
     "status": "idle",       # "idle", "running", "done", "error"
     "manga_name": "",
     "manga_path": "",
+    "first_img": "",
     "stage": "",            # "ocr", "translation", "diagram", "done"
     "current_page": 0,
     "total_pages": 0,
@@ -51,25 +68,35 @@ job_state = {
 }
 
 class StreamCapture(io.StringIO):
-    """Intercepta stdout para transmitir logs em tempo real ao frontend."""
-    def __init__(self, max_lines=200):
+    """Intercepta stdout e stderr para transmitir logs em tempo real ao frontend."""
+    def __init__(self, original_stream=None, max_lines=300):
         super().__init__()
         self.max_lines = max_lines
-        self.original_stdout = sys.stdout
+        self.original_stream = original_stream
 
     def write(self, text):
-        if text.strip():
-            with job_lock:
-                for line in text.strip().split("\n"):
-                    clean = line.strip()
-                    if clean and not clean.startswith("\r"):
-                        job_state["logs"].append(clean)
-                        if len(job_state["logs"]) > self.max_lines:
-                            job_state["logs"].pop(0)
-        self.original_stdout.write(text)
+        if text:
+            clean_text = str(text)
+            if clean_text.strip():
+                with job_lock:
+                    for line in clean_text.strip().split("\n"):
+                        clean = line.strip()
+                        if clean and not clean.startswith("\r"):
+                            job_state["logs"].append(clean)
+                            if len(job_state["logs"]) > self.max_lines:
+                                job_state["logs"].pop(0)
+        if self.original_stream is not None and hasattr(self.original_stream, 'write'):
+            try:
+                self.original_stream.write(text)
+            except Exception:
+                pass
 
     def flush(self):
-        self.original_stdout.flush()
+        if self.original_stream is not None and hasattr(self.original_stream, 'flush'):
+            try:
+                self.original_stream.flush()
+            except Exception:
+                pass
 
 @app.route("/")
 def index():
@@ -296,6 +323,16 @@ def api_start_translation():
     manga_path = data.get("path", "").strip('\"\'')
     if not manga_path or not os.path.exists(manga_path):
         return jsonify({"error": "Caminho do mangá inválido"}), 400
+
+    first_img = data.get("first_img", "")
+    if not first_img and os.path.exists(manga_path):
+        imgs = [os.path.join(manga_path, f) for f in os.listdir(manga_path) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.bmp'))]
+        if imgs:
+            import re
+            def _nat_key(s):
+                return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+            imgs.sort(key=lambda x: _nat_key(os.path.basename(x)))
+            first_img = imgs[0]
         
     with job_lock:
         if job_state["status"] == "running":
@@ -304,6 +341,7 @@ def api_start_translation():
         job_state["status"] = "running"
         job_state["manga_name"] = os.path.basename(manga_path)
         job_state["manga_path"] = manga_path
+        job_state["first_img"] = first_img
         job_state["stage"] = "ocr"
         job_state["current_page"] = 0
         job_state["total_pages"] = 0
@@ -322,9 +360,11 @@ def api_start_translation():
 
     def _worker():
         global job_state
-        capture = StreamCapture()
+        capture = StreamCapture(original_stream=sys.stdout)
         old_stdout = sys.stdout
+        old_stderr = sys.stderr
         sys.stdout = capture
+        sys.stderr = capture
 
         def progress_callback(stage, current, total, text, result=None):
             with job_lock:
@@ -363,12 +403,18 @@ def api_start_translation():
                 if isinstance(res, dict):
                     job_state["result"] = res
         except Exception as e:
+            err_msg = str(e) or e.__class__.__name__
+            tb_msg = traceback.format_exc()
             with job_lock:
                 job_state["status"] = "error"
-                job_state["error"] = str(e)
-                job_state["message"] = f"Erro no processamento: {e}"
+                job_state["error"] = err_msg
+                job_state["message"] = f"Erro no processamento: {err_msg}"
+                job_state["logs"].append(f"[!] Erro fatal: {err_msg}")
+                for tb_line in tb_msg.strip().split("\n"):
+                    job_state["logs"].append(tb_line)
         finally:
-            sys.stdout = old_stdout
+            sys.stdout = old_stdout if old_stdout is not None else SafeDummyStream()
+            sys.stderr = old_stderr if old_stderr is not None else SafeDummyStream()
 
     threading.Thread(target=_worker, daemon=True).start()
     return jsonify({"success": True})
@@ -559,18 +605,21 @@ def kill_existing_on_port(port=5050):
         pass
 
 if __name__ == "__main__":
-    port = 5050
-    url = f"http://127.0.0.1:{port}"
+    try:
+        port = 5050
+        url = f"http://127.0.0.1:{port}"
 
-    # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
-    if is_server_running(port):
-        print(f"[*] Servidor já ativo em {url}. Abrindo aplicativo...")
-        open_chrome_app(url, port)
-        sys.exit(0)
+        # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
+        if is_server_running(port):
+            open_chrome_app(url, port)
+            sys.exit(0)
 
-    # Se a porta estiver presa por processo zumbi, limpa
-    kill_existing_on_port(port)
-    time.sleep(0.5)
+        # Se a porta estiver presa por processo zumbi, limpa
+        kill_existing_on_port(port)
+        time.sleep(0.5)
 
-    threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
-    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+        threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
+        app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+    except Exception as e:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"), "w", encoding="utf-8") as f:
+            f.write(traceback.format_exc())

@@ -2364,7 +2364,7 @@ def is_ocr_noise(text, score):
         return True
     return False
 
-def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False):
+def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progress_cb=None):
     """Extrai textos usando RapidOCR (com suporte a Hangul Coreano e detecção de textos coloridos)."""
     import glob
     
@@ -2377,7 +2377,12 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False):
     
     desc_msg = "OCR Coreano (Hangul)" if is_korean else "OCR Universal (RapidOCR)"
     print(f"[*] Extraindo textos usando {desc_msg}...")
-    for img_path in tqdm(img_files, desc="OCR Pages"):
+    for idx, img_path in enumerate(tqdm(img_files, desc="OCR Pages")):
+        if progress_cb:
+            try:
+                progress_cb("ocr", idx + 1, len(img_files), f"Lendo textos (OCR): Página {idx + 1} de {len(img_files)}")
+            except Exception:
+                pass
         img_name = os.path.basename(img_path)
         try:
             with open(img_path, "rb") as f:
@@ -2601,10 +2606,10 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     if needs_new_ocr:
         if expected_engine == "rapidocr_korean":
             print("[+] Executando RapidOCR Coreano (Hangul)...")
-            generate_rapidocr_json(manga_dir, mokuro_path, is_korean=True)
+            generate_rapidocr_json(manga_dir, mokuro_path, is_korean=True, progress_cb=progress_cb)
         elif expected_engine == "rapidocr":
             print("[+] Executando RapidOCR Universal com detecção de textos coloridos...")
-            generate_rapidocr_json(manga_dir, mokuro_path, is_korean=False)
+            generate_rapidocr_json(manga_dir, mokuro_path, is_korean=False, progress_cb=progress_cb)
         else:
             print("[*] Executando motor Asiático especializado (Mokuro)...")
             import subprocess

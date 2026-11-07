@@ -1698,6 +1698,41 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"\bI['\s\+]*[mM]\s+[cC][uU][\s\-_]*[mM]+[\s\-_]*[mM]*[iI][nN][gG]!*", "I'm CUMMING!", t, flags=re.IGNORECASE)
     t = re.sub(r"\b[cC][uU][\s\-_]*[mM]+[\s\-_]*[mM]*[iI][nN][gG]!*", "CUMMING!", t, flags=re.IGNORECASE)
     t = re.sub(r"\b[cC][uU]\s*[mM]\s*[mM][iI][nN][eE]!*", "CUMMING!", t, flags=re.IGNORECASE)
+
+    # Desfragmentação de OCR latino / espanhol (letras e sílabas separadas indevidamente por espaços)
+    t = re.sub(r"(?i)\bjoy\s+eri\s*a\b", "joyería", t)
+    t = re.sub(r"(?i)\bjoy\s+as\b", "joyas", t)
+    t = re.sub(r"(?i)\bjoy\s+a\b", "joya", t)
+    t = re.sub(r"(?i)\b(?:ml\s*chas|much\s+as)\b", "muchas", t)
+    t = re.sub(r"(?i)\bgraci\s+as\b", "gracias", t)
+    t = re.sub(r"(?i)\bti\s+en\s+da\b", "tienda", t)
+    t = re.sub(r"(?i)\bti\s+en\s+das\b", "tiendas", t)
+    t = re.sub(r"(?i)\ben\s+cim\s+a\b", "encima", t)
+    t = re.sub(r"(?i)\btam\s*bi\s*en\b", "también", t)
+    t = re.sub(r"(?i)\ba\s*ten\s*der\b", "atender", t)
+    t = re.sub(r"(?i)\bde\s+dic\s+aci\s+on\b", "dedicación", t)
+    t = re.sub(r"(?i)\ba\s*comp\s*an\s*an\s*te\b", "acompañante", t)
+    t = re.sub(r"(?i)\bsir\s+va\s*se\b", "sírvase", t)
+    t = re.sub(r"(?i)\bde\s+jar\b", "dejar", t)
+    t = re.sub(r"(?i)\blle\s+vas\b", "llevas", t)
+    t = re.sub(r"(?i)\blle\s+vo\b", "llevo", t)
+    t = re.sub(r"(?i)\blle\s+va\b", "lleva", t)
+    t = re.sub(r"(?i)\bpu\s+es\s+tas\b", "puestas", t)
+    t = re.sub(r"(?i)\bpu\s+es\s+ta\b", "puesta", t)
+    t = re.sub(r"(?i)\bcue\s+r\s*po\b", "cuerpo", t)
+    t = re.sub(r"(?i)\bcal\s+i\s+en\s+tu\s+ra\b", "calentura", t)
+    t = re.sub(r"(?i)\bvi\s+si\s+ta\b", "visita", t)
+    t = re.sub(r"(?i)\bcl\s+i\s+en\s+te\s*la\b", "clientela", t)
+    t = re.sub(r"(?i)\bcl\s+i\s+en\s+tes\b", "clientes", t)
+    t = re.sub(r"(?i)\bcl\s+i\s+en\s+te\b", "cliente", t)
+    t = re.sub(r"(?i)\bsu\s+cur\s+sal\b", "sucursal", t)
+    t = re.sub(r"(?i)\bper\s+for\s+aci\s+on\s*es\b", "perforaciones", t)
+    t = re.sub(r"(?i)\bac\s+ce\s+so\s+ri\s+os\b", "accesorios", t)
+    t = re.sub(r"(?i)\bmo\s+del\s+o\b", "modelo", t)
+    t = re.sub(r"(?i)\bam\s+bul\s+an\s+te\b", "ambulante", t)
+    t = re.sub(r"(?i)\bto\s+das\b", "todas", t)
+    t = re.sub(r"(?i)\bto\s+do\b", "todo", t)
+    t = re.sub(r"(?i)\bmer\s+can\s+ci\s*a\b", "mercancía", t)
     return t
 
 def clean_ai_translation(text, original_text="", is_adult=True):
@@ -1708,6 +1743,19 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     cleaned = sanitize_lettering_text(text).strip()
     
     # 0. Detectar e ignorar mensagens de recusa de IA ou vazamentos de prompt
+    # 0.1 Eliminar estritamente vazamentos de instruções do sistema (Prompt Leaks)
+    prompt_leak_patterns = [
+        r'(?i)\b(?:n[ãa]o\s+revele|nao\s+revele)[^.\n]*[.\n]?',
+        r'(?i)\bfoque\s+apenas[^.\n]*[.\n]?',
+        r'(?i)\b(?:do\s+not\s+reveal|never\s+discuss)[^.\n]*[.\n]?',
+        r'(?i)\bvoc[êe]\s+[eé]\s+o\s+agente\s+[12].*?[.\n]?',
+        r'(?i)\bdossi[êe]\s+estrutural.*?[.\n]?',
+        r'(?i)\bpersona_intro.*?[.\n]?',
+        r'(?i)\bdiretrizes\s+de\s+localiza[çc][ãa]o.*?[.\n]?'
+    ]
+    for plp in prompt_leak_patterns:
+        cleaned = re.sub(plp, '', cleaned).strip()
+
     refusal_markers = [
         'idioma desconhecido', 'forneça o texto original',
         'como uma inteligência artificial', 'como uma ia',
@@ -2003,6 +2051,48 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     cleaned = _preserve_case(r'\btacto\b', 'tato', cleaned)
     cleaned = _preserve_case(r'\bmbicar\b', 'lamber', cleaned)
     cleaned = _preserve_case(r'\breito\b', 'peito', cleaned)
+
+    # PROTEÇÃO ANTI-ALUCINAÇÃO EM TERMOS COMERCIAIS / JOALHERIA / ROUPAS:
+    # Se o texto original tratava de joias, joalheria, loja ou roupas, impede que a IA confunda com órgãos genitais
+    orig_has_jewelry = bool(re.search(r'(?i)\b(joyas?|joyer[íi]a|tiendas?|ropas?|collares|pulseras|anillos|gemas|jewelry|jewel|store|shop)\b', orig_lower))
+    if orig_has_jewelry:
+        cleaned = re.sub(r'(?i)\b(?:na|a)\s+buceta\s+dela\b', 'na joalheria', cleaned)
+        cleaned = re.sub(r'(?i)\b(?:na|no)\s+buceta\b', 'na joalheria', cleaned)
+        cleaned = re.sub(r'(?i)\bo\s+cu\s+da\s+mulher\b', 'o corpo da mulher', cleaned)
+        if not re.search(r'(?i)\b(coño|pussy|vagina|cunt|rajita)\b', orig_lower):
+            cleaned = re.sub(r'(?i)\bbuceta\b', 'joalheria', cleaned)
+
+    # TRADUÇÃO DE ESPANHOL RESIDUAL -> PORTUGUÊS DO BRASIL:
+    cleaned = _preserve_case(r'\bml\s*chas\s+gracias\b', 'muito obrigado', cleaned)
+    cleaned = _preserve_case(r'\bmuchas\s+gracias\b', 'muito obrigado', cleaned)
+    cleaned = _preserve_case(r'\bpelo\s+visit\s*a\b', 'pela visita', cleaned)
+    cleaned = _preserve_case(r'\bpor\s+la\s+visita\b', 'pela visita', cleaned)
+    cleaned = _preserve_case(r'\btodas\s+las\b', 'todas as', cleaned)
+    cleaned = _preserve_case(r'\btodos\s+los\b', 'todos os', cleaned)
+    cleaned = _preserve_case(r'\bhoy\b', 'hoje', cleaned)
+    cleaned = _preserve_case(r'\bjoyas\b', 'joias', cleaned)
+    cleaned = _preserve_case(r'\bjoyer[íi]a\b', 'joalheria', cleaned)
+    cleaned = _preserve_case(r'\bjoyeria\b', 'joalheria', cleaned)
+    cleaned = _preserve_case(r'\btienda\b', 'loja', cleaned)
+    cleaned = _preserve_case(r'\btiendas\b', 'lojas', cleaned)
+    cleaned = _preserve_case(r'\bllevas\b', 'usa', cleaned)
+    cleaned = _preserve_case(r'\blleva\b', 'usa', cleaned)
+    cleaned = _preserve_case(r'\bllevo\b', 'uso', cleaned)
+    cleaned = _preserve_case(r'\btodo\s+el\s+dinero\b', 'todo o dinheiro', cleaned)
+    cleaned = _preserve_case(r'\bde\s+verdad\b', 'de verdade', cleaned)
+    cleaned = _preserve_case(r'\bsin\s+dudar(?:\s+ni\s+un\s+instante)?\b', 'sem hesitar nem um instante', cleaned)
+    cleaned = _preserve_case(r'\ben\s+cima\b', 'em cima', cleaned)
+    cleaned = _preserve_case(r'\bs[ií]rvase\b', 'fique à vontade', cleaned)
+    cleaned = _preserve_case(r'\bacompañante\b', 'acompanhante', cleaned)
+    cleaned = _preserve_case(r'\bdisculpe\b', 'desculpe', cleaned)
+    cleaned = _preserve_case(r'\bvengan\b', 'venham', cleaned)
+    cleaned = _preserve_case(r'\bbienvenidos\b', 'bem-vindos', cleaned)
+    cleaned = _preserve_case(r'\bla\s+clientela\b', 'a clientela', cleaned)
+    cleaned = _preserve_case(r'\by\s+ya\s+le\s+agarro\s+el\s+gusto\s+por\s+completo\b', 'e já pegou o gosto por completo', cleaned)
+    cleaned = _preserve_case(r'\bcalientura\b', 'fogo', cleaned)
+    cleaned = _preserve_case(r'\btambien\b', 'também', cleaned)
+    cleaned = _preserve_case(r'\bramera\b', 'vadia', cleaned)
+    cleaned = _preserve_case(r'\btasa\s*dor\s*a\b', 'avaliadora', cleaned)
     
     # Limpeza de artefatos de OCR e corações transcritos
     cleaned = re.sub(r'(?i)\bheart(?:\s+111|\s+11|\s+1)?\b', '♡', cleaned)
@@ -2089,8 +2179,9 @@ REGRAS OBRIGATÓRIAS:
 1. Responda EXCLUSIVAMENTE em formato JSON com as mesmas chaves numéricas e os valores traduzidos. Exemplo: {{"1": "...", "2": "..."}}
 2. NUNCA adicione introduções, explicações, saudações, notas de tradutor ou referências a mensagens do sistema.
 3. Mantenha pontuação dramática de mangá (!, ?, ..., ~).
-4. NUNCA use palavras em espanhol.
-5. Adapte os textos para serem diretos e caberem perfeitamente em balões de fala."""
+4. NUNCA use palavras em espanhol ou portunhol. Se o texto de entrada estiver em espanhol, traduza absolutamente tudo para português do Brasil ('Muchas gracias' -> 'Muito obrigado', 'joyas' -> 'joias', 'tienda' -> 'loja', 'hoy' -> 'hoje', 'todo el dinero' -> 'todo o dinheiro').
+5. NUNCA confunda termos cotidianos/comerciais com termos genitais ('joyería' é 'joalheria', NUNCA 'buceta'; 'cuerpo' é 'corpo', NUNCA 'cu').
+6. Adapte os textos para serem diretos e caberem perfeitamente em balões de fala."""
 
     if is_adult:
         return f"""{persona_intro}Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
@@ -2422,11 +2513,20 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None):
         if donts:
             learned_rules_text += "[O QUE VOCÊ NUNCA DEVE FAZER / PROIBIÇÕES]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in donts) + "\n"
 
+    multilang_clause = (
+        "DIRETRIZES DE TRADUÇÃO MULTI-IDIOMA (ESPANHOL / INGLÊS / JAPONÊS / COREANO -> PT-BR):\n"
+        "- A obra original pode estar em ESPANHOL, INGLÊS, JAPONÊS ou COREANO. Sua saída DEVE ser 100% em PORTUGUÊS DO BRASIL coloquial, fluído e dinâmico.\n"
+        "- ZERO TOLERÂNCIA A ESPANHOL RESIDUAL: NUNCA mantenha frases ou termos em espanhol como 'Muchas gracias' (use 'Muito obrigado/a'), 'joyas' (use 'joias'), 'tienda' (use 'loja'), 'ropa' (use 'roupa'), 'hoy' (use 'hoje'), 'todo el dinero' (use 'todo o dinheiro'), 'vengan' (use 'venham'), 'sirvase' (use 'fique à vontade'), 'calientura' (use 'tesão' ou 'fogo').\n"
+        "- DISTINÇÃO ENTRE CONTEXTO COMERCIAL E CONTEXTO ERÓTICO: Em cenas de lojas, joalherias, piercings, roupas ou fichas técnicas, NUNCA confunda termos cotidianos com genitais (ex: 'joyería' é 'joalheria', NUNCA 'buceta'; 'cuerpo' é 'corpo', NUNCA 'cu').\n"
+        "- REGRAS ESTREITAS ANTI-VAZAMENTO: NUNCA imprima diretrizes internas, observações, notas de tradutor ou avisos de sistema. Saída estritamente com os diálogos adaptados.\n"
+    )
+
     adult_clause = ""
     if is_adult:
         adult_clause = (
             "DIRETRIZES DE LOCALIZAÇÃO ADULTA (+18 - ZERO CENSURA):\n"
             "- ANATOMIA E GÊNERO: 'pussy/cunt' é SEMPRE feminino ('buceta', 'xoxota'); 'cock/dick/penis' é SEMPRE masculino ('pau', 'pinto', 'rola', 'cacete'). NUNCA confunda o gênero em frases com ambos (ex: 'touch Mom\\'s pussy while you suck my dick' -> 'toca na buceta da mamãe enquanto chupa meu pau').\n"
+            "- ESPANHOL ADULTO: 'coño / rajita' -> 'buceta', 'xoxota'. 'pene / verga / polla' -> 'pau', 'pinto', 'rola'. 'coger' em espanhol adulto é 'foder', 'transar', 'dar uma foda'. 'calentura' é 'tesão', 'fogo'. 'correrse / se vino / me vengo' -> 'gozar', 'gozou', 'estou gozando'.\n"
             "- AÇÕES: 'came / cum / cumming' em contexto sexual é SEMPRE 'gozou', 'gozar', 'gozando' (NUNCA 'veio' ou 'chegou'). 'came inside' -> 'gozou dentro'. 'creampie' -> 'gozada dentro / leitada'.\n"
             "- GRITOS E CLÍMAX: 'I'm cumming / CUMIN G / Cu MING' -> 'Estou gozando!'. 'I can't hold it anymore / CAN TH OLD' -> 'Não aguento mais segurar! / Não consigo mais segurar!'.\n"
             "- DINÂMICAS ÍNTIMAS E GÊNERO: Ao falar com mulher, 'you're so wet / getting wet' é SEMPRE feminino ('você está tão molhada / ficando molhada'). Mulher falando: 'I'll be your partner' -> 'serei sua parceira'. Filho falando com a mãe sobre o pai ('Dad') diz 'O papai' ou 'Meu pai' (NUNCA 'Seu pai').\n"
@@ -2451,8 +2551,9 @@ SUAS TAREFAS OBRIGATÓRIAS:
 3. VOCABULÁRIO E TOM:
    - Use português do Brasil coloquial autêntico, fluido e expressivo (estilo MangaPlus / Crunchyroll).
    - Mantenha a pontuação dramática de mangá (!, ?, ..., ~).
-   - NUNCA use palavras em espanhol.
+   - NUNCA use palavras em espanhol ou portunhol.
 
+{multilang_clause}
 {adult_clause}
 {glossary_rules}
 {learned_rules_text}
@@ -2766,6 +2867,11 @@ def detect_manga_language_and_engine(manga_dir):
             print("[+] Obra identificada como CHINÊS (Hanzi) sem kana -> Usando RapidOCR Universal.")
             return "rapidocr"
         if latin_count > 10 and latin_count > (japanese_count * 2):
+            spanish_matches = len(re.findall(r'\b(el|la|los|las|de|en|un|una|por|con|para|del|al|que|es|como|mas|pero|cuando|muchas|gracias|joyas?|tiendas?)\b', full_sample_text, re.IGNORECASE))
+            if spanish_matches >= 3 or any(w in folder_name.lower() for w in ["vengan", "espanol", "español", "spanish", "capitulo"]):
+                print("[+] Obra identificada com texto em ESPANHOL -> Ativando tradução especializada Espanhol -> PT-BR.")
+            else:
+                print("[+] Obra identificada com alfabeto LATINO (Inglês/Ocidental) -> Usando RapidOCR.")
             return "rapidocr"
         return "mokuro"
     except Exception:

@@ -72,9 +72,23 @@ app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 
-# Configurações globais e Versão da Aplicação
-APP_VERSION = "0.1-beta"
-APP_VERSION_NAME = "v0.1 Beta"
+# Configurações globais e Versão Oficial
+try:
+    from version import __version__, __version_name__, get_version_info
+except Exception:
+    __version__ = "0.2.0-beta"
+    __version_name__ = "v0.2.0 Beta"
+
+APP_VERSION = __version__
+APP_VERSION_NAME = __version_name__
+
+@app.context_processor
+def inject_version():
+    return {
+        "app_version": APP_VERSION_NAME,
+        "app_version_code": APP_VERSION
+    }
+
 BASE_MANGAS_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
 THUMB_CACHE_DIR = os.path.join(SYS_DIR, ".thumb_cache")
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
@@ -293,6 +307,9 @@ def api_version():
         "dual_engine": True,
         "features": [
             "Cooperative Dual-Engine (Spatial Cartographer + Narrative Synthesizer)",
+            "Delete Manga & Fast Library Management",
+            "Persistent User Profile & Auto-Key Sync (Google Drive + Browser)",
+            "Automated SemVer Versioning (Grandes, Médios e Pequenos)",
             "Web Reader & CBZ/ZIP Downloader",
             "Google Drive Cloud Persistence",
             "Hybrid Local/Cloud AI (Groq + Ollama GPU)"

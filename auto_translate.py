@@ -34,8 +34,14 @@ import urllib.error
 from rapidocr_onnxruntime import RapidOCR
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 
-__version__ = "0.1-beta"
-__version_name__ = "v0.1 Beta"
+try:
+    from version import __version__, __version_name__, get_version_info
+except ImportError:
+    try:
+        from .version import __version__, __version_name__, get_version_info
+    except Exception:
+        __version__ = "0.2.0-beta"
+        __version_name__ = "v0.2.0 Beta"
 from tqdm import tqdm
 
 try:

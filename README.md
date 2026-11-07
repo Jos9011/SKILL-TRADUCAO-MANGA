@@ -6,16 +6,17 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.1 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.2.0 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.1--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.2.0--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Abrir Servidor IA no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Dolphin_Server.ipynb)
 
-Plataforma profissional de scanlation para tradução, OCR e diagramação de mangás, manhwas e doujinshis com **Arquitetura Cooperativa de Duas IAs (v0.1 Beta)**:
+Plataforma profissional de scanlation para tradução, OCR e diagramação de mangás, manhwas e doujinshis com **Arquitetura Cooperativa de Duas IAs (v0.2.0 Beta)**:
 
 1. **Agente 1 (Cartógrafo Espacial):** Mapeia a geometria dos balões, aspect ratio, ordem oriental de leitura (Direita para Esquerda, Topo para Baixo) e calcula o orçamento máximo de caracteres (`max_chars`) para evitar vazamento ou sobreposição de arte.
 2. **Agente 2 (Sintetizador Literário & Narrativo):** Analisa a cena completa, concordância de gênero estrita, dinâmicas interpessoais e gírias de scanlation brasileira sem censura, respeitando rigorosamente a capacidade calculada pelo Agente 1.
+3. **Gerenciador de Biblioteca & Perfil Persistente (Novo no v0.2.0):** Exclusão direta de obras com um clique, e retenção permanente de chaves de API com sincronização híbrida entre Google Drive e navegador.
 
 ---
 

@@ -2236,40 +2236,216 @@ def translate_single_dialogue(text, engine_type=None, model_name=None, engine_op
 
     return google_translate_free(clean_t)
 
-def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None, engine_opts=None, is_adult=True, glossary=None):
-    """Traduz todas as falas de uma página em lote com roteamento inteligente de IA e fallback imediato."""
+def build_page_spatial_dossier(bubbles_to_trans, page_w=1200, page_h=1800, src_lang="auto"):
+    """
+    Agente 1 (Mapeador Espacial & Cartógrafo de Balões):
+    Inspeciona a geometria dos balões na página, calcula a capacidade de caracteres (typesetting)
+    e organiza tudo na ordem canônica de leitura oriental (Direita -> Esquerda, Topo -> Base).
+    """
+    page_w = max(100, page_w or 1200)
+    page_h = max(100, page_h or 1800)
+    dossier_bubbles = []
+    
+    for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
+        box = b_obj.get("box", [0, 0, 0, 0]) if isinstance(b_obj, dict) else [0, 0, 0, 0]
+        xmin, ymin, xmax, ymax = box
+        bw = max(1, xmax - xmin)
+        bh = max(1, ymax - ymin)
+        area = bw * bh
+        
+        # Posição vertical na página
+        if ymin < page_h * 0.35:
+            v_pos = "topo"
+        elif ymin > page_h * 0.65:
+            v_pos = "rodapé"
+        else:
+            v_pos = "meio"
+            
+        # Posição horizontal na página
+        if xmin > page_w * 0.55:
+            h_pos = "direita"
+        elif xmax < page_w * 0.45:
+            h_pos = "esquerda"
+        else:
+            h_pos = "centro"
+            
+        pos_label = f"{v_pos}-{h_pos}"
+        
+        # Formato e aspecto do balão
+        aspect = bw / bh
+        if aspect < 0.6:
+            b_format = "balão vertical estreito"
+        elif aspect > 1.8:
+            b_format = "caixa retangular horizontal"
+        else:
+            b_format = "balão oval / circular de diálogo"
+            
+        # Orçamento de caracteres recomendados (evita estouro de balão)
+        raw_char_len = len(orig_text)
+        if area < 16000:
+            char_budget = max(20, min(50, int(raw_char_len * 1.35)))
+            cap_desc = f"pequeno (máx recomendável: {char_budget} carac.)"
+        elif area < 50000:
+            char_budget = max(40, min(100, int(raw_char_len * 1.35)))
+            cap_desc = f"médio (máx recomendável: {char_budget} carac.)"
+        else:
+            char_budget = max(80, min(240, int(raw_char_len * 1.35)))
+            cap_desc = f"amplo (máx recomendável: {char_budget} carac.)"
+            
+        cleaned_t = clean_ocr_scan_noise(orig_text)
+        
+        dossier_bubbles.append({
+            "pos": pos_label,
+            "formato": b_format,
+            "capacidade": cap_desc,
+            "max_chars": char_budget,
+            "xmin": xmin,
+            "ymin": ymin,
+            "xmax": xmax,
+            "ymax": ymax,
+            "texto_original": cleaned_t,
+            "orig_raw": orig_text
+        })
+        
+    # Ordena pela ordem canônica de mangá (RTL: Direita para Esquerda, Topo para Base)
+    # ymin agrupado em faixas de ~160px, xmax decrescente
+    dossier_bubbles.sort(key=lambda b: (b["ymin"] // 160, -b["xmax"]))
+    
+    ordered_bubbles = []
+    dialogue_map = {}
+    for new_idx, b_info in enumerate(dossier_bubbles):
+        k = str(new_idx + 1)
+        b_info["id"] = k
+        dialogue_map[k] = b_info["orig_raw"]
+        ordered_bubbles.append(b_info)
+        
+    return {
+        "layout": "manga_oriental (leitura da direita para a esquerda, topo para base)",
+        "idioma_detectado": src_lang,
+        "total_baloes": len(ordered_bubbles),
+        "baloes": ordered_bubbles
+    }, dialogue_map
+
+def build_dual_engine_system_prompt(is_adult=True, glossary=None):
+    """Gera o prompt do Agente 2 (Tradutor Literário & Contextualizador de Cena)."""
+    persona_intro = (
+        "Você é o Agente 2: Tradutor Literário e Contextualizador Narrativo de elite da nossa equipe de scanlation.\n"
+        "O Agente 1 (Mapeador Espacial) analisou visualmente a página original e gerou o DOSSIÊ ESTRUTURAL com posições, ordem de leitura oriental e limites físicos de cada balão.\n\n"
+    )
+
+    glossary_rules = ""
+    if glossary:
+        chars = glossary.get("characters", {})
+        terms = glossary.get("terms", {})
+        if chars or terms:
+            glossary_rules = "\nGLOSSÁRIO OBRIGATÓRIO DESTA OBRA:\n"
+            for k, v in chars.items():
+                glossary_rules += f"- Personagem '{k}': manter '{v}'\n"
+            for k, v in terms.items():
+                glossary_rules += f"- Termo '{k}': traduzir/adaptar como '{v}'\n"
+
+    dos, donts = load_learning_rules()
+    learned_rules_text = ""
+    if dos or donts:
+        learned_rules_text = "\nMEMÓRIA E APRENDIZADO CONTÍNUO DO USUÁRIO:\n"
+        if dos:
+            learned_rules_text += "[O QUE VOCÊ DEVE FAZER E PRIORIZAR]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in dos) + "\n"
+        if donts:
+            learned_rules_text += "[O QUE VOCÊ NUNCA DEVE FAZER / PROIBIÇÕES]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in donts) + "\n"
+
+    adult_clause = ""
+    if is_adult:
+        adult_clause = (
+            "DIRETRIZES DE LOCALIZAÇÃO ADULTA (+18 - ZERO CENSURA):\n"
+            "- ANATOMIA E GÊNERO: 'pussy/cunt' é SEMPRE feminino ('buceta', 'xoxota'); 'cock/dick/penis' é SEMPRE masculino ('pau', 'pinto', 'rola', 'cacete'). NUNCA confunda o gênero em frases com ambos (ex: 'touch Mom\\'s pussy while you suck my dick' -> 'toca na buceta da mamãe enquanto chupa meu pau').\n"
+            "- AÇÕES: 'came / cum / cumming' em contexto sexual é SEMPRE 'gozou', 'gozar', 'gozando' (NUNCA 'veio' ou 'chegou'). 'came inside' -> 'gozou dentro'. 'creampie' -> 'gozada dentro / leitada'.\n"
+            "- VESTIMENTA: 'panties / underwear' para mulher é 'calcinha' ou 'lingerie' (NUNCA 'cuecas').\n"
+            "- FETICHE: 'sow' em mangás adultos é 'porca' ou 'vadia' (NUNCA o verbo 'semear').\n"
+            "- GEMIDOS E RUÍDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você'. Mantenha o som expressivo (ex: 'Ugh... uh... mmph...').\n"
+        )
+
+    return f"""{persona_intro}Sua missão é realizar a tradução e adaptação contextual de excelência literária para Português do Brasil (PT-BR).
+
+SUAS TAREFAS OBRIGATÓRIAS:
+1. ESTUDO DE CENA E PERSONAGENS:
+   - Leia todas as falas na ordem de leitura fornecida (topo-direita -> base-esquerda).
+   - Identifique quem está conversando com quem (homem, mulher, mãe e filho, superior e subordinado, amantes, amigos).
+   - Garanta 100% de concordância de gênero nos pronomes, artigos e adjetivos (ex: 'cansada', 'ficou louca', 'meu amor', 'na buceta').
+
+2. ADAPTAÇÃO AO TAMANHO DO BALÃO (TYPESETTING MILIMÉTRICO):
+   - Cada balão possui uma recomendação de capacidade física ('max_chars').
+   - Adapte a tradução em PT-BR para caber com elegância dentro desse limite.
+   - Seja conciso e ágil como um verdadeiro diálogo de mangá brasileiro (ex: 'Nem pensar!' em vez de 'Isso de maneira alguma seria possível').
+
+3. VOCABULÁRIO E TOM:
+   - Use português do Brasil coloquial autêntico, fluido e expressivo (estilo MangaPlus / Crunchyroll).
+   - Mantenha a pontuação dramática de mangá (!, ?, ..., ~).
+   - NUNCA use palavras em espanhol.
+
+{adult_clause}
+{glossary_rules}
+{learned_rules_text}
+
+FORMATO EXCLUSIVO DE RESPOSTA:
+Responda EXCLUSIVAMENTE em formato JSON com os IDs numéricos de cada balão:
+{{
+  "1": "Tradução adaptada da fala 1",
+  "2": "Tradução adaptada da fala 2"
+}}"""
+
+def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None, engine_opts=None, is_adult=True, glossary=None, page_w=1200, page_h=1800, src_lang="auto", page_num=1):
+    """Traduz falas de uma página usando a cooperação entre Agente 1 (Cartógrafo Espacial) e Agente 2 (Contextualizador Literário)."""
     if not bubbles_to_trans:
         return {}
 
     engine_opts = engine_opts or {}
     results = {}
-    needed = {}
-    dialogue_map = {}
 
-    for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
-        key = str(idx + 1)
-        cleaned_orig = clean_ocr_scan_noise(orig_text)
+    # 1. Agente 1 constrói o dossiê estrutural e espacial
+    dossier, dialogue_map = build_page_spatial_dossier(bubbles_to_trans, page_w=page_w, page_h=page_h, src_lang=src_lang)
+    
+    needed_bubbles = []
+    for b in dossier["baloes"]:
+        orig = b["orig_raw"]
+        cleaned_orig = b["texto_original"]
         if is_scan_watermark(cleaned_orig):
-            results[orig_text] = ""
+            results[orig] = ""
             continue
         sfx_res = translate_sfx_phrase(cleaned_orig)
         if sfx_res:
-            results[orig_text] = sfx_res
-        else:
-            needed[key] = cleaned_orig
-            dialogue_map[key] = orig_text
+            results[orig] = sfx_res
+            continue
+        needed_bubbles.append(b)
 
-    if not needed:
+    if not needed_bubbles:
         return results
 
-    sys_prompt = build_translation_system_prompt(is_adult=is_adult, is_batch=True, glossary=glossary)
+    # Prepara payload estruturado para o Agente 2
+    dossier_payload = {
+        "ordem_leitura": dossier["layout"],
+        "idioma_original": dossier["idioma_detectado"],
+        "baloes_da_pagina": [
+            {
+                "id": b["id"],
+                "posicao_espacial": b["pos"],
+                "formato_balao": b["formato"],
+                "max_chars": b["max_chars"],
+                "texto_original": b["texto_original"]
+            }
+            for b in needed_bubbles
+        ]
+    }
+
+    print(f"[*] [Agente 1: Cartógrafo] Mapeou {len(needed_bubbles)} balões na pág {page_num} (Leitura RTL • Typesetting sob medida)")
+
+    sys_prompt = build_dual_engine_system_prompt(is_adult=is_adult, glossary=glossary)
     messages = [
         {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": json.dumps(needed, ensure_ascii=False, indent=2)}
+        {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, indent=2)}
     ]
 
-    has_long_text = any(len(t) > 60 for t in needed.values())
-    batch_max_tokens = 950 if has_long_text else 600
+    has_long_text = any(len(b["texto_original"]) > 60 for b in needed_bubbles)
+    batch_max_tokens = 950 if has_long_text else 650
 
     resp_content = execute_translation_request(
         messages,
@@ -2277,7 +2453,7 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
         is_adult=is_adult,
         max_tokens=batch_max_tokens,
         is_batch=True,
-        dialogue_map=needed
+        dialogue_map={b["id"]: b["orig_raw"] for b in needed_bubbles}
     )
 
     json_match = re.search(r'\{.*\}', resp_content, flags=re.DOTALL)
@@ -2290,11 +2466,13 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
                     cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
                     if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
                         results[orig] = cleaned_trans
+            print(f"[+] [Agente 2: Contextualizador] Cena da pág {page_num} contextualizada e traduzida com sucesso.")
         except Exception:
             pass
 
-    # Para qualquer fala que não veio no JSON (ex: corte de resposta):
-    for key, orig in needed.items():
+    # Fallback para qualquer balão ausente ou cortado
+    for b in needed_bubbles:
+        orig = b["orig_raw"]
         if orig not in results or not is_valid_translation(orig, results[orig]):
             single_res = translate_single_dialogue(orig, engine_opts=engine_opts, is_adult=is_adult)
             if single_res and is_valid_translation(orig, single_res):
@@ -2862,6 +3040,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         pages_data.append({
             "page": idx + 1,
             "img": fname,
+            "width": page_info.get("img_width", 1200),
+            "height": page_info.get("img_height", 1800),
             "bubbles": bubbles
         })
             
@@ -2900,7 +3080,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     # Traduz página por página com coerência narrativa e suporte a glossário
     for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
         if progress_cb:
-            try: progress_cb("translation", p["page"], len(pages_data), f"Traduzindo balões: Página {p['page']} de {len(pages_data)}")
+            try: progress_cb("translation", p["page"], len(pages_data), f"Dupla de IAs: Mapeando e adaptando cena da pág {p['page']} de {len(pages_data)}")
             except Exception: pass
         if is_credits_page(p["bubbles"]):
             continue
@@ -2918,7 +3098,16 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 untranslated.append((orig_text, b))
                 
         if untranslated:
-            batch_res = translate_page_dialogue(untranslated, engine_opts=engine_opts, is_adult=is_adult, glossary=glossary)
+            batch_res = translate_page_dialogue(
+                untranslated,
+                engine_opts=engine_opts,
+                is_adult=is_adult,
+                glossary=glossary,
+                page_w=p.get("width", 1200),
+                page_h=p.get("height", 1800),
+                src_lang=src_lang,
+                page_num=p.get("page", 1)
+            )
             for orig, trans in batch_res.items():
                 if trans and is_valid_translation(orig, trans):
                     cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)

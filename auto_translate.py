@@ -17,6 +17,7 @@ import os
 import sys
 import re
 import time
+import io
 import json
 import cv2
 import shutil

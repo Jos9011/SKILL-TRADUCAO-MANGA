@@ -14,7 +14,7 @@ import urllib.request
 import webbrowser
 import subprocess
 import traceback
-from flask import Flask, render_template, jsonify, request, send_file, Response
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response
 from PIL import Image
 
 # Protege contra execução via pythonw.exe onde sys.stdout e sys.stderr são None

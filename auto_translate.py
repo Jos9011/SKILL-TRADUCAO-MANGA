@@ -1152,6 +1152,9 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
     target_models = [model_name]
     if fallback_model and fallback_model != model_name:
         target_models.append(fallback_model)
+    for backup_m in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+        if backup_m not in target_models:
+            target_models.append(backup_m)
 
     last_err = None
     for m in target_models:
@@ -1185,6 +1188,14 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                             wait_sec = float(retry_h) + 0.5
                     except Exception:
                         pass
+
+                    # Se a espera for superior a 15 segundos, o modelo esgotou a cota diária (TPD) de 200k tokens
+                    # Nesse caso, NÃO faz sentido congelar a janela do usuário: alternamos imediatamente para o modelo reserva!
+                    if wait_sec > 15:
+                        print(f"\n[!] Modelo '{m}' atingiu cota diária do Groq (pausa solicitada: {wait_sec:.0f}s).")
+                        print(f"[+] Alternando IMEDIATAMENTE para o modelo reserva sem travar...")
+                        break
+
                     print(f"\n[*] Groq em pausa de tokens por minuto (TPM). Aguardando {wait_sec:.1f}s...")
                     time.sleep(wait_sec)
                     continue

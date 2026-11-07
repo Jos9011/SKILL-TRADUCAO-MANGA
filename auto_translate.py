@@ -33,6 +33,9 @@ import urllib.request
 import urllib.error
 from rapidocr_onnxruntime import RapidOCR
 from deep_translator import MyMemoryTranslator, GoogleTranslator
+
+__version__ = "0.1-beta"
+__version_name__ = "v0.1 Beta"
 from tqdm import tqdm
 
 try:

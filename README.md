@@ -6,12 +6,16 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Translator & Scanlation Pipeline (PT-BR) 🐬
+# Manga Studio v0.1 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
+[![Versão](https://img.shields.io/badge/versão-v0.1--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Abrir Servidor IA no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Dolphin_Server.ipynb)
 
-Pipeline profissional de scanlation para processar mangás e doujinshis estrangeiros, extrair textos com OCR (RapidOCR ou Mokuro), traduzir com **IA sem censura (Dolphin 2.9)**, limpar cirurgicamente os balões de diálogo e diagramar em português com qualidade editorial.
+Plataforma profissional de scanlation para tradução, OCR e diagramação de mangás, manhwas e doujinshis com **Arquitetura Cooperativa de Duas IAs (v0.1 Beta)**:
+
+1. **Agente 1 (Cartógrafo Espacial):** Mapeia a geometria dos balões, aspect ratio, ordem oriental de leitura (Direita para Esquerda, Topo para Baixo) e calcula o orçamento máximo de caracteres (`max_chars`) para evitar vazamento ou sobreposição de arte.
+2. **Agente 2 (Sintetizador Literário & Narrativo):** Analisa a cena completa, concordância de gênero estrita, dinâmicas interpessoais e gírias de scanlation brasileira sem censura, respeitando rigorosamente a capacidade calculada pelo Agente 1.
 
 ---
 

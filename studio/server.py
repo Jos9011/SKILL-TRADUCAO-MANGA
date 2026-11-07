@@ -72,7 +72,9 @@ app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 
-# Configurações globais
+# Configurações globais e Versão da Aplicação
+APP_VERSION = "0.1-beta"
+APP_VERSION_NAME = "v0.1 Beta"
 BASE_MANGAS_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
 THUMB_CACHE_DIR = os.path.join(SYS_DIR, ".thumb_cache")
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
@@ -277,7 +279,25 @@ def api_status():
     except Exception:
         res["ollama"]["status"] = "offline"
 
+    res["version"] = APP_VERSION
+    res["version_name"] = APP_VERSION_NAME
     return jsonify(res)
+
+@app.route("/api/version")
+def api_version():
+    """Retorna detalhes da versão da aplicação e arquitetura de IA ativa."""
+    return jsonify({
+        "version": APP_VERSION,
+        "version_name": APP_VERSION_NAME,
+        "release": f"Manga Studio {APP_VERSION_NAME}",
+        "dual_engine": True,
+        "features": [
+            "Cooperative Dual-Engine (Spatial Cartographer + Narrative Synthesizer)",
+            "Web Reader & CBZ/ZIP Downloader",
+            "Google Drive Cloud Persistence",
+            "Hybrid Local/Cloud AI (Groq + Ollama GPU)"
+        ]
+    })
 
 @app.route("/api/library")
 def api_library():
@@ -867,7 +887,10 @@ def api_config():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     else:
-        return jsonify(auto_translate.load_config())
+        cfg = auto_translate.load_config()
+        cfg["app_version"] = APP_VERSION
+        cfg["app_version_name"] = APP_VERSION_NAME
+        return jsonify(cfg)
 
 @app.route("/api/aprendizado", methods=["GET", "POST"])
 def api_aprendizado():

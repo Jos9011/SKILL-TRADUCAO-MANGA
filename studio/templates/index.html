@@ -802,6 +802,45 @@
       color: #000000;
     }
 
+    .version-tag {
+      background: rgba(29, 185, 84, 0.16);
+      color: var(--spotify-green);
+      border: 1px solid rgba(29, 185, 84, 0.4);
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      display: inline-flex;
+      align-items: center;
+      line-height: 1;
+    }
+
+    .version-pill {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--text-subdued);
+      letter-spacing: 0.5px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .version-pill::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--spotify-green);
+      display: inline-block;
+      box-shadow: 0 0 6px var(--spotify-green);
+    }
+
     /* STATUS & QUOTA VIEW */
     .quota-grid {
       display: grid;
@@ -1006,7 +1045,10 @@
       <div class="brand-logo" onclick="switchTab('translate')">
         <img src="/static/logo.svg" alt="Manga Studio Logo">
         <div style="display: flex; flex-direction: column;">
-          <span style="line-height: 1.1; font-weight: 800; font-size: 1.12rem;">Manga Studio</span>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span style="line-height: 1.1; font-weight: 800; font-size: 1.12rem;">Manga Studio</span>
+            <span class="version-tag">v0.1 Beta</span>
+          </div>
           <span style="font-size: 0.65rem; color: var(--spotify-green); font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">AI TRANSLATOR</span>
         </div>
       </div>
@@ -1048,6 +1090,7 @@
           <h1 id="view-title">Traduzir Mangá</h1>
         </div>
         <div class="header-actions">
+          <div class="version-pill" title="Manga Studio - Versão Oficial 0.1 Beta">v0.1 Beta</div>
           <button id="btn-install-pwa" class="btn-secondary" style="display: none; padding: 7px 14px; font-size: 0.82rem; border-color: rgba(29, 185, 84, 0.5); color: var(--spotify-green);" onclick="installPWA()" title="Instalar Manga Studio como App no Windows">
             📲 Instalar App
           </button>
@@ -1381,6 +1424,38 @@
           <div style="display: flex; gap: 12px; align-items: center;">
             <button class="btn-secondary" onclick="testOllamaHost()">Testar Conexão Ollama</button>
             <span id="ollama-test-result" style="font-size: 0.84rem; color: var(--text-subdued);"></span>
+          </div>
+        </div>
+
+        <!-- CARD 4: SOBRE O MANGA STUDIO -->
+        <div class="quota-card" style="margin-top: 24px; border: 1px solid rgba(29, 185, 84, 0.25); background: linear-gradient(180deg, #181818 0%, #121212 100%);">
+          <div class="quota-card-header">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <h3 style="margin: 0;">ℹ️ Sobre o Manga Studio</h3>
+              <span class="version-tag" style="background: var(--spotify-green); color: #000; font-weight: 800; font-size: 0.72rem; padding: 3px 8px; border-radius: 6px;">v0.1 Beta</span>
+            </div>
+            <span class="meta-badge highlight">Release Oficial</span>
+          </div>
+          <p style="font-size: 0.88rem; color: var(--text-subdued); margin-bottom: 16px; line-height: 1.6;">
+            <strong>Manga Studio v0.1 Beta</strong> é uma plataforma moderna e completa de tradução de mangás e quadrinhos em alta fidelidade com <strong>Arquitetura Cooperativa de Duas IAs</strong> (Mapeamento Espacial de Balões + Sintetizador Narrativo & Dialetal).
+          </p>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; font-size: 0.82rem;">
+            <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+              <div style="color: var(--spotify-green); font-weight: 700; margin-bottom: 5px;">🎯 Cartógrafo Espacial</div>
+              <div style="color: var(--text-subdued); line-height: 1.4;">Calcula geometria, proporção, ordem de leitura oriental e orçamento de caracteres por balão para evitar overflow.</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+              <div style="color: var(--spotify-green); font-weight: 700; margin-bottom: 5px;">🧠 Sintetizador Literário</div>
+              <div style="color: var(--text-subdued); line-height: 1.4;">Interpreta concordância de gênero, relacionamentos, duplo sentido e gírias brasileiras de scanlation com zero censura.</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+              <div style="color: var(--spotify-green); font-weight: 700; margin-bottom: 5px;">⚡ Execução Híbrida</div>
+              <div style="color: var(--text-subdued); line-height: 1.4;">Compatível com Nuvem Ultra-Rápida (Groq/OpenRouter) e Local GPU (Ollama Qwen 2.5) com persistência no Google Drive.</div>
+            </div>
+          </div>
+          <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: var(--text-muted); flex-wrap: wrap; gap: 8px;">
+            <span>Desenvolvido com foco em qualidade editorial e fidelidade anatômica/narrativa.</span>
+            <span>Versão Oficial: <strong style="color: white;">0.1-beta</strong></span>
           </div>
         </div>
       </section>

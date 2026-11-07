@@ -1,6 +1,11 @@
 {
   "provider": "openrouter",
-  "openrouter_api_key": "",
+  "openrouter_api_keys": [
+    "sk-or-v1-sua-chave-primaria-aqui",
+    "sk-or-v1-sua-chave-reserva-1-aqui",
+    "sk-or-v1-sua-chave-reserva-2-aqui"
+  ],
+  "openrouter_api_key": "sk-or-v1-sua-chave-primaria-aqui",
   "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
   "openrouter_fallback_model": "google/gemma-4-31b-it:free",
   "ollama_host": "http://localhost:11434",

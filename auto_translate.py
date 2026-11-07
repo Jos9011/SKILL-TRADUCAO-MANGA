@@ -29,6 +29,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
 import urllib.request
+import urllib.error
 from rapidocr_onnxruntime import RapidOCR
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 from tqdm import tqdm
@@ -63,7 +64,9 @@ def load_config(cli_args=None):
     cfg = {
         "provider": "auto",
         "openrouter_api_key": "",
-        "openrouter_model": "cognitivecomputations/dolphin-mistral-24b-venice-edition",
+        "openrouter_api_keys": [],
+        "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
+        "openrouter_fallback_model": "google/gemma-4-31b-it:free",
         "ollama_host": "http://localhost:11434",
         "ollama_model": "dolphin-llama3:latest",
         "temperature": 0.0
@@ -79,6 +82,8 @@ def load_config(cli_args=None):
     # Variáveis de ambiente
     if os.environ.get("OPENROUTER_API_KEY"):
         cfg["openrouter_api_key"] = os.environ.get("OPENROUTER_API_KEY")
+    if os.environ.get("OPENROUTER_API_KEYS"):
+        cfg["openrouter_api_keys"] = [k.strip() for k in os.environ.get("OPENROUTER_API_KEYS").split(",") if k.strip()]
     if os.environ.get("OLLAMA_HOST"):
         cfg["ollama_host"] = os.environ.get("OLLAMA_HOST")
     if os.environ.get("TRANSLATE_PROVIDER"):
@@ -98,6 +103,27 @@ def load_config(cli_args=None):
             cfg["ollama_host"] = cli_args["host"]
         if cli_args.get("key"):
             cfg["openrouter_api_key"] = cli_args["key"]
+
+    # Consolidação do Pool de Chaves sem duplicatas
+    keys_pool = []
+    raw_keys = cfg.get("openrouter_api_keys", [])
+    if isinstance(raw_keys, list):
+        for k in raw_keys:
+            if isinstance(k, str) and k.strip() and k.strip() not in keys_pool:
+                keys_pool.append(k.strip())
+    elif isinstance(raw_keys, str) and raw_keys.strip():
+        for k in raw_keys.split(","):
+            k = k.strip()
+            if k and k not in keys_pool:
+                keys_pool.append(k)
+
+    single_k = str(cfg.get("openrouter_api_key", "")).strip()
+    if single_k and single_k not in keys_pool:
+        keys_pool.insert(0, single_k)
+
+    cfg["openrouter_api_keys"] = keys_pool
+    if keys_pool and not cfg.get("openrouter_api_key"):
+        cfg["openrouter_api_key"] = keys_pool[0]
 
     return cfg
 
@@ -1071,68 +1097,194 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path):
     font = ImageFont.truetype(font_path, 8)
     return font, wrap_text_to_width(draw, text, font, usable_w)
 
-def check_openrouter_available(api_key, model_name):
-    """Verifica se a chave OpenRouter é válida."""
-    if not api_key or not api_key.strip():
-        return False
+def check_openrouter_key_status(api_key, model_name=None):
+    """
+    Verifica se a chave OpenRouter é válida e se possui saldo/limite diário restante.
+    Retorna: (is_valid: bool, remaining_requests: int or None, status_message: str)
+    """
+    if not api_key or not str(api_key).strip():
+        return False, 0, "Chave vazia"
+    api_key = str(api_key).strip()
     try:
         url = "https://openrouter.ai/api/v1/auth/key"
         req = urllib.request.Request(
             url,
             headers={
-                "Authorization": f"Bearer {api_key.strip()}",
+                "Authorization": f"Bearer {api_key}",
                 "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
                 "X-Title": "Manga Translator PT-BR"
             }
         )
-        with urllib.request.urlopen(req, timeout=6) as response:
+        with urllib.request.urlopen(req, timeout=8) as response:
             if response.status == 200:
-                return True
-    except Exception:
-        try:
-            test_req = urllib.request.Request(
-                "https://openrouter.ai/api/v1/chat/completions",
-                data=json.dumps({
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 5
-                }).encode('utf-8'),
-                headers={
-                    "Authorization": f"Bearer {api_key.strip()}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
-                    "X-Title": "Manga Translator PT-BR"
-                }
-            )
-            with urllib.request.urlopen(test_req, timeout=10) as resp:
-                if resp.status == 200:
-                    return True
-        except Exception:
-            return False
-    return False
+                body = json.loads(response.read().decode('utf-8'))
+                data = body.get("data", {})
+                free_reqs = data.get("free_model_daily_requests", {})
+                if free_reqs:
+                    rem = free_reqs.get("remaining")
+                    limit = free_reqs.get("limit", 50)
+                    used = free_reqs.get("used", 0)
+                    if rem is not None and rem <= 0:
+                        return False, 0, f"Limite diário atingido ({used}/{limit} reqs usadas)"
+                    return True, rem, f"{used}/{limit} reqs usadas (restam {rem})"
 
-def query_openrouter_chat(messages, model_name, api_key, temperature=0.0, max_tokens=1024, timeout=75):
-    """Executa requisição à API do OpenRouter."""
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    payload = {
-        "model": model_name,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode('utf-8'),
-        headers={
-            "Authorization": f"Bearer {api_key.strip()}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
-            "X-Title": "Manga Translator PT-BR"
+                limit_rem = data.get("limit_remaining")
+                if limit_rem is not None and limit_rem <= 0:
+                    return False, 0, "Orçamento/Crédito esgotado"
+                return True, 9999, "Conta com créditos / Ilimitada"
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return False, 0, "Limite diário atingido (HTTP 429)"
+        elif e.code in (401, 403):
+            return False, 0, f"Chave inválida ou não autorizada (HTTP {e.code})"
+        return False, 0, f"Erro HTTP {e.code}"
+    except Exception as e:
+        if model_name:
+            try:
+                test_req = urllib.request.Request(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    data=json.dumps({
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 5
+                    }).encode('utf-8'),
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+                        "X-Title": "Manga Translator PT-BR"
+                    }
+                )
+                with urllib.request.urlopen(test_req, timeout=10) as resp:
+                    if resp.status == 200:
+                        return True, None, "Chave ativa (ping OK)"
+            except urllib.error.HTTPError as he:
+                if he.code == 429:
+                    return False, 0, "Limite diário atingido (HTTP 429)"
+                return False, 0, f"Erro HTTP {he.code}"
+            except Exception:
+                pass
+        return False, None, f"Erro de conexão: {e}"
+
+def check_openrouter_available(api_key, model_name):
+    """Wrapper retrocompatível para checar disponibilidade de chave."""
+    ok, rem, _ = check_openrouter_key_status(api_key, model_name)
+    return ok
+
+def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, max_tokens=1024, timeout=75, engine_opts=None):
+    """
+    Executa requisição à API do OpenRouter com suporte a Pool de Chaves e Auto-Failover/Rotação imediata.
+    Se a chave atual atingir o limite (HTTP 429 / 50 reqs/dia), rotaciona automaticamente para a próxima chave
+    cadastrada em 'openrouter_api_keys' no config.json sem interromper a tradução do mangá.
+    """
+    engine_opts = engine_opts if engine_opts is not None else {}
+    key_pool = engine_opts.get("api_keys", [])
+    if not key_pool:
+        k = api_key or engine_opts.get("api_key", "")
+        if k:
+            key_pool = [k]
+
+    if not key_pool:
+        raise ValueError("Nenhuma chave OpenRouter fornecida.")
+
+    total_keys = len(key_pool)
+    curr_idx = engine_opts.get("current_key_idx", 0)
+    if curr_idx >= total_keys:
+        curr_idx = 0
+
+    exhausted = engine_opts.setdefault("exhausted_keys", set())
+    tried_count = 0
+
+    while tried_count < total_keys:
+        # Pula chaves que já sabemos que estão esgotadas se houver outras livres no pool
+        if curr_idx in exhausted and len(exhausted) < total_keys:
+            curr_idx = (curr_idx + 1) % total_keys
+            continue
+
+        active_key = key_pool[curr_idx]
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        payload = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
         }
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        res = json.loads(resp.read().decode('utf-8'))
-        return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                "Authorization": f"Bearer {active_key.strip()}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+                "X-Title": "Manga Translator PT-BR"
+            }
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                # Alerta amigável se a chave atual estiver prestes a bater o limite diário
+                rem_header = resp.headers.get("X-RateLimit-Remaining") or resp.headers.get("x-ratelimit-remaining")
+                if rem_header is not None:
+                    try:
+                        rem_val = int(rem_header)
+                        if 0 < rem_val <= 3:
+                            print(f"\n[*] Aviso: Chave OpenRouter #{curr_idx + 1} quase no limite ({rem_val} requisições restantes).")
+                    except Exception:
+                        pass
+
+                res = json.loads(resp.read().decode('utf-8'))
+                engine_opts["current_key_idx"] = curr_idx
+                engine_opts["api_key"] = active_key
+                return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+
+            is_rate_limit = (e.code == 429) or ("rate limit" in err_body.lower()) or ("free-models-per-day" in err_body.lower())
+            is_auth_error = (e.code in (401, 403))
+
+            if is_rate_limit or is_auth_error:
+                exhausted.add(curr_idx)
+                tried_count += 1
+                masked = active_key[:8] + "..." + active_key[-4:] if len(active_key) > 12 else "***"
+                motivo = "Limite diário (50 reqs/dia) atingido" if is_rate_limit else f"Autenticação falhou ({e.code})"
+
+                # Procura a próxima chave disponível que ainda não foi esgotada
+                next_idx = None
+                for candidate in range(total_keys):
+                    if candidate not in exhausted:
+                        next_idx = candidate
+                        break
+
+                if next_idx is not None:
+                    next_masked = key_pool[next_idx][:8] + "..." + key_pool[next_idx][-4:] if len(key_pool[next_idx]) > 12 else "***"
+                    print(f"\n[!] Chave #{curr_idx + 1} ({masked}): {motivo}.")
+                    print(f"[+] ROTACIONANDO CHAVE AUTOMATICAMENTE -> Ativando Chave Reserva #{next_idx + 1} ({next_masked})...")
+                    curr_idx = next_idx
+                    engine_opts["current_key_idx"] = curr_idx
+                    engine_opts["api_key"] = key_pool[curr_idx]
+                    time.sleep(1.0)
+                    continue
+                else:
+                    print(f"\n[!] TODAS as {total_keys} chaves OpenRouter cadastradas atingiram o limite diário.")
+                    raise e
+            else:
+                # Se for indisponibilidade temporária de modelo (404, 500, 502, 503), tenta o modelo fallback
+                fallback_m = engine_opts.get("fallback_model")
+                if fallback_m and fallback_m != model_name and e.code in (404, 500, 502, 503):
+                    print(f"\n[*] Modelo '{model_name}' instável (HTTP {e.code}). Tentando modelo fallback: '{fallback_m}'...")
+                    model_name = fallback_m
+                    time.sleep(1.0)
+                    continue
+                raise e
+        except Exception as e:
+            raise e
+
+    raise RuntimeError("Todas as chaves OpenRouter configuradas estão esgotadas.")
 
 def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434", custom_model=None):
     """Verifica se o servidor Ollama (local ou remoto) está ativo e seleciona o modelo ideal priorizando Dolphin 2.9 em modo sem censura."""
@@ -1247,23 +1399,52 @@ def query_ollama_chat(messages, model_name, host="http://localhost:11434", tempe
 def init_ai_translation_engine(cfg, is_adult=True):
     """
     Inicializa o melhor motor de IA disponível com base em config.json.
+    Suporta Pool de Chaves OpenRouter com rotação e failover automático de cota diária.
     Retorna: (engine_type, model_name, engine_opts)
     engine_type pode ser: 'openrouter', 'ollama', ou None (fallback)
     """
     provider = cfg.get("provider", "auto").lower()
+    keys = cfg.get("openrouter_api_keys", [])
+    model = cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free")
+    fallback_model = cfg.get("openrouter_fallback_model", "google/gemma-4-31b-it:free")
 
     # 1. OpenRouter (100% Nuvem - Sem usar recursos do PC)
-    if provider in ("openrouter", "cloud") or (provider == "auto" and cfg.get("openrouter_api_key")):
-        key = cfg.get("openrouter_api_key", "").strip()
-        model = cfg.get("openrouter_model", "cognitivecomputations/dolphin-mistral-24b-venice-edition")
-        if key:
-            print(f"[*] Verificando conexão com OpenRouter Cloud (Modelo: {model})...")
-            if check_openrouter_available(key, model):
-                return "openrouter", model, {"api_key": key, "temperature": cfg.get("temperature", 0.0)}
+    if provider in ("openrouter", "cloud") or (provider == "auto" and keys):
+        if keys:
+            print(f"[*] Analisando Pool de Chaves OpenRouter ({len(keys)} chave(s) configurada(s))...")
+            active_key = None
+            active_idx = 0
+            exhausted_keys = set()
+
+            for idx, k in enumerate(keys):
+                masked = k[:8] + "..." + k[-4:] if len(k) > 12 else "***"
+                ok, rem, msg = check_openrouter_key_status(k, model)
+                if ok:
+                    print(f"  [+] Chave #{idx + 1} ({masked}): PRONTA [{msg}]")
+                    if active_key is None:
+                        active_key = k
+                        active_idx = idx
+                else:
+                    print(f"  [!] Chave #{idx + 1} ({masked}): Indisponível [{msg}]")
+                    exhausted_keys.add(idx)
+
+            if active_key is not None:
+                masked_act = active_key[:8] + "..." + active_key[-4:] if len(active_key) > 12 else "***"
+                print(f"[+] Motor OpenRouter Nuvem ativado com Chave #{active_idx + 1} ({masked_act}) | Modelo: {model}")
+                engine_opts = {
+                    "api_key": active_key,
+                    "api_keys": keys,
+                    "current_key_idx": active_idx,
+                    "exhausted_keys": exhausted_keys,
+                    "fallback_model": fallback_model,
+                    "temperature": cfg.get("temperature", 0.0),
+                    "cfg": cfg
+                }
+                return "openrouter", model, engine_opts
             else:
-                print(f"[!] Chave OpenRouter inválida ou indisponível. Tentando próximo motor...")
+                print(f"[!] Todas as chaves OpenRouter configuradas estão esgotadas no momento.")
         elif provider in ("openrouter", "cloud"):
-            print(f"[!] Erro: Provedor configurado como 'openrouter', mas 'openrouter_api_key' está vazia em config.json.")
+            print(f"[!] Erro: Provedor configurado como 'openrouter', mas 'openrouter_api_keys'/'openrouter_api_key' está vazia em config.json.")
 
     # 2. Ollama (Remoto na Nuvem / Colab ou Local)
     host = cfg.get("ollama_host", "http://localhost:11434")
@@ -1271,9 +1452,9 @@ def init_ai_translation_engine(cfg, is_adult=True):
     print(f"[*] Verificando conexão com Ollama em '{host}'...")
     ollama_ok, selected_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=model_pref)
     if ollama_ok:
-        return "ollama", selected_model, {"host": host, "temperature": cfg.get("temperature", 0.0)}
+        return "ollama", selected_model, {"host": host, "temperature": cfg.get("temperature", 0.0), "cfg": cfg}
 
-    return None, None, {}
+    return None, None, {"cfg": cfg}
 
 def clean_ai_translation(text, original_text="", is_adult=True):
     """Higieniza rigorosamente a saída da IA: elimina notas, 'Obs:', prefixos e normaliza anatomia."""
@@ -1618,7 +1799,16 @@ def translate_single_dialogue(text, engine_type, model_name, engine_opts=None, i
             ]
             temp = engine_opts.get("temperature", 0.0)
             if engine_type == "openrouter":
-                raw_resp = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=300)
+                try:
+                    raw_resp = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=300, engine_opts=engine_opts)
+                except Exception as o_err:
+                    cfg = engine_opts.get("cfg", {})
+                    host = cfg.get("ollama_host", "http://localhost:11434")
+                    ollama_ok, o_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=cfg.get("ollama_model"))
+                    if ollama_ok:
+                        raw_resp = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=300)
+                    else:
+                        raise o_err
             elif engine_type == "ollama":
                 raw_resp = query_ollama_chat(messages, model_name, host=engine_opts.get("host", "http://localhost:11434"), temperature=temp, num_predict=300)
             else:
@@ -1683,7 +1873,17 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
     temp = engine_opts.get("temperature", 0.0)
     try:
         if engine_type == "openrouter":
-            resp_content = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=1024)
+            try:
+                resp_content = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=1024, engine_opts=engine_opts)
+            except Exception as o_err:
+                cfg = engine_opts.get("cfg", {})
+                host = cfg.get("ollama_host", "http://localhost:11434")
+                ollama_ok, o_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=cfg.get("ollama_model"))
+                if ollama_ok:
+                    print(f"\n[*] OpenRouter indisponível -> Alternando lote para Ollama ('{o_model}')...")
+                    resp_content = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=1024)
+                else:
+                    raise o_err
         elif engine_type == "ollama":
             resp_content = query_ollama_chat(messages, model_name, host=engine_opts.get("host", "http://localhost:11434"), temperature=temp, num_predict=1024)
         else:

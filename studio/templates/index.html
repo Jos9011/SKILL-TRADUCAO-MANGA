@@ -2028,9 +2028,26 @@
       return text.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     }
 
+    async function checkActiveJob() {
+      try {
+        const res = await fetch('/api/progress');
+        const data = await res.json();
+        if (data && data.status === 'running') {
+          document.getElementById('live-progress-section').style.display = 'block';
+          const eq = document.getElementById('equalizer-anim');
+          if (eq) eq.style.display = 'flex';
+          updatePlayerCover(data.first_img, data.manga_name, data.message);
+          pollProgress();
+        }
+      } catch (e) {
+        console.error("Erro ao verificar job ativo:", e);
+      }
+    }
+
     // INIT
     window.addEventListener('DOMContentLoaded', () => {
       loadLibrary();
+      checkActiveJob();
     });
   </script>
 </body>

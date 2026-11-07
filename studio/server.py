@@ -6,8 +6,11 @@ Servidor local Flask com estética e arquitetura moderna para o app estilo Spoti
 
 import sys
 import os
+import re
 import json
 import time
+import shutil
+import zipfile
 import threading
 import io
 import urllib.request
@@ -399,10 +402,11 @@ def api_upload():
                 
             return jsonify({"success": True, "path": target_dir, "name": base_name})
             
-        # 2. Upload de Pasta / Várias Imagens
+        # 2. Upload de Pasta / Várias Imagens (com suporte a lotes/chunks para evitar limites de timeout e payload)
         files = request.files.getlist("files[]")
         folder_name = request.form.get("folder_name", "Manga_Upload").strip() or "Manga_Upload"
         folder_name = re.sub(r'[\\/*?:"<>|]', "", folder_name).strip() or "Manga_Upload"
+        is_last = request.form.get("is_last", "true").lower() in ("true", "1")
         target_dir = os.path.join(UPLOAD_DIR, folder_name)
         os.makedirs(target_dir, exist_ok=True)
         
@@ -413,11 +417,17 @@ def api_upload():
                 f.save(os.path.join(target_dir, fname))
                 saved_count += 1
                 
-        if saved_count == 0:
-            return jsonify({"success": False, "error": "Nenhuma imagem válida recebida"}), 400
-            
-        return jsonify({"success": True, "path": target_dir, "name": folder_name, "count": saved_count})
+        total_in_dir = len([x for x in os.listdir(target_dir) if x.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.bmp'))])
+        return jsonify({
+            "success": True,
+            "path": target_dir,
+            "name": folder_name,
+            "batch_saved": saved_count,
+            "total_saved": total_in_dir,
+            "done": is_last
+        })
     except Exception as e:
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/drive_folders")

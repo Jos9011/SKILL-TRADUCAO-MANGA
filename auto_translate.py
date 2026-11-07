@@ -1152,15 +1152,22 @@ def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
         return False, f"Erro de conexão: {e}"
     return False, "Sem resposta"
 
-def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=600, timeout=45, fallback_model="qwen/qwen3.8-27b", max_retries=3):
+def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=600, timeout=45, fallback_model="qwen/qwen3.8-27b", max_retries=2, engine_opts=None):
     """Executa requisição à API ultra-rápida do Groq Cloud com resiliência a picos de tokens (TPM) e fallback automático entre modelos."""
     url = "https://api.groq.com/openai/v1/chat/completions"
-    target_models = [model_name]
-    if fallback_model and fallback_model != model_name:
-        target_models.append(fallback_model)
-    for backup_m in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
-        if backup_m not in target_models:
-            target_models.append(backup_m)
+    exhausted_groq = engine_opts.setdefault("exhausted_groq_models", set()) if engine_opts is not None else set()
+
+    # Se o modelo ativo já foi alterado pelo fallback, usa o ativo
+    if engine_opts and engine_opts.get("active_model") and engine_opts["active_model"] not in exhausted_groq:
+        model_name = engine_opts["active_model"]
+
+    target_models = []
+    for cand in [model_name, fallback_model, "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+        if cand and cand not in target_models and cand not in exhausted_groq:
+            target_models.append(cand)
+
+    if not target_models:
+        raise RuntimeError("Todos os modelos Groq atingiram a cota temporária.")
 
     last_err = None
     for m in target_models:
@@ -1183,6 +1190,8 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     res = json.loads(resp.read().decode('utf-8'))
+                    if engine_opts is not None:
+                        engine_opts["active_model"] = m
                     return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
             except urllib.error.HTTPError as e:
                 last_err = e
@@ -1195,17 +1204,18 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     except Exception:
                         pass
 
-                    # Se a espera for superior a 15 segundos, o modelo esgotou a cota diária (TPD) de 200k tokens
-                    # Nesse caso, NÃO faz sentido congelar a janela do usuário: alternamos imediatamente para o modelo reserva!
-                    if wait_sec > 15:
-                        print(f"\n[!] Modelo '{m}' atingiu cota diária do Groq (pausa solicitada: {wait_sec:.0f}s).")
-                        print(f"[+] Alternando IMEDIATAMENTE para o modelo reserva sem travar...")
+                    # Se a pausa for longa (> 6 segundos) ou na 2ª tentativa, esgota o modelo e pula para o próximo sem travar
+                    if wait_sec > 6 or attempt >= 1:
+                        print(f"\n[!] Modelo '{m}' com cota saturada no Groq (pausa solicitada: {wait_sec:.0f}s).")
+                        print(f"[+] Alternando IMEDIATAMENTE para o próximo modelo/motor sem travar...")
+                        exhausted_groq.add(m)
                         break
 
-                    print(f"\n[*] Groq em pausa de tokens por minuto (TPM). Aguardando {wait_sec:.1f}s...")
+                    print(f"\n[*] Groq em pausa breve ({wait_sec:.1f}s)...")
                     time.sleep(wait_sec)
                     continue
                 elif e.code in (404, 500, 502, 503):
+                    exhausted_groq.add(m)
                     break
                 raise e
             except Exception as e:
@@ -1312,11 +1322,16 @@ def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, m
         curr_idx = 0
 
     exhausted = engine_opts.setdefault("exhausted_keys", set())
+    if len(exhausted) >= total_keys:
+        engine_opts.setdefault("exhausted_engines", set()).add("openrouter")
+        raise RuntimeError("Todas as chaves OpenRouter cadastradas atingiram o limite diário.")
+
     tried_count = 0
 
     while tried_count < total_keys:
-        # Pula chaves que já sabemos que estão esgotadas se houver outras livres no pool
-        if curr_idx in exhausted and len(exhausted) < total_keys:
+        # Pula chaves que já sabemos que estão esgotadas
+        if curr_idx in exhausted:
+            tried_count += 1
             curr_idx = (curr_idx + 1) % total_keys
             continue
 
@@ -1389,6 +1404,7 @@ def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, m
                     time.sleep(1.0)
                     continue
                 else:
+                    engine_opts.setdefault("exhausted_engines", set()).add("openrouter")
                     print(f"\n[!] TODAS as {total_keys} chaves OpenRouter cadastradas atingiram o limite diário.")
                     raise e
             else:
@@ -1546,7 +1562,11 @@ def init_ai_translation_engine(cfg, is_adult=True):
                     "api_key": groq_key,
                     "fallback_model": groq_fallback,
                     "temperature": cfg.get("temperature", 0.0),
-                    "cfg": cfg
+                    "cfg": cfg,
+                    "active_model": groq_model,
+                    "active_engine": "groq",
+                    "exhausted_engines": set(),
+                    "exhausted_groq_models": set()
                 }
                 return "groq", groq_model, engine_opts
             else:
@@ -1924,8 +1944,133 @@ REGRAS OBRIGATÓRIAS:
 4. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~).
 5. Priorize concisão e impacto para o texto caber perfeitamente no balão de fala."""
 
-def translate_single_dialogue(text, engine_type, model_name, engine_opts=None, is_adult=True):
-    """Traduz uma única fala usando o motor de IA selecionado (OpenRouter ou Ollama) com fallback automático."""
+def google_translate_free(text, source_lang="auto", target_lang="pt"):
+    """Traduz texto diretamente usando o endpoint gratuito e ultra-rápido do Google."""
+    if not text or not str(text).strip():
+        return ""
+    clean = str(text).strip()
+    try:
+        url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" + source_lang + "&tl=" + target_lang + "&dt=t&q=" + urllib.parse.quote(clean)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read().decode("utf-8"))
+            if data and data[0]:
+                return "".join(seg[0] for seg in data[0] if seg and seg[0])
+    except Exception:
+        try:
+            from deep_translator import MyMemoryTranslator
+            return MyMemoryTranslator(source='auto', target='pt-BR').translate(clean)
+        except Exception:
+            pass
+    return clean
+
+def execute_translation_request(messages, engine_opts=None, is_adult=True, max_tokens=1024, is_batch=False, dialogue_map=None):
+    """
+    Roteador Inteligente e Resiliente de IAs.
+    Tenta o motor ativo e, se este esgotar cotas (TPM/TPD/HTTP 429), promove o próximo motor
+    DEFINITIVAMENTE (Groq -> OpenRouter -> Ollama -> Google Cloud), sem loops infinitos nem pausas travadas.
+    """
+    engine_opts = engine_opts if engine_opts is not None else {}
+    exhausted = engine_opts.setdefault("exhausted_engines", set())
+    cfg = engine_opts.get("cfg", {})
+    temp = engine_opts.get("temperature", 0.0)
+
+    # 1. TENTA GROQ SE AINDA NÃO ESGOTADO
+    if "groq" not in exhausted:
+        groq_k = engine_opts.get("api_key") or cfg.get("groq_api_key", "")
+        if groq_k:
+            model_name = engine_opts.get("active_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
+            fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+            try:
+                resp = query_groq_chat(
+                    messages,
+                    model_name,
+                    groq_k,
+                    temperature=temp,
+                    max_tokens=max_tokens,
+                    fallback_model=fb_model,
+                    engine_opts=engine_opts
+                )
+                if resp:
+                    return resp
+            except Exception as g_err:
+                exhausted.add("groq")
+                print(f"\n[!] Cota do Groq Cloud saturada ({g_err}).")
+                print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando OpenRouter...")
+        else:
+            exhausted.add("groq")
+
+    # 2. TENTA OPENROUTER SE AINDA NÃO ESGOTADO
+    if "openrouter" not in exhausted:
+        or_keys = cfg.get("openrouter_api_keys", []) or ([cfg.get("openrouter_api_key")] if cfg.get("openrouter_api_key") else [])
+        if or_keys:
+            or_model = cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free")
+            try:
+                resp = query_openrouter_chat(
+                    messages,
+                    or_model,
+                    api_key=or_keys[0],
+                    temperature=temp,
+                    max_tokens=max_tokens,
+                    engine_opts=engine_opts
+                )
+                if resp:
+                    return resp
+            except Exception as or_err:
+                exhausted.add("openrouter")
+                print(f"\n[!] OpenRouter indisponível ({or_err}).")
+                print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando Ollama / Google...")
+        else:
+            exhausted.add("openrouter")
+
+    # 3. TENTA OLLAMA SE AINDA NÃO ESGOTADO
+    if "ollama" not in exhausted:
+        host = cfg.get("ollama_host", "http://localhost:11434")
+        ollama_ok, o_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=cfg.get("ollama_model"))
+        if ollama_ok:
+            try:
+                resp = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=max_tokens)
+                if resp:
+                    return resp
+            except Exception as o_err:
+                exhausted.add("ollama")
+                print(f"\n[!] Ollama indisponível ({o_err}).")
+        else:
+            exhausted.add("ollama")
+
+    # 4. FALLBACK FINAL AUTOMÁTICO: GOOGLE TRANSLATOR
+    if not engine_opts.get("_google_announced"):
+        print("\n[+] MOTOR DE EMERGÊNCIA ATIVADO: Traduzindo via Google Translator Direto (Alta velocidade, sem bloqueios)...")
+        engine_opts["_google_announced"] = True
+
+    if is_batch and dialogue_map:
+        batch_out = {}
+        for k, orig in dialogue_map.items():
+            try:
+                t = google_translate_free(orig)
+                batch_out[k] = clean_ai_translation(t, original_text=orig, is_adult=is_adult)
+            except Exception:
+                batch_out[k] = orig
+        return json.dumps(batch_out, ensure_ascii=False)
+    else:
+        user_content = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                user_content = m.get("content", "")
+                break
+        clean_target = user_content.replace("Traduza fielmente para PT-BR:\n\n", "").strip()
+        try:
+            return google_translate_free(clean_target)
+        except Exception:
+            return clean_target
+
+def translate_single_dialogue(text, engine_type=None, model_name=None, engine_opts=None, is_adult=True):
+    """Traduz uma única fala com roteamento resiliente e fallback instantâneo."""
     clean_t = text.strip()
     if is_scan_watermark(clean_t):
         return ""
@@ -1933,71 +2078,35 @@ def translate_single_dialogue(text, engine_type, model_name, engine_opts=None, i
     if sfx_res:
         return sfx_res
 
-    if not engine_type:
-        return None
-
     engine_opts = engine_opts or {}
-    is_dolphin = "dolphin" in model_name.lower()
-    is_qwen = "qwen" in model_name.lower()
-    
-    def _do_call(s_prompt):
-        try:
-            messages = [
-                {"role": "system", "content": s_prompt},
-                {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
-            ]
-            temp = engine_opts.get("temperature", 0.0)
-            call_max_tokens = 950 if len(clean_t) > 60 else 350
-            if engine_type == "groq":
-                try:
-                    raw_resp = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=call_max_tokens, fallback_model=engine_opts.get("fallback_model"))
-                except Exception as g_err:
-                    cfg = engine_opts.get("cfg", {})
-                    or_keys = cfg.get("openrouter_api_keys", [])
-                    if or_keys:
-                        raw_resp = query_openrouter_chat(messages, cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free"), api_key=or_keys[0], temperature=temp, max_tokens=call_max_tokens, engine_opts=engine_opts)
-                    else:
-                        raise g_err
-            elif engine_type == "openrouter":
-                try:
-                    raw_resp = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=call_max_tokens, engine_opts=engine_opts)
-                except Exception as o_err:
-                    cfg = engine_opts.get("cfg", {})
-                    host = cfg.get("ollama_host", "http://localhost:11434")
-                    ollama_ok, o_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=cfg.get("ollama_model"))
-                    if ollama_ok:
-                        raw_resp = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=300)
-                    else:
-                        raise o_err
-            elif engine_type == "ollama":
-                raw_resp = query_ollama_chat(messages, model_name, host=engine_opts.get("host", "http://localhost:11434"), temperature=temp, num_predict=300)
-            else:
-                return None
-                
-            cleaned = clean_ai_translation(raw_resp, original_text=clean_t, is_adult=is_adult)
-            if cleaned and cleaned.strip().lower() != clean_t.lower():
-                return cleaned
-        except Exception:
-            pass
-        return None
 
     # 1. Tenta prompt adulto
     if is_adult:
-        p_adult = build_translation_system_prompt(is_adult=True, is_batch=False, is_dolphin=is_dolphin, is_qwen=is_qwen)
-        res = _do_call(p_adult)
-        if res:
-            return res
+        sys_prompt = build_translation_system_prompt(is_adult=True, is_batch=False)
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
+        ]
+        res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=True, max_tokens=350, is_batch=False)
+        cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=True)
+        if cleaned and is_valid_translation(clean_t, cleaned):
+            return cleaned
 
     # 2. Fallback neutro
-    p_neutral = build_translation_system_prompt(is_adult=False, is_batch=False, is_dolphin=is_dolphin, is_qwen=is_qwen)
-    res = _do_call(p_neutral)
-    if res:
-        return res
+    sys_prompt = build_translation_system_prompt(is_adult=False, is_batch=False)
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
+    ]
+    res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=False, max_tokens=350, is_batch=False)
+    cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=False)
+    if cleaned and is_valid_translation(clean_t, cleaned):
+        return cleaned
 
-    return None
+    return google_translate_free(clean_t)
 
-def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_opts=None, is_adult=True, glossary=None):
-    """Traduz todas as falas de uma página em lote (JSON) com OpenRouter ou Ollama para máxima coerência narrativa."""
+def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None, engine_opts=None, is_adult=True, glossary=None):
+    """Traduz todas as falas de uma página em lote com roteamento inteligente de IA e fallback imediato."""
     if not bubbles_to_trans:
         return {}
 
@@ -2006,7 +2115,6 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
     needed = {}
     dialogue_map = {}
 
-    # 1. Resolve SFX e onomatopeias primeiro, e filtra marcas d'água de grupos chineses
     for idx, (orig_text, b_obj) in enumerate(bubbles_to_trans):
         key = str(idx + 1)
         if is_scan_watermark(orig_text):
@@ -2022,12 +2130,7 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
     if not needed:
         return results
 
-    if not engine_type:
-        return results
-
-    is_dolphin = "dolphin" in model_name.lower()
-    is_qwen = "qwen" in model_name.lower()
-    sys_prompt = build_translation_system_prompt(is_adult=is_adult, is_batch=True, glossary=glossary, is_dolphin=is_dolphin, is_qwen=is_qwen)
+    sys_prompt = build_translation_system_prompt(is_adult=is_adult, is_batch=True, glossary=glossary)
     messages = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": json.dumps(needed, ensure_ascii=False, indent=2)}
@@ -2036,38 +2139,18 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
     has_long_text = any(len(t) > 60 for t in needed.values())
     batch_max_tokens = 950 if has_long_text else 600
 
-    temp = engine_opts.get("temperature", 0.0)
-    try:
-        if engine_type == "groq":
-            try:
-                resp_content = query_groq_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=batch_max_tokens, fallback_model=engine_opts.get("fallback_model"))
-            except Exception as g_err:
-                cfg = engine_opts.get("cfg", {})
-                or_keys = cfg.get("openrouter_api_keys", [])
-                if or_keys:
-                    print(f"\n[*] Groq indisponível ({g_err}) -> Alternando para OpenRouter...")
-                    resp_content = query_openrouter_chat(messages, cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free"), api_key=or_keys[0], temperature=temp, max_tokens=1024, engine_opts=engine_opts)
-                else:
-                    raise g_err
-        elif engine_type == "openrouter":
-            try:
-                resp_content = query_openrouter_chat(messages, model_name, engine_opts.get("api_key", ""), temperature=temp, max_tokens=1024, engine_opts=engine_opts)
-            except Exception as o_err:
-                cfg = engine_opts.get("cfg", {})
-                host = cfg.get("ollama_host", "http://localhost:11434")
-                ollama_ok, o_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=cfg.get("ollama_model"))
-                if ollama_ok:
-                    print(f"\n[*] OpenRouter indisponível -> Alternando lote para Ollama ('{o_model}')...")
-                    resp_content = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=1024)
-                else:
-                    raise o_err
-        elif engine_type == "ollama":
-            resp_content = query_ollama_chat(messages, model_name, host=engine_opts.get("host", "http://localhost:11434"), temperature=temp, num_predict=1024)
-        else:
-            resp_content = ""
+    resp_content = execute_translation_request(
+        messages,
+        engine_opts=engine_opts,
+        is_adult=is_adult,
+        max_tokens=batch_max_tokens,
+        is_batch=True,
+        dialogue_map=needed
+    )
 
-        json_match = re.search(r'\{.*\}', resp_content, flags=re.DOTALL)
-        if json_match:
+    json_match = re.search(r'\{.*\}', resp_content, flags=re.DOTALL)
+    if json_match:
+        try:
             parsed = json.loads(json_match.group(0))
             for k, trans in parsed.items():
                 if k in dialogue_map:
@@ -2075,15 +2158,17 @@ def translate_page_dialogue(bubbles_to_trans, engine_type, model_name, engine_op
                     cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
                     if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
                         results[orig] = cleaned_trans
-    except Exception:
-        pass
+        except Exception:
+            pass
 
-    # 2. Fallback balão a balão para falas que não vieram no JSON
+    # Para qualquer fala que não veio no JSON (ex: corte de resposta):
     for key, orig in needed.items():
-        if orig not in results or results[orig].strip().lower() == orig.strip().lower():
-            fb_res = translate_single_dialogue(orig, engine_type, model_name, engine_opts=engine_opts, is_adult=is_adult)
-            if fb_res and fb_res.strip().lower() != orig.strip().lower():
-                results[orig] = fb_res
+        if orig not in results or not is_valid_translation(orig, results[orig]):
+            single_res = translate_single_dialogue(orig, engine_opts=engine_opts, is_adult=is_adult)
+            if single_res and is_valid_translation(orig, single_res):
+                results[orig] = single_res
+            else:
+                results[orig] = google_translate_free(orig)
 
     return results
 
@@ -2096,27 +2181,14 @@ def translate_page_dialogue_with_ollama(bubbles_to_trans, model_name, is_adult=T
     return translate_page_dialogue(bubbles_to_trans, "ollama", model_name, {"host": "http://localhost:11434"}, is_adult=is_adult, glossary=glossary)
 
 def translate_batch_texts(text_list, src_lang="auto", is_adult=True, engine_type=None, model_name=None, engine_opts=None):
-    """Traduz lista de textos usando o motor selecionado (OpenRouter/Ollama) com fallback para Google/MyMemory."""
+    """Traduz lista de textos com fallback limpo sem loops."""
     if not text_list:
         return []
 
-    if src_lang == "auto":
-        src_lang = detect_language_from_samples(text_list)
-    elif src_lang == "ja":
-        src_lang = "ja-JP"
-    elif src_lang == "en":
-        src_lang = "en-US"
-    elif src_lang == "ko":
-        src_lang = "ko-KR"
-    elif src_lang == "zh":
-        src_lang = "zh-CN"
-    elif src_lang == "es":
-        src_lang = "es-ES"
-
-    translator = MyMemoryTranslator(source=src_lang, target='pt-BR')
+    engine_opts = engine_opts or {}
     results = []
 
-    for i, t in enumerate(tqdm(text_list, desc="Traduzindo", unit="balão")):
+    for i, t in enumerate(text_list):
         clean_t = t.strip()
         if not clean_t or clean_t in ("...", "…", "!!", "!?"):
             results.append(clean_t)
@@ -2127,30 +2199,9 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True, engine_type
             results.append(sfx_res)
             continue
 
-        norm_sfx = re.sub(r'[^A-Z]', '', clean_t.upper())
-        if norm_sfx in SFX_DICTIONARY:
-            results.append(SFX_DICTIONARY[norm_sfx])
-            continue
-
-        res = None
-        if engine_type:
-            res = translate_single_dialogue(clean_t, engine_type, model_name, engine_opts=engine_opts, is_adult=is_adult)
-
-        if not res:
-            try:
-                res = translator.translate(clean_t)
-                if "MYMEMORY WARNING" in res:
-                    res = GoogleTranslator(source='auto', target='pt').translate(clean_t)
-                time.sleep(0.3)
-            except Exception:
-                try:
-                    time.sleep(0.8)
-                    res = GoogleTranslator(source='auto', target='pt').translate(clean_t)
-                except Exception:
-                    res = clean_t
-
-        if res:
-            res = clean_ai_translation(res, original_text=clean_t, is_adult=is_adult)
+        res = translate_single_dialogue(clean_t, engine_opts=engine_opts, is_adult=is_adult)
+        if not res or not is_valid_translation(clean_t, res):
+            res = google_translate_free(clean_t)
 
         results.append(res)
 
@@ -2721,16 +2772,15 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 untranslated.append((orig_text, b))
                 
         if untranslated:
-            if engine_type:
-                batch_res = translate_page_dialogue(untranslated, engine_type, model_name, engine_opts=engine_opts, is_adult=is_adult, glossary=glossary)
-                for orig, trans in batch_res.items():
-                    if trans and is_valid_translation(orig, trans):
-                        cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
-                        
+            batch_res = translate_page_dialogue(untranslated, engine_opts=engine_opts, is_adult=is_adult, glossary=glossary)
+            for orig, trans in batch_res.items():
+                if trans and is_valid_translation(orig, trans):
+                    cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                    
             # Se ainda houver textos sem tradução válida, tenta o fallback
             still_untranslated = [item[0] for item in untranslated if item[0] not in cache or not is_valid_translation(item[0], cache[item[0]])]
             if still_untranslated:
-                cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult, engine_type=engine_type, model_name=model_name, engine_opts=engine_opts)
+                cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult, engine_opts=engine_opts)
                 for orig, trans in zip(still_untranslated, cloud_res):
                     if trans and is_valid_translation(orig, trans):
                         cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)

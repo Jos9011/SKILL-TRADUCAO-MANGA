@@ -17,7 +17,8 @@ import urllib.request
 import webbrowser
 import subprocess
 import traceback
-from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response
+import tempfile
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, redirect
 from PIL import Image
 
 # Protege contra execução via pythonw.exe onde sys.stdout e sys.stderr são None
@@ -75,6 +76,16 @@ app.jinja_env.auto_reload = True
 BASE_MANGAS_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
 THUMB_CACHE_DIR = os.path.join(SYS_DIR, ".thumb_cache")
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
+
+# Mapeamento para leitura e download web seguro
+MANGA_PATH_CACHE = {}
+
+def get_manga_hash(folder_path):
+    if not folder_path: return ""
+    p = os.path.abspath(folder_path)
+    h = str(abs(hash(p)))
+    MANGA_PATH_CACHE[h] = p
+    return h
 
 # Estado global da tarefa de tradução
 job_lock = threading.Lock()
@@ -270,31 +281,35 @@ def api_status():
 
 @app.route("/api/library")
 def api_library():
-    """Retorna mangás traduzidos e obras prontas para traduzir, respeitando pastas customizadas."""
+    """Retorna mangás traduzidos e obras prontas para traduzir, respeitando pastas locais, Google Drive e uploads."""
     cfg = auto_translate.load_config()
     raw_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
     trans_dir = cfg.get("translated_mangas_dir") or BASE_MANGAS_DIR
     
     translated = []
     raw = []
+    seen_paths = set()
     
     def _scan(folder_path):
         entries = []
         if not folder_path or not os.path.exists(folder_path):
             return entries
         for item in sorted(os.listdir(folder_path)):
-            full_p = os.path.join(folder_path, item)
-            if not os.path.isdir(full_p) or item.startswith(".") or item == "_ocr":
+            full_p = os.path.abspath(os.path.join(folder_path, item))
+            if full_p in seen_paths or not os.path.isdir(full_p) or item.startswith(".") or item == "_ocr":
                 continue
             imgs = [f for f in os.listdir(full_p) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
             if not imgs:
                 continue
+            seen_paths.add(full_p)
             has_reader = os.path.exists(os.path.join(full_p, "leitor.html"))
             cbz_path = full_p.rstrip("/\\") + ".cbz"
             has_cbz = os.path.exists(cbz_path)
             first_img = os.path.join(full_p, sorted(imgs)[0])
             mtime = os.path.getmtime(full_p)
+            m_id = get_manga_hash(full_p)
             entry = {
+                "id": m_id,
                 "name": item,
                 "clean_name": item.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
                 "path": full_p,
@@ -303,29 +318,122 @@ def api_library():
                 "has_cbz": has_cbz,
                 "cbz_path": cbz_path if has_cbz else None,
                 "reader_path": os.path.join(full_p, "leitor.html") if has_reader else None,
+                "reader_url": f"/read/{m_id}/",
                 "mtime": mtime,
-                "first_img": first_img
+                "first_img": first_img,
+                "is_drive": "/content/drive" in full_p
             }
             entries.append(entry)
         return entries
 
-    if os.path.abspath(raw_dir) == os.path.abspath(trans_dir):
-        all_m = _scan(raw_dir)
-        for e in all_m:
+    # Pastas de escaneamento de mangás traduzidos
+    trans_scan_folders = [trans_dir]
+    if os.path.exists("/content/drive/MyDrive/MANGAS [PT-BR]"):
+        trans_scan_folders.insert(0, "/content/drive/MyDrive/MANGAS [PT-BR]")
+    if os.path.exists(UPLOAD_DIR):
+        trans_scan_folders.append(UPLOAD_DIR)
+
+    for sf in trans_scan_folders:
+        for e in _scan(sf):
             if "[PT-BR]" in e["name"] or e["has_reader"]:
                 translated.append(e)
             else:
                 raw.append(e)
-    else:
-        for e in _scan(trans_dir):
-            translated.append(e)
-        for e in _scan(raw_dir):
+
+    # Pastas de escaneamento de obras originais (RAW)
+    raw_scan_folders = [raw_dir]
+    if os.path.exists("/content/drive/MyDrive/MANGAS"):
+        raw_scan_folders.insert(0, "/content/drive/MyDrive/MANGAS")
+    if os.path.exists(UPLOAD_DIR):
+        raw_scan_folders.append(UPLOAD_DIR)
+
+    for rf in raw_scan_folders:
+        for e in _scan(rf):
             if not e["has_reader"] and "[PT-BR]" not in e["name"]:
                 raw.append(e)
                 
     translated.sort(key=lambda x: x["mtime"], reverse=True)
     raw.sort(key=lambda x: x["mtime"], reverse=True)
     return jsonify({"translated": translated, "raw": raw})
+
+@app.route("/api/download_folder")
+def api_download_folder():
+    """Compacta a pasta traduzida em um arquivo ZIP e envia diretamente para download no navegador."""
+    path = request.args.get("path", "").strip('\"\'')
+    if not path or not os.path.exists(path):
+        return jsonify({"error": "Pasta não encontrada"}), 404
+        
+    folder_path = os.path.abspath(path)
+    if os.path.isfile(folder_path):
+        folder_path = os.path.dirname(folder_path)
+        
+    clean_name = os.path.basename(folder_path)
+    zip_dest = os.path.join(tempfile.gettempdir(), f"{clean_name}.zip")
+    
+    with zipfile.ZipFile(zip_dest, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(folder_path):
+            if "cache" in root or "__pycache__" in root:
+                continue
+            for file in files:
+                full_f = os.path.join(root, file)
+                rel_f = os.path.relpath(full_f, folder_path)
+                zipf.write(full_f, arcname=rel_f)
+                
+    return send_file(zip_dest, as_attachment=True, download_name=f"{clean_name}.zip", mimetype="application/zip")
+
+@app.route("/api/download_cbz")
+def api_download_cbz():
+    """Envia o arquivo .cbz do mangá traduzido diretamente para download no navegador."""
+    path = request.args.get("path", "").strip('\"\'')
+    if not path:
+        return jsonify({"error": "Caminho não fornecido"}), 400
+        
+    clean_p = os.path.abspath(path)
+    if os.path.isdir(clean_p):
+        cbz_candidate = clean_p.rstrip("/\\") + ".cbz"
+        if not os.path.exists(cbz_candidate):
+            try:
+                auto_translate.create_cbz_archive(clean_p, cbz_candidate)
+            except Exception as e:
+                return jsonify({"error": f"Erro ao criar CBZ: {e}"}), 500
+        clean_p = cbz_candidate
+    elif not os.path.exists(clean_p):
+        alt = clean_p.rstrip("/\\") + ".cbz"
+        if os.path.exists(alt):
+            clean_p = alt
+        else:
+            return jsonify({"error": "Arquivo CBZ não encontrado"}), 404
+            
+    if not os.path.exists(clean_p):
+        return jsonify({"error": "Arquivo CBZ não encontrado"}), 404
+            
+    cbz_name = os.path.basename(clean_p)
+    return send_file(clean_p, as_attachment=True, download_name=cbz_name, mimetype="application/vnd.comicbook+zip")
+
+@app.route("/api/reader")
+def api_reader():
+    """Redireciona para o leitor web imersivo a partir do parâmetro path."""
+    path = request.args.get("path", "").strip('\"\'')
+    if not path or not os.path.exists(path):
+        return "Caminho do mangá não encontrado", 404
+        
+    folder = os.path.dirname(os.path.abspath(path)) if (os.path.isfile(path) and path.endswith(".html")) else os.path.abspath(path)
+    h = get_manga_hash(folder)
+    return redirect(f"/read/{h}/")
+
+@app.route("/read/<manga_id>/")
+@app.route("/read/<manga_id>/<path:filename>")
+def serve_manga_reader(manga_id, filename="leitor.html"):
+    """Serve o leitor web interativo diretamente no navegador para qualquer dispositivo."""
+    folder = MANGA_PATH_CACHE.get(manga_id)
+    if not folder or not os.path.exists(folder):
+        return "Mangá não encontrado na memória do servidor. Por favor, volte à biblioteca e clique em Ler.", 404
+        
+    leitor_p = os.path.join(folder, "leitor.html")
+    if filename == "leitor.html" and not os.path.exists(leitor_p):
+        auto_translate.create_html_reader(folder, os.path.basename(folder))
+        
+    return send_from_directory(folder, filename)
 
 @app.route("/api/thumb")
 def api_thumb():
@@ -604,6 +712,11 @@ def api_start_translation():
                 job_state["percentage"] = 100
                 job_state["message"] = "Mangá traduzido e salvo com sucesso!"
                 if isinstance(res, dict):
+                    out_p = res.get("output_dir", "")
+                    if out_p:
+                        m_id = get_manga_hash(out_p)
+                        res["id"] = m_id
+                        res["reader_url"] = f"/read/{m_id}/"
                     job_state["result"] = res
         except Exception as e:
             err_msg = str(e) or e.__class__.__name__
@@ -632,8 +745,15 @@ def api_open_reader():
     data = request.json or {}
     path = data.get("path", "")
     if path and os.path.exists(path):
-        webbrowser.open("file://" + os.path.abspath(path))
-        return jsonify({"success": True})
+        folder = os.path.dirname(os.path.abspath(path)) if (os.path.isfile(path) and path.endswith(".html")) else os.path.abspath(path)
+        m_id = get_manga_hash(folder)
+        reader_url = f"/read/{m_id}/"
+        if os.name == 'nt' and (request.host.startswith("127.0.0.1") or request.host.startswith("localhost")):
+            try:
+                webbrowser.open("file://" + os.path.abspath(path))
+            except Exception:
+                pass
+        return jsonify({"success": True, "reader_url": reader_url, "id": m_id})
     return jsonify({"success": False, "error": "Arquivo não encontrado"}), 404
 
 @app.route("/api/launch_app_window", methods=["POST"])
@@ -651,13 +771,26 @@ def api_open_folder():
     data = request.json or {}
     path = data.get("path", "")
     if path and os.path.exists(path):
-        os.startfile(path)
-        return jsonify({"success": True})
+        if hasattr(os, 'startfile'):
+            try:
+                os.startfile(path)
+            except Exception:
+                pass
+        return jsonify({"success": True, "path": path})
     return jsonify({"success": False, "error": "Pasta não encontrada"}), 404
 
 @app.route("/api/open_cbz", methods=["POST"])
 def api_open_cbz():
     data = request.json or {}
+    path = data.get("path", "")
+    if path and os.path.exists(path):
+        if hasattr(os, 'startfile'):
+            try:
+                os.startfile(path)
+            except Exception:
+                pass
+        return jsonify({"success": True, "path": path})
+    return jsonify({"success": False, "error": "Arquivo CBZ não encontrado"}), 404
     path = data.get("path", "")
     if path and os.path.exists(path):
         os.startfile(path)

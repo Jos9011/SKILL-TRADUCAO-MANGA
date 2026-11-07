@@ -2626,12 +2626,17 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     # Carrega glossário específico da obra se existir
     glossary = load_project_glossary(manga_dir)
     
-    # 0. Define o diretório de destino (respeitando configuração do usuário)
+    # 0. Define o diretório de destino (respeitando configuração do usuário ou Google Drive se estiver no Colab)
     cfg_target = config.get("translated_mangas_dir") if config else None
     if cfg_target and os.path.isdir(cfg_target):
         base_drive_dir = cfg_target
-    else:
+    elif os.path.exists("/content/drive/MyDrive"):
+        base_drive_dir = "/content/drive/MyDrive/MANGAS [PT-BR]"
+        os.makedirs(base_drive_dir, exist_ok=True)
+    elif os.path.exists(BASE_OUTPUT_DIR):
         base_drive_dir = BASE_OUTPUT_DIR
+    else:
+        base_drive_dir = os.path.dirname(manga_dir)
     try:
         os.makedirs(base_drive_dir, exist_ok=True)
     except Exception as e:
@@ -3146,7 +3151,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         except Exception:
             pass
             
-    return {"success": True, "output_dir": output_dir, "cbz_path": cbz_dest_path}
+    return {"success": True, "output_dir": output_dir, "cbz_path": cbz_dest_path, "reader_path": os.path.join(output_dir, "leitor.html")}
 
 def show_credits_dashboard(cfg=None):
     """Exibe painel ao vivo com créditos, cotas diárias e status dos motores de IA."""

@@ -744,6 +744,64 @@
       color: var(--text-subdued);
     }
 
+    .badge-drive {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      background: rgba(66, 133, 244, 0.18);
+      color: #8ab4f8;
+      border: 1px solid rgba(66, 133, 244, 0.4);
+      margin-bottom: 6px;
+      width: fit-content;
+    }
+
+    .card-actions-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .card-action-btn {
+      flex: 1;
+      padding: 5px 8px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-base);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+      text-decoration: none;
+    }
+
+    .card-action-btn:hover {
+      background: rgba(255, 255, 255, 0.18);
+      color: #ffffff;
+      transform: translateY(-1px);
+    }
+
+    .card-action-btn.primary {
+      background: rgba(29, 185, 84, 0.18);
+      color: var(--spotify-green);
+      border-color: rgba(29, 185, 84, 0.4);
+    }
+
+    .card-action-btn.primary:hover {
+      background: var(--spotify-green);
+      color: #000000;
+    }
+
     /* STATUS & QUOTA VIEW */
     .quota-grid {
       display: grid;
@@ -1354,15 +1412,18 @@
       </div>
     </div>
 
-    <div class="player-right">
-      <button class="btn-secondary" id="player-btn-reader" onclick="openActiveReader()" style="display: none; padding: 6px 14px; font-size: 0.8rem;">
-        Ler Agora
+    <div class="player-right" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+      <button class="btn-primary" id="player-btn-reader" onclick="openActiveReader()" style="display: none; padding: 6px 14px; font-size: 0.8rem; background: var(--spotify-green); color: #000; font-weight: 700; border: none; border-radius: 20px; cursor: pointer;">
+        📖 Ler Agora
       </button>
-      <button class="btn-secondary" id="player-btn-cbz" onclick="openActiveCbz()" style="display: none; padding: 6px 14px; font-size: 0.8rem;">
-        Abrir CBZ
+      <button class="btn-secondary" id="player-btn-zip" onclick="downloadActiveZip()" style="display: none; padding: 6px 14px; font-size: 0.8rem;">
+        📥 Baixar Pasta (ZIP)
+      </button>
+      <button class="btn-secondary" id="player-btn-cbz" onclick="downloadActiveCbz()" style="display: none; padding: 6px 14px; font-size: 0.8rem;">
+        📦 Baixar CBZ
       </button>
       <button class="btn-secondary" id="player-btn-folder" onclick="openActiveFolder()" style="display: none; padding: 6px 14px; font-size: 0.8rem;">
-        Ver Pasta
+        📂 Ver Pasta
       </button>
     </div>
   </footer>
@@ -1916,29 +1977,51 @@
 
     function showActionButtons(result) {
       if (!result) return;
-      document.getElementById('player-btn-reader').style.display = 'inline-flex';
-      document.getElementById('player-btn-cbz').style.display = 'inline-flex';
-      document.getElementById('player-btn-folder').style.display = 'inline-flex';
+      const btnReader = document.getElementById('player-btn-reader');
+      const btnZip = document.getElementById('player-btn-zip');
+      const btnCbz = document.getElementById('player-btn-cbz');
+      const btnFolder = document.getElementById('player-btn-folder');
+      if (btnReader) btnReader.style.display = 'inline-flex';
+      if (btnZip) btnZip.style.display = 'inline-flex';
+      if (btnCbz) btnCbz.style.display = 'inline-flex';
+      if (btnFolder) btnFolder.style.display = 'inline-flex';
     }
 
     function openActiveReader() {
-      if (activeResult && activeResult.reader_path) {
-        fetch('/api/open_reader', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: activeResult.reader_path })
-        });
+      if (activeResult) {
+        if (activeResult.reader_url) {
+          window.open(activeResult.reader_url, '_blank');
+        } else if (activeResult.id) {
+          window.open('/read/' + activeResult.id + '/', '_blank');
+        } else if (activeResult.output_dir || activeResult.reader_path) {
+          const p = activeResult.output_dir || activeResult.reader_path;
+          window.open('/api/reader?path=' + encodeURIComponent(p), '_blank');
+        }
+        if (activeResult.reader_path) {
+          fetch('/api/open_reader', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeResult.reader_path })
+          }).catch(() => {});
+        }
+      }
+    }
+
+    function downloadActiveZip() {
+      if (activeResult && (activeResult.output_dir || activeResult.reader_path)) {
+        downloadFolderZip(activeResult.output_dir || activeResult.reader_path);
+      }
+    }
+
+    function downloadActiveCbz() {
+      if (activeResult) {
+        const p = activeResult.cbz_path || activeResult.output_dir;
+        downloadCbz(p);
       }
     }
 
     function openActiveCbz() {
-      if (activeResult && activeResult.cbz_path) {
-        fetch('/api/open_cbz', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: activeResult.cbz_path })
-        });
-      }
+      downloadActiveCbz();
     }
 
     function openActiveFolder() {
@@ -1949,6 +2032,26 @@
           body: JSON.stringify({ path: activeResult.output_dir })
         });
       }
+    }
+
+    function downloadFolderZip(folderPath) {
+      if (!folderPath) return;
+      const link = document.createElement('a');
+      link.href = '/api/download_folder?path=' + encodeURIComponent(folderPath);
+      link.setAttribute('download', '');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function downloadCbz(cbzPath) {
+      if (!cbzPath) return;
+      const link = document.createElement('a');
+      link.href = '/api/download_cbz?path=' + encodeURIComponent(cbzPath);
+      link.setAttribute('download', '');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
 
     // LIBRARY
@@ -1970,15 +2073,27 @@
 
       const filteredTrans = libraryData.translated.filter(m => m.name.toLowerCase().includes(q));
       grid.innerHTML = filteredTrans.map(m => `
-        <div class="manga-card" onclick="openReader('${escapeQuotes(m.reader_path)}'); updatePlayerCover('${escapeQuotes(m.first_img)}', '${escapeQuotes(m.clean_name)}', '${m.pages} páginas • Traduzido');">
+        <div class="manga-card" onclick="openReader('${escapeQuotes(m.path)}', '${escapeQuotes(m.reader_url)}'); updatePlayerCover('${escapeQuotes(m.first_img)}', '${escapeQuotes(m.clean_name)}', '${m.pages} páginas • Traduzido');">
           <div class="card-thumb">
             <img src="/api/thumb?path=${encodeURIComponent(m.first_img)}" loading="lazy">
             <div class="card-play-btn" title="Ler Agora no Navegador">
               <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
             </div>
           </div>
+          ${m.is_drive ? '<span class="badge-drive">☁️ Google Drive</span>' : ''}
           <div class="card-title" title="${escapeHtml(m.clean_name)}">${escapeHtml(m.clean_name)}</div>
           <div class="card-subtitle">${m.pages} páginas • Traduzido</div>
+          <div class="card-actions-row">
+            <button class="card-action-btn primary" title="Ler online no navegador" onclick="event.stopPropagation(); openReader('${escapeQuotes(m.path)}', '${escapeQuotes(m.reader_url)}');">
+              📖 Ler
+            </button>
+            <button class="card-action-btn" title="Baixar pasta completa como ZIP" onclick="event.stopPropagation(); downloadFolderZip('${escapeQuotes(m.path)}');">
+              📥 ZIP
+            </button>
+            <button class="card-action-btn" title="Baixar no formato Comic Book (CBZ)" onclick="event.stopPropagation(); downloadCbz('${escapeQuotes(m.cbz_path || m.path)}');">
+              📦 CBZ
+            </button>
+          </div>
         </div>
       `).join('');
 
@@ -1991,8 +2106,14 @@
               <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
             </div>
           </div>
+          ${m.is_drive ? '<span class="badge-drive">☁️ Google Drive</span>' : ''}
           <div class="card-title" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
           <div class="card-subtitle">${m.pages} páginas • Pronto para traduzir</div>
+          <div class="card-actions-row">
+            <button class="card-action-btn primary" title="Configurar e traduzir este mangá" onclick="event.stopPropagation(); inspectFolder('${escapeQuotes(m.path)}'); switchTab('translate');">
+              ⚡ Traduzir
+            </button>
+          </div>
         </div>
       `).join('');
     }
@@ -2000,8 +2121,8 @@
     function renderSidebarRecents() {
       const rec = document.getElementById('sidebar-recents');
       rec.innerHTML = libraryData.translated.slice(0, 10).map(m => `
-        <div class="recent-item" onclick="openReader('${escapeQuotes(m.reader_path)}'); updatePlayerCover('${escapeQuotes(m.first_img)}', '${escapeQuotes(m.clean_name)}', '${m.pages} páginas • Traduzido');" title="${escapeHtml(m.clean_name)}">
-          📖 ${escapeHtml(m.clean_name)}
+        <div class="recent-item" onclick="openReader('${escapeQuotes(m.path)}', '${escapeQuotes(m.reader_url)}'); updatePlayerCover('${escapeQuotes(m.first_img)}', '${escapeQuotes(m.clean_name)}', '${m.pages} páginas • Traduzido');" title="${escapeHtml(m.clean_name)}">
+          ${m.is_drive ? '☁️' : '📖'} ${escapeHtml(m.clean_name)}
         </div>
       `).join('');
     }
@@ -2010,13 +2131,18 @@
       renderLibraryGrid();
     }
 
-    function openReader(path) {
+    function openReader(path, readerUrl) {
+      if (readerUrl) {
+        window.open(readerUrl, '_blank');
+        return;
+      }
       if (!path) return;
+      window.open('/api/reader?path=' + encodeURIComponent(path), '_blank');
       fetch('/api/open_reader', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
-      });
+      }).catch(() => {});
     }
 
     // QUOTAS & STATUS

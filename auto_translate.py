@@ -45,17 +45,41 @@ try:
 except ImportError:
     wordninja = None
 
+class _SafeStreamWrapper(io.StringIO):
+    def write(self, s):
+        try:
+            return len(s) if s else 0
+        except Exception:
+            return 0
+    def flush(self):
+        pass
+    def isatty(self):
+        return False
+
 try:
     if sys.stdout is None:
-        import io
-        sys.stdout = io.StringIO()
+        sys.stdout = _SafeStreamWrapper()
     elif hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     if sys.stderr is None:
-        import io
-        sys.stderr = io.StringIO()
+        sys.stderr = _SafeStreamWrapper()
     elif hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    if getattr(sys, '__stdout__', None) is None:
+        sys.__stdout__ = sys.stdout
+    if getattr(sys, '__stderr__', None) is None:
+        sys.__stderr__ = sys.stderr
+    
+    # Protege tqdm contra NoneType.write em ambientes sem terminal (ex: pythonw / threads)
+    import tqdm.std
+    _orig_tqdm_init = tqdm.std.tqdm.__init__
+    def _safe_tqdm_init(self, *args, **kwargs):
+        if kwargs.get('file') is None:
+            kwargs['file'] = sys.stderr if sys.stderr is not None else sys.stdout
+        if kwargs.get('file') is None:
+            kwargs['file'] = _SafeStreamWrapper()
+        return _orig_tqdm_init(self, *args, **kwargs)
+    tqdm.std.tqdm.__init__ = _safe_tqdm_init
 except Exception:
     pass
 
@@ -377,11 +401,14 @@ def load_project_glossary(manga_dir):
     for c in candidates:
         if os.path.exists(c):
             try:
+                is_local = os.path.dirname(os.path.abspath(c)) == os.path.abspath(manga_dir)
                 if c.endswith(".json"):
                     with open(c, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         if isinstance(data, dict):
-                            glossary["characters"].update(data.get("characters", {}))
+                            # Nomes de personagens SÓ são carregados se for o glossário local da própria obra
+                            if is_local:
+                                glossary["characters"].update(data.get("characters", {}))
                             glossary["terms"].update(data.get("terms", {}))
                 elif c.endswith(".txt"):
                     with open(c, "r", encoding="utf-8") as f:
@@ -930,7 +957,7 @@ def clean_speech_bubble(img, box):
             if in_text_core or not touches_margin:
                 cv2.drawContours(clean_mask, [c], -1, 255, -1)
                 
-        clean_mask = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        clean_mask = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
         roi[clean_mask > 0] = (255, 255, 255)
     else:
         # Inpainting seguro para texturas, retículas e arte de fundo
@@ -1827,6 +1854,22 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         if re.search(r'out\s+of\s+his\s+mind', orig_lower):
             cleaned = _preserve_case(r'de\s+sua\s+mente', 'ficou louco', cleaned)
 
+        # Gírias chinesas de scanlation: 飛機杯 (masturbador) e 乱七八糟 (bagunça)
+        if re.search(r'(?:飛機杯|飞机杯|onahole|fleshlight)', orig_lower):
+            cleaned = _preserve_case(r'copo\s+de\s+avi[aã]o', 'masturbador', cleaned)
+            cleaned = _preserve_case(r'avi[aã]o\s+de\s+papel', 'masturbador', cleaned)
+            cleaned = _preserve_case(r'\bcopo\b', 'masturbador', cleaned)
+
+        if re.search(r'(?:乱七八糟|亂七八糟)', orig_lower):
+            cleaned = _preserve_case(r'bicho\s+de\s+sete\s+cabe[çc]as', 'uma bagunça', cleaned)
+            cleaned = _preserve_case(r'sete\s+tigelas', 'uma bagunça', cleaned)
+
+        # Previne alucinação de nomes externos (como Rudy/Rudeus) que não existem na obra original
+        if re.search(r'\b(rudy|rudeus)\b', cleaned, re.IGNORECASE):
+            if not re.search(r'(?:ルディ|ルーデウス|鲁迪|鲁德斯|rudeus|rudy)', original_text, re.IGNORECASE):
+                cleaned = re.sub(r'(?i)\b(?:pra\s+|para\s+|o\s+)?(?:rudy|rudeus)\b', '', cleaned).strip()
+                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
     cleaned = _preserve_case(r'\bperfecto\b', 'perfeito', cleaned)
     cleaned = _preserve_case(r'\btacto\b', 'tato', cleaned)
     cleaned = _preserve_case(r'\bmbicar\b', 'lamber', cleaned)
@@ -2553,15 +2596,20 @@ def is_valid_translation(orig_text, trans_text):
     if clean_trans.lower() == clean_orig.lower():
         if re.search(r'[a-zA-Z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', clean_orig):
             return False
+    # Rejeita saídas truncadas de uma única letra quando o original tem 3 ou mais caracteres (ex: 'O' para frase longa)
+    if len(clean_orig) >= 3 and len(clean_trans) <= 1:
+        return False
+    # Rejeita saídas de até 2 letras a menos que sejam interjeições coloquiais autênticas
+    if len(clean_orig) >= 3 and len(clean_trans) <= 2:
+        if clean_trans.lower() not in ("ah", "ai", "oi", "eh", "oh", "ui", "hm", "ha", "ei", "ué", "ok"):
+            return False
     return True
 
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None):
     if sys.stdout is None:
-        import io
-        sys.stdout = io.StringIO()
+        sys.stdout = _SafeStreamWrapper()
     if sys.stderr is None:
-        import io
-        sys.stderr = sys.stdout or io.StringIO()
+        sys.stderr = _SafeStreamWrapper()
 
     if config is None:
         config = load_config()

@@ -20,14 +20,38 @@ from PIL import Image
 # Protege contra execução via pythonw.exe onde sys.stdout e sys.stderr são None
 class SafeDummyStream(io.StringIO):
     def write(self, s):
-        pass
+        try:
+            return len(s) if s else 0
+        except Exception:
+            return 0
     def flush(self):
         pass
+    def isatty(self):
+        return False
+    def fileno(self):
+        raise io.UnsupportedOperation("fileno")
 
 if sys.stdout is None:
     sys.stdout = SafeDummyStream()
 if sys.stderr is None:
     sys.stderr = SafeDummyStream()
+if getattr(sys, '__stdout__', None) is None:
+    sys.__stdout__ = sys.stdout
+if getattr(sys, '__stderr__', None) is None:
+    sys.__stderr__ = sys.stderr
+
+try:
+    import tqdm.std
+    _orig_tqdm_init_srv = tqdm.std.tqdm.__init__
+    def _safe_tqdm_init_srv(self, *args, **kwargs):
+        if kwargs.get('file') is None:
+            kwargs['file'] = sys.stderr if sys.stderr is not None else sys.stdout
+        if kwargs.get('file') is None:
+            kwargs['file'] = SafeDummyStream()
+        return _orig_tqdm_init_srv(self, *args, **kwargs)
+    tqdm.std.tqdm.__init__ = _safe_tqdm_init_srv
+except Exception:
+    pass
 
 # Inclui diretório principal no path e define como cwd
 SYS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -85,18 +109,25 @@ class StreamCapture(io.StringIO):
                             job_state["logs"].append(clean)
                             if len(job_state["logs"]) > self.max_lines:
                                 job_state["logs"].pop(0)
-        if self.original_stream is not None and hasattr(self.original_stream, 'write'):
-            try:
-                self.original_stream.write(text)
-            except Exception:
-                pass
+        if self.original_stream is not None:
+            w_fn = getattr(self.original_stream, 'write', None)
+            if callable(w_fn):
+                try:
+                    w_fn(text)
+                except Exception:
+                    pass
 
     def flush(self):
-        if self.original_stream is not None and hasattr(self.original_stream, 'flush'):
-            try:
-                self.original_stream.flush()
-            except Exception:
-                pass
+        if self.original_stream is not None:
+            f_fn = getattr(self.original_stream, 'flush', None)
+            if callable(f_fn):
+                try:
+                    f_fn()
+                except Exception:
+                    pass
+
+    def isatty(self):
+        return False
 
 @app.route("/")
 def index():
@@ -313,29 +344,31 @@ def api_thumb():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def pick_folder_native(title="Selecione a Pasta", init_dir=""):
+    """Executa a seleção nativa de pastas via subprocesso com Tkinter isolado na thread principal do processo."""
+    code = (
+        "import tkinter as tk\n"
+        "from tkinter import filedialog\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "root.attributes('-topmost', True)\n"
+        f"d = filedialog.askdirectory(title={repr(title)}, initialdir={repr(init_dir)})\n"
+        "print(d or '')\n"
+    )
+    try:
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+        return proc.stdout.strip()
+    except Exception as e:
+        print(f"[!] Erro ao abrir seletor de pastas: {e}")
+        return ""
+
 @app.route("/api/pick_folder", methods=["POST"])
 def api_pick_folder():
     """Abre o diálogo nativo do Windows para selecionar a pasta do mangá."""
     cfg = auto_translate.load_config()
     raw_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
     init_dir = raw_dir if os.path.exists(raw_dir) else (BASE_MANGAS_DIR if os.path.exists(BASE_MANGAS_DIR) else "C:\\")
-    selected_path = ""
-    def _ask():
-        nonlocal selected_path
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected_path = filedialog.askdirectory(
-            initialdir=init_dir,
-            title="Selecione a Pasta do Mangá Original"
-        )
-        root.destroy()
-        
-    t = threading.Thread(target=_ask)
-    t.start()
-    t.join()
+    selected_path = pick_folder_native(title="Selecione a Pasta do Mangá Original", init_dir=init_dir)
     
     if selected_path:
         return jsonify({"success": True, "path": selected_path})
@@ -350,19 +383,7 @@ def api_pick_path():
     init_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
     if not os.path.exists(init_dir):
         init_dir = "C:\\"
-    selected_path = ""
-    def _ask():
-        nonlocal selected_path
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected_path = filedialog.askdirectory(initialdir=init_dir, title=title)
-        root.destroy()
-    t = threading.Thread(target=_ask)
-    t.start()
-    t.join()
+    selected_path = pick_folder_native(title=title, init_dir=init_dir)
     if selected_path:
         return jsonify({"success": True, "path": selected_path})
     return jsonify({"success": False, "error": "Nenhuma pasta selecionada"})
@@ -442,9 +463,9 @@ def api_start_translation():
 
     def _worker():
         global job_state
-        capture = StreamCapture(original_stream=sys.stdout)
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
+        old_stdout = sys.stdout if sys.stdout is not None else SafeDummyStream()
+        old_stderr = sys.stderr if sys.stderr is not None else SafeDummyStream()
+        capture = StreamCapture(original_stream=old_stdout)
         sys.stdout = capture
         sys.stderr = capture
 

@@ -2995,6 +2995,123 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     return {"success": True, "output_dir": output_dir, "cbz_path": cbz_dest_path}
 
+def show_credits_dashboard(cfg=None):
+    """Exibe painel ao vivo com créditos, cotas diárias e status dos motores de IA."""
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+    if cfg is None:
+        cfg = load_config()
+        
+    print("=" * 68)
+    print("      PAINEL AO VIVO DE CREDITOS E STATUS DAS IAs [PT-BR]")
+    print("=" * 68)
+    
+    # 1. GROQ CLOUD
+    groq_key = cfg.get("groq_api_key", "").strip()
+    active_groq_m = cfg.get("groq_model", "qwen/qwen3.8-27b")
+    print("\n[1] GROQ CLOUD (Ultra-Rapido / Zero Censura na Nuvem)")
+    if groq_key:
+        masked_g = groq_key[:8] + "..." + groq_key[-4:] if len(groq_key) > 12 else "***"
+        print(f"    Chave: {masked_g} | Modelo Padrao Configurado: {active_groq_m}")
+        models_to_check = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+        for m in models_to_check:
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {groq_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            data = json.dumps({"model": m, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    rem_req = resp.headers.get("x-ratelimit-remaining-requests", "?")
+                    lim_req = resp.headers.get("x-ratelimit-limit-requests", "1000")
+                    rem_tok = resp.headers.get("x-ratelimit-remaining-tokens", "?")
+                    lim_tok = resp.headers.get("x-ratelimit-limit-tokens", "8000")
+                    rst_req = resp.headers.get("x-ratelimit-reset-requests", "?")
+                    rst_tok = resp.headers.get("x-ratelimit-reset-tokens", "?")
+                    star = " [ATIVO NO MOMENTO]" if m == active_groq_m else ""
+                    print(f"    * Modelo: {m}{star}")
+                    print(f"      - Requisicoes restantes:   {rem_req} / {lim_req} reqs/dia")
+                    print(f"      - Tokens por minuto (TPM): {rem_tok} / {lim_tok} disponiveis")
+                    print(f"      - Renovacao automatica:    Reseta em {rst_req} (Tokens em {rst_tok})")
+                    print(f"      - Status operacional:      100% PRONTO E LIBERADO")
+            except urllib.error.HTTPError as e:
+                err_body = ""
+                try: err_body = e.read().decode("utf-8", errors="ignore")
+                except Exception: pass
+                print(f"    * Modelo: {m}")
+                if e.code == 429:
+                    if "TPD" in err_body or "tokens per day" in err_body.lower():
+                        print("      - Status: COTA DIARIA DE 200K ATINGIDA (Renova em breve)")
+                    else:
+                        print("      - Status: PAUSA TEMPORARIA DE TOKENS (Reset em segundos)")
+                else:
+                    print(f"      - Status: Erro HTTP {e.code}")
+            except Exception as e:
+                print(f"    * Modelo: {m} -> Nao respondeu ({e})")
+    else:
+        print("    [!] Chave Groq nao configurada em config.json.")
+
+    # 2. OPENROUTER CLOUD
+    or_keys = cfg.get("openrouter_api_keys", [])
+    if not or_keys and cfg.get("openrouter_api_key"):
+        or_keys = [cfg.get("openrouter_api_key")]
+    print("\n[2] OPENROUTER CLOUD (Multi-Modelos: Nemotron, Dolphin, Hermes)")
+    if or_keys:
+        for idx, k in enumerate(or_keys):
+            masked_o = k[:8] + "..." + k[-4:] if len(k) > 12 else "***"
+            print(f"    Chave #{idx+1}: {masked_o}")
+            try:
+                req_or = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {k}"})
+                with urllib.request.urlopen(req_or, timeout=8) as resp:
+                    kdata = json.loads(resp.read().decode("utf-8")).get("data", {})
+                    free_info = kdata.get("free_model_daily_requests", {})
+                    f_used = free_info.get("used", 0)
+                    f_limit = free_info.get("limit", 50)
+                    f_rem = free_info.get("remaining", 0)
+                    print("      - Categoria da Conta:     Gratuita (Free Tier)")
+                    print(f"      - Cota Modelos Gratuitos: {f_used} / {f_limit} usadas hoje ({f_rem} restantes)")
+                    if f_rem == 0:
+                        print("        * Cota diaria esgotada hoje. Renova as 21:00 BRT (00:00 UTC).")
+                    else:
+                        print("        * Cota gratuita disponivel para uso.")
+            except Exception as e:
+                print(f"      - Erro ao checar chave: {e}")
+                
+            try:
+                req_cred = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers={"Authorization": f"Bearer {k}"})
+                with urllib.request.urlopen(req_cred, timeout=8) as resp:
+                    cdata = json.loads(resp.read().decode("utf-8")).get("data", {})
+                    creds = float(cdata.get("total_credits", 0))
+                    print(f"      - Saldo Pago (Creditos):  ${creds:.2f} USD (R$ {creds*5.8:.2f})")
+                    if creds <= 0:
+                        print("        * Dica: R$ 50 (~$8.50 USD) rendem aprox. 3.500 a 4.000 paginas sem filas!")
+            except Exception:
+                pass
+    else:
+        print("    [!] Nenhuma chave OpenRouter cadastrada.")
+
+    # 3. OLLAMA LOCAL / REMOTO
+    ollama_host = cfg.get("ollama_host", "http://localhost:11434")
+    print(f"\n[3] OLLAMA (Servidor Local ou Google Colab)")
+    print(f"    Host: {ollama_host}")
+    try:
+        req_ol = urllib.request.Request(f"{ollama_host.rstrip('/')}/api/tags")
+        with urllib.request.urlopen(req_ol, timeout=3) as resp:
+            if resp.status == 200:
+                odata = json.loads(resp.read().decode("utf-8"))
+                models = [m.get("name") for m in odata.get("models", [])]
+                print(f"    - Status: ONLINE (100% Operacional)")
+                print(f"    - Modelos instalados: {', '.join(models) if models else 'Nenhum'}")
+    except Exception:
+        print(f"    - Status: OFFLINE (Nenhum servidor Ollama rodando nesta porta)")
+
+    print("\n" + "=" * 68)
+
 if __name__ == "__main__":
     force_ocr_flag = False
     retranslate_flag = False
@@ -3007,6 +3124,10 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         args = sys.argv[1:]
+        if "--status" in args or "--credits" in args or "--saldo" in args:
+            show_credits_dashboard()
+            sys.exit(0)
+            
         if "--korean" in args or "--manhwa" in args:
             chosen_mode = "korean"
             if "--korean" in args: args.remove("--korean")
@@ -3077,6 +3198,10 @@ if __name__ == "__main__":
     if cli_key: cli_opts["key"] = cli_key
 
     cfg = load_config(cli_opts)
+
+    if target.lower() in ("status", "credito", "creditos", "saldo"):
+        show_credits_dashboard(cfg)
+        sys.exit(0)
 
     if target:
         process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, retranslate=retranslate_flag, is_adult=is_adult_flag, config=cfg)

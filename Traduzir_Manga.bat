@@ -3,6 +3,8 @@ chcp 65001 > nul
 title Tradutor de Mangas e Manhwas [PT-BR] - Qwen 2.5 / Dolphin
 color 0A
 
+:INICIO
+cls
 echo =====================================================================
 echo           TRADUTOR E DIAGRAMADOR DE MANGAS E MANHWAS [PT-BR]
 echo               Motores de IA: Qwen 2.5 (CJK) / Dolphin 2.9
@@ -14,10 +16,14 @@ set "TARGET_DIR=%~1"
 
 if "%TARGET_DIR%"=="" (
     echo Arraste a pasta do manga ou manhwa para dentro desta janela:
+    echo (Ou digite STATUS para consultar saldo e limites das IAs)
     set /p "TARGET_DIR=>> "
 )
 set TARGET_DIR=%TARGET_DIR:"=%
 if "%TARGET_DIR%"=="" goto FIM
+if /i "%TARGET_DIR%"=="STATUS" goto MOSTRAR_STATUS
+if /i "%TARGET_DIR%"=="CREDITOS" goto MOSTRAR_STATUS
+if /i "%TARGET_DIR%"=="SALDO" goto MOSTRAR_STATUS
 
 echo.
 echo =====================================================================
@@ -32,13 +38,15 @@ echo [6] LIMPAR CACHE E REFAZER TUDO (Automatico)
 echo [7] LIMPAR CACHE E REFAZER EM COREANO (Hangul)
 echo [8] LIMPAR CACHE E REFAZER EM JAPONES (Mokuro)
 echo [9] ENSINAR A IA (Abrir aprendizado.txt para editar regras e termos)
+echo [10] VER CREDITOS E LIMITES DE IA (Groq / OpenRouter)
 echo =====================================================================
-set /p OCR_MODE=">> Digite de 1 a 9 (Padrao: 1): "
+set /p OCR_MODE=">> Digite de 1 a 10 (Padrao: 1): "
 
 if "%OCR_MODE%"=="9" (
     start notepad.exe "%~dp0aprendizado.txt"
     goto FIM
 )
+if "%OCR_MODE%"=="10" goto MOSTRAR_STATUS
 
 set OCR_FLAG=
 set FORCE_FLAG=
@@ -115,6 +123,19 @@ set "SCRIPT_PATH=%~dp0auto_translate.py"
 if not exist "%SCRIPT_PATH%" set "SCRIPT_PATH=C:\Users\ja329\OneDrive\Documentos\SISTEMA DE TRADUÇÃO\auto_translate.py"
 if not exist "%SCRIPT_PATH%" set "SCRIPT_PATH=C:\Users\ja329\tools\manga-translator\auto_translate.py"
 "C:\Users\ja329\AppData\Local\Python\bin\python.exe" "%SCRIPT_PATH%" "%TARGET_DIR%" %OCR_FLAG% %FORCE_FLAG% %TYPE_FLAG% %AI_FLAG%
+goto FIM
+
+:MOSTRAR_STATUS
+cls
+set "SCRIPT_PATH=%~dp0auto_translate.py"
+if not exist "%SCRIPT_PATH%" set "SCRIPT_PATH=C:\Users\ja329\OneDrive\Documentos\SISTEMA DE TRADUÇÃO\auto_translate.py"
+if not exist "%SCRIPT_PATH%" set "SCRIPT_PATH=C:\Users\ja329\tools\manga-translator\auto_translate.py"
+"C:\Users\ja329\AppData\Local\Python\bin\python.exe" "%SCRIPT_PATH%" --status
+echo.
+echo Pressione qualquer tecla para voltar ao menu inicial...
+pause > nul
+set "TARGET_DIR="
+goto INICIO
 
 :FIM
 pause > nul

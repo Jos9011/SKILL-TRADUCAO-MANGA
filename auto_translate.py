@@ -1666,11 +1666,23 @@ def clean_ocr_scan_noise(text):
         t,
         flags=re.IGNORECASE
     )
+    t = re.sub(r"\bhave\s*n[tf]\b", "haven't", t, flags=re.IGNORECASE)
     t = re.sub(r"\bI\s*['\+]+\s*s\b", "It's", t)
     t = re.sub(r"\bI\s*['\+]+\s*m\b", "I'm", t)
     t = re.sub(r"['\+]+s\b", "'s", t)
     t = re.sub(r"\bhit\s*ing\b", "hitting", t, flags=re.IGNORECASE)
     t = re.sub(r"\bWwa\s*it\b", "Wait", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bbea\s*lit\s*le\b", "be a little", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bdesperate\s*l(?:\.|\s)*\b", "desperately", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bop\s*want\b", "really want", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bWhere\s*no[^\w\s]*\s*(?:op\s*)?want\b", "Where do you want", t, flags=re.IGNORECASE)
+
+    # Corrige quebras de letras esticadas / balões de grito e clímax
+    t = re.sub(r"\bI\s*CAN(?:\s*['\+]?\s*T)?\s*H\s*OLD\s*IT\s*ANYMORE!*\b", "I CAN'T HOLD IT ANYMORE!", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bCAN\s*TH\s*OLD\b", "CAN'T HOLD", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bI['\s\+]*[mM]\s+[cC][uU][\s\-_]*[mM]+[\s\-_]*[mM]*[iI][nN][gG]!*", "I'm CUMMING!", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b[cC][uU][\s\-_]*[mM]+[\s\-_]*[mM]*[iI][nN][gG]!*", "CUMMING!", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b[cC][uU]\s*[mM]\s*[mM][iI][nN][eE]!*", "CUMMING!", t, flags=re.IGNORECASE)
     return t
 
 def clean_ai_translation(text, original_text="", is_adult=True):
@@ -1846,6 +1858,45 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             cleaned = _preserve_case(r'\bentrou\s+na\s+boca\b', 'gozou dentro', cleaned)
             cleaned = _preserve_case(r'\bvir-me\b', 'gozar', cleaned)
             cleaned = _preserve_case(r'\bvir-se\b', 'gozar', cleaned)
+
+        # Limpeza de alucinações de OCR em momentos de clímax e gritos
+        cleaned = _preserve_case(r'\b(?:estou|t[oô])\s+com\s+bola\b', 'estou gozando', cleaned)
+        cleaned = _preserve_case(r'\b(?:eu\s+sou|estou)\s+cumin\s*g\b', 'estou gozando', cleaned)
+        cleaned = _preserve_case(r'\b(?:eu\s+sou|estou\s+com|estou|eu\s+sou\s+cu)\s+(?:m\s+ming|cu\s*m+ing|mm\s*ing)\b', 'estou gozando', cleaned)
+        cleaned = _preserve_case(r'\bcom\s+m\s+mine\b', 'estou gozando', cleaned)
+        cleaned = _preserve_case(r'\b(?:eu\s+)?posso\s+velhar(?:\s+mais)?!*\b', 'não aguento mais segurar!', cleaned)
+        cleaned = _preserve_case(r'\bposso\s+velhar\b', 'posso aguentar', cleaned)
+
+        # Gemidos curtos confundidos com 'irmão mais velho' ou falsos amigos
+        if re.search(r'\birm[ãa]o\s+mais\s+velho\b', cleaned, flags=re.IGNORECASE) and not re.search(r'\b(?:brother|onii|ani)\b', orig_lower):
+            cleaned = re.sub(r'\birm[ãa]o\s+mais\s+velho\b', lambda m: 'Anh' if m.group(0)[0].isupper() else 'anh', cleaned, flags=re.IGNORECASE)
+
+        # O filho falando com a mãe sobre o pai (Dad -> O papai / Meu pai, NUNCA 'Seu pai')
+        if re.search(r'\bdad\b', orig_lower) and not re.search(r'\byour\s+dad\b', orig_lower):
+            cleaned = _preserve_case(r'\bseu\s+pai\s+nem\s+parece\s+existir\b', 'o papai nem parece existir', cleaned)
+            cleaned = _preserve_case(r'\bseu\s+pai\s+nunca\s+chega\b', 'o papai nunca chega', cleaned)
+            cleaned = _preserve_case(r'\bseu\s+pai\b', 'o papai', cleaned)
+
+        # 'wet' em cena íntima com mulher é 'molhada'
+        if 'wet' in orig_lower:
+            cleaned = re.sub(r'\b(est[áa]\s+(?:ficando\s+)?(?:um\s+pouco\s+|muito\s+)?)molhado\b', r'\1molhada', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\bficando\s+(?:muito\s+)?molhado\b', 'ficando muito molhada', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\bt[ãa]o\s+molhado\b', 'tão molhada', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\bmuito\s+molhado\b', 'muito molhada', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\bum\s+pouco\s+molhado\b', 'um pouco molhada', cleaned, flags=re.IGNORECASE)
+
+        # Protagonista masculino falando de si quando criança ('when I was little' -> 'quando eu era pequeno')
+        cleaned = _preserve_case(r'\bquando\s+eu\s+era\s+pequena\b', 'quando eu era pequeno', cleaned)
+
+        # Mulher / mãe falando de ser desejada ou ser parceira
+        cleaned = re.sub(r'\bser\s+desejado\b', lambda m: 'Ser desejada' if m.group(0)[0].isupper() else 'ser desejada', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\b(continuarei\s+sendo|serei|sou)\s+seu\s+parceiro\b', r'\1 sua parceira', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bser\s+seu\s+parceiro\b', 'ser sua parceira', cleaned, flags=re.IGNORECASE)
+
+        # Mulher mostrando-se nua
+        cleaned = _preserve_case(r'\bse\s+mostraria\s+nu\b', 'se mostraria nua', cleaned)
+        cleaned = _preserve_case(r'\bmostrar(?:-se)?\s+nu\b', 'mostrar-se nua', cleaned)
+        cleaned = _preserve_case(r'\bficar\s+nu\b', 'ficar nua', cleaned)
 
         # Sow (insulto/fetiche em mangá adulto) -> Porca / Vadia (NUNCA semear)
         if re.search(r'\bsow\b', orig_lower):
@@ -2362,9 +2413,11 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None):
             "DIRETRIZES DE LOCALIZAÇÃO ADULTA (+18 - ZERO CENSURA):\n"
             "- ANATOMIA E GÊNERO: 'pussy/cunt' é SEMPRE feminino ('buceta', 'xoxota'); 'cock/dick/penis' é SEMPRE masculino ('pau', 'pinto', 'rola', 'cacete'). NUNCA confunda o gênero em frases com ambos (ex: 'touch Mom\\'s pussy while you suck my dick' -> 'toca na buceta da mamãe enquanto chupa meu pau').\n"
             "- AÇÕES: 'came / cum / cumming' em contexto sexual é SEMPRE 'gozou', 'gozar', 'gozando' (NUNCA 'veio' ou 'chegou'). 'came inside' -> 'gozou dentro'. 'creampie' -> 'gozada dentro / leitada'.\n"
+            "- GRITOS E CLÍMAX: 'I'm cumming / CUMIN G / Cu MING' -> 'Estou gozando!'. 'I can't hold it anymore / CAN TH OLD' -> 'Não aguento mais segurar! / Não consigo mais segurar!'.\n"
+            "- DINÂMICAS ÍNTIMAS E GÊNERO: Ao falar com mulher, 'you're so wet / getting wet' é SEMPRE feminino ('você está tão molhada / ficando molhada'). Mulher falando: 'I'll be your partner' -> 'serei sua parceira'. Filho falando com a mãe sobre o pai ('Dad') diz 'O papai' ou 'Meu pai' (NUNCA 'Seu pai').\n"
             "- VESTIMENTA: 'panties / underwear' para mulher é 'calcinha' ou 'lingerie' (NUNCA 'cuecas').\n"
             "- FETICHE: 'sow' em mangás adultos é 'porca' ou 'vadia' (NUNCA o verbo 'semear').\n"
-            "- GEMIDOS E RUÍDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você'. Mantenha o som expressivo (ex: 'Ugh... uh... mmph...').\n"
+            "- GEMIDOS E RUÍDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você' nem confunda 'Anh...!' com 'irmão mais velho'. Mantenha o som expressivo (ex: 'Ugh... uh... mmph...', 'Anh...!').\n"
         )
 
     return f"""{persona_intro}Sua missão é realizar a tradução e adaptação contextual de excelência literária para Português do Brasil (PT-BR).

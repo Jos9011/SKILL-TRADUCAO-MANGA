@@ -3,4 +3,5 @@ __pycache__/
 *$py.class
 *.log
 .temp/
+.thumb_cache/
 config.json

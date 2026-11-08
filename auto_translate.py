@@ -3466,10 +3466,17 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     
     # 0. Define o diretório de destino (respeitando configuração do usuário ou Google Drive se estiver no Colab)
     cfg_target = config.get("translated_mangas_dir") if config else None
+    norm_manga_path = os.path.abspath(manga_dir).replace('\\', '/')
     if cfg_target and os.path.isdir(cfg_target):
         base_drive_dir = cfg_target
     elif os.path.exists("/content/drive/MyDrive"):
         base_drive_dir = "/content/drive/MyDrive/MANGAS [PT-BR]"
+        os.makedirs(base_drive_dir, exist_ok=True)
+    elif "/MANGAS/" in f"/{norm_manga_path}/" or norm_manga_path.endswith("/MANGAS"):
+        parts = norm_manga_path.split('/')
+        m_idx = max(i for i, part in enumerate(parts) if part.upper() == "MANGAS")
+        parent_dir = '/'.join(parts[:m_idx])
+        base_drive_dir = os.path.join(parent_dir, "MANGAS [PT-BR]")
         os.makedirs(base_drive_dir, exist_ok=True)
     elif os.path.exists(BASE_OUTPUT_DIR):
         base_drive_dir = BASE_OUTPUT_DIR

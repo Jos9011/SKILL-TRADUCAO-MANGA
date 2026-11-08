@@ -1307,7 +1307,12 @@
           <!-- Preenchido via API -->
         </div>
 
-        <h3 style="font-size: 1.25rem; font-weight: 800; margin: 40px 0 16px 0;">Obras Originais (Prontas para Traduzir)</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin: 40px 0 16px 0; flex-wrap: wrap; gap: 10px;">
+          <h3 style="font-size: 1.25rem; font-weight: 800; margin: 0;">Obras Originais (Prontas para Traduzir)</h3>
+          <button class="btn-secondary" id="btn-extract-all-archives" onclick="extractAllArchives()" style="font-size: 0.82rem; padding: 6px 14px; border-color: rgba(66, 133, 244, 0.4); color: #4285F4; display: inline-flex; align-items: center; gap: 6px;" title="Descompacta todos os arquivos .zip e .cbz encontrados na sua pasta MANGAS">
+            📦 Extrair Todos os ZIPs (.zip / .cbz)
+          </button>
+        </div>
         <div class="manga-grid" id="raw-library-grid">
           <!-- Preenchido via API -->
         </div>
@@ -2209,6 +2214,37 @@
       document.body.removeChild(link);
     }
 
+    // EXTRACT ALL ARCHIVES
+    async function extractAllArchives() {
+      const btn = document.getElementById('btn-extract-all-archives');
+      const originalText = btn ? btn.innerHTML : '';
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Descompactando obras...';
+      }
+      try {
+        const res = await fetch('/api/drive/extract_all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert(data.message || `${data.count} obra(s) descompactada(s) com sucesso!`);
+          await loadLibrary();
+        } else {
+          alert('Erro ao descompactar: ' + (data.error || 'Erro desconhecido'));
+        }
+      } catch (e) {
+        alert('Erro de conexão ao descompactar: ' + e);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+        }
+      }
+    }
+
     // LIBRARY
     async function loadLibrary() {
       try {
@@ -2271,9 +2307,12 @@
               <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
             </div>
           </div>
-          ${m.is_drive ? '<span class="badge-drive">☁️ Google Drive</span>' : ''}
+          <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;">
+            ${m.is_drive ? '<span class="badge-drive">☁️ Google Drive</span>' : ''}
+            ${m.is_archive ? `<span class="badge-drive" style="background: rgba(255, 170, 0, 0.2); color: #ffaa00; border-color: rgba(255, 170, 0, 0.4);">📦 ${escapeHtml(m.archive_type || 'ZIP')}</span>` : ''}
+          </div>
           <div class="card-title" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
-          <div class="card-subtitle">${m.pages} páginas • Pronto para traduzir</div>
+          <div class="card-subtitle">${m.pages} páginas • ${m.is_archive ? 'Pronto para descompactar e traduzir' : 'Pronto para traduzir'}</div>
           <div class="card-actions-row">
             <div class="card-actions-subrow">
               <button class="card-action-btn primary" title="Configurar e traduzir este mangá" onclick="event.stopPropagation(); inspectFolder('${escapeQuotes(m.path)}'); switchTab('translate');">

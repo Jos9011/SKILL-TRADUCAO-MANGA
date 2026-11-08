@@ -96,6 +96,75 @@ os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
 # Mapeamento para leitura e download web seguro
 MANGA_PATH_CACHE = {}
 
+def find_drive_roots():
+    """Retorna lista de caminhos raiz do Google Drive encontrados (Linux/Colab e Windows)."""
+    candidates = [
+        "/content/drive/MyDrive",
+        "G:\\Meu Drive",
+        "G:\\My Drive",
+        os.path.expanduser("~/Google Drive"),
+        os.path.expanduser("~/Meu Drive")
+    ]
+    if os.name == 'nt':
+        import string
+        for letter in string.ascii_uppercase:
+            candidates.append(f"{letter}:\\Meu Drive")
+            candidates.append(f"{letter}:\\My Drive")
+            
+    roots = []
+    for c in candidates:
+        if os.path.exists(c) and c not in roots:
+            roots.append(c)
+    return roots
+
+def is_drive_path(p):
+    """Verifica se o caminho informado está dentro de um Google Drive montado."""
+    if not p:
+        return False
+    clean = os.path.abspath(p).replace('\\', '/').lower()
+    if '/content/drive' in clean:
+        return True
+    for r in find_drive_roots():
+        if os.path.abspath(r).replace('\\', '/').lower() in clean:
+            return True
+    return False
+
+def extract_manga_archive(archive_path, target_dir=None):
+    """
+    Descompacta um arquivo .zip ou .cbz em target_dir.
+    Se todas as imagens estiverem dentro de uma subpasta única descompactada,
+    move todas as imagens para a raiz do target_dir.
+    Retorna o caminho final da pasta com as imagens.
+    """
+    if not archive_path or not os.path.exists(archive_path):
+        return None
+        
+    archive_path = os.path.abspath(archive_path)
+    base_name = os.path.splitext(os.path.basename(archive_path))[0]
+    
+    if not target_dir:
+        parent_dir = os.path.dirname(archive_path)
+        target_dir = os.path.join(parent_dir, base_name)
+        
+    os.makedirs(target_dir, exist_ok=True)
+    
+    with zipfile.ZipFile(archive_path, 'r') as z:
+        z.extractall(target_dir)
+        
+    # Organização de subpastas aninhadas (se o ZIP tiver apenas uma subpasta interna com as imagens)
+    subdirs = [os.path.join(target_dir, d) for d in os.listdir(target_dir) if os.path.isdir(os.path.join(target_dir, d))]
+    root_imgs = [f for f in os.listdir(target_dir) if f.lower().endswith(('.jpg','.jpeg','.png','.webp','.bmp','.gif'))]
+    if len(subdirs) == 1 and not root_imgs:
+        only_sub = subdirs[0]
+        for f in os.listdir(only_sub):
+            shutil.move(os.path.join(only_sub, f), os.path.join(target_dir, f))
+        try:
+            os.rmdir(only_sub)
+        except Exception:
+            pass
+            
+    return target_dir
+
 def get_manga_hash(folder_path):
     if not folder_path: return ""
     p = os.path.abspath(folder_path)
@@ -333,42 +402,104 @@ def api_library():
             return entries
         for item in sorted(os.listdir(folder_path)):
             full_p = os.path.abspath(os.path.join(folder_path, item))
-            if full_p in seen_paths or not os.path.isdir(full_p) or item.startswith(".") or item == "_ocr":
+            if full_p in seen_paths or item.startswith(".") or item == "_ocr":
                 continue
-            imgs = [f for f in os.listdir(full_p) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-            if not imgs:
-                continue
-            seen_paths.add(full_p)
-            has_reader = os.path.exists(os.path.join(full_p, "leitor.html"))
-            cbz_path = full_p.rstrip("/\\") + ".cbz"
-            has_cbz = os.path.exists(cbz_path)
-            first_img = os.path.join(full_p, sorted(imgs)[0])
-            mtime = os.path.getmtime(full_p)
-            m_id = get_manga_hash(full_p)
-            entry = {
-                "id": m_id,
-                "name": item,
-                "clean_name": item.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
-                "path": full_p,
-                "pages": len(imgs),
-                "has_reader": has_reader,
-                "has_cbz": has_cbz,
-                "cbz_path": cbz_path if has_cbz else None,
-                "reader_path": os.path.join(full_p, "leitor.html") if has_reader else None,
-                "reader_url": f"/read/{m_id}/",
-                "mtime": mtime,
-                "first_img": first_img,
-                "is_drive": "/content/drive" in full_p
-            }
-            entries.append(entry)
+
+            # 1. Pastas com imagens
+            if os.path.isdir(full_p):
+                imgs = [f for f in os.listdir(full_p) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+                # Se não houver imagens diretas, checa se há subpastas imediatas de capítulos
+                if not imgs:
+                    subdirs = [os.path.join(full_p, d) for d in os.listdir(full_p) if os.path.isdir(os.path.join(full_p, d)) and not d.startswith(".")]
+                    for sub in subdirs:
+                        sub_imgs = [f for f in os.listdir(sub) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+                        if sub_imgs:
+                            imgs = sub_imgs
+                            break
+                if not imgs:
+                    continue
+                seen_paths.add(full_p)
+                has_reader = os.path.exists(os.path.join(full_p, "leitor.html"))
+                cbz_path = full_p.rstrip("/\\") + ".cbz"
+                has_cbz = os.path.exists(cbz_path)
+                first_img = os.path.join(full_p, sorted(imgs)[0])
+                mtime = os.path.getmtime(full_p)
+                m_id = get_manga_hash(full_p)
+                entry = {
+                    "id": m_id,
+                    "name": item,
+                    "clean_name": item.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
+                    "path": full_p,
+                    "pages": len(imgs),
+                    "has_reader": has_reader,
+                    "has_cbz": has_cbz,
+                    "cbz_path": cbz_path if has_cbz else None,
+                    "reader_path": os.path.join(full_p, "leitor.html") if has_reader else None,
+                    "reader_url": f"/read/{m_id}/",
+                    "mtime": mtime,
+                    "first_img": first_img,
+                    "is_drive": is_drive_path(full_p),
+                    "is_archive": False
+                }
+                entries.append(entry)
+
+            # 2. Arquivos compactados (.zip ou .cbz)
+            elif os.path.isfile(full_p) and item.lower().endswith(('.zip', '.cbz')):
+                # Se já houver uma pasta com o mesmo nome descompactada, evita duplicar
+                unpacked_candidate = os.path.splitext(full_p)[0]
+                if unpacked_candidate in seen_paths or (os.path.exists(unpacked_candidate) and os.path.isdir(unpacked_candidate)):
+                    continue
+                try:
+                    with zipfile.ZipFile(full_p, 'r') as z:
+                        zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+                        if not zip_imgs:
+                            continue
+                        zip_imgs.sort()
+                        seen_paths.add(full_p)
+                        mtime = os.path.getmtime(full_p)
+                        m_id = get_manga_hash(full_p)
+                        clean_n = os.path.splitext(item)[0]
+                        arc_type = "CBZ" if item.lower().endswith(".cbz") else "ZIP"
+                        entry = {
+                            "id": m_id,
+                            "name": clean_n,
+                            "clean_name": clean_n.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
+                            "path": full_p,
+                            "pages": len(zip_imgs),
+                            "has_reader": False,
+                            "has_cbz": False,
+                            "cbz_path": None,
+                            "reader_path": None,
+                            "reader_url": None,
+                            "mtime": mtime,
+                            "first_img": f"{full_p}::{zip_imgs[0]}",
+                            "is_drive": is_drive_path(full_p),
+                            "is_archive": True,
+                            "archive_type": arc_type
+                        }
+                        entries.append(entry)
+                except Exception:
+                    pass
+
         return entries
 
     # Pastas de escaneamento de mangás traduzidos
     trans_scan_folders = [trans_dir]
-    if os.path.exists("/content/drive/MyDrive/MANGAS [PT-BR]"):
-        trans_scan_folders.insert(0, "/content/drive/MyDrive/MANGAS [PT-BR]")
+    raw_scan_folders = [raw_dir]
+    
+    for r in find_drive_roots():
+        t_drive = os.path.join(r, "MANGAS [PT-BR]")
+        if os.path.exists(t_drive) and t_drive not in trans_scan_folders:
+            trans_scan_folders.insert(0, t_drive)
+        r_drive = os.path.join(r, "MANGAS")
+        if os.path.exists(r_drive) and r_drive not in raw_scan_folders:
+            raw_scan_folders.insert(0, r_drive)
+            
     if os.path.exists(UPLOAD_DIR):
-        trans_scan_folders.append(UPLOAD_DIR)
+        if UPLOAD_DIR not in trans_scan_folders:
+            trans_scan_folders.append(UPLOAD_DIR)
+        if UPLOAD_DIR not in raw_scan_folders:
+            raw_scan_folders.append(UPLOAD_DIR)
 
     for sf in trans_scan_folders:
         for e in _scan(sf):
@@ -376,13 +507,6 @@ def api_library():
                 translated.append(e)
             else:
                 raw.append(e)
-
-    # Pastas de escaneamento de obras originais (RAW)
-    raw_scan_folders = [raw_dir]
-    if os.path.exists("/content/drive/MyDrive/MANGAS"):
-        raw_scan_folders.insert(0, "/content/drive/MyDrive/MANGAS")
-    if os.path.exists(UPLOAD_DIR):
-        raw_scan_folders.append(UPLOAD_DIR)
 
     for rf in raw_scan_folders:
         for e in _scan(rf):
@@ -477,20 +601,46 @@ def serve_manga_reader(manga_id, filename="leitor.html"):
 
 @app.route("/api/thumb")
 def api_thumb():
-    """Gera miniatura otimizada da capa do mangá."""
+    """Gera miniatura otimizada da capa do mangá (pasta ou arquivo .zip/.cbz)."""
     img_path = request.args.get("path", "")
-    if not img_path or not os.path.exists(img_path):
+    if not img_path:
         return "", 404
         
     try:
-        # Cria hash ou nome para cache
         thumb_name = str(abs(hash(img_path))) + ".jpg"
         thumb_dest = os.path.join(THUMB_CACHE_DIR, thumb_name)
         if not os.path.exists(thumb_dest):
-            with Image.open(img_path) as im:
-                im = im.convert("RGB")
-                im.thumbnail((320, 460), Image.Resampling.LANCZOS)
-                im.save(thumb_dest, "JPEG", quality=85)
+            # Caso 1: Imagem dentro de arquivo ZIP / CBZ (formato: archive_path::inner_img)
+            if "::" in img_path:
+                arc_p, inner_f = img_path.split("::", 1)
+                if not os.path.exists(arc_p):
+                    return "", 404
+                with zipfile.ZipFile(arc_p, 'r') as z:
+                    with z.open(inner_f) as zf:
+                        with Image.open(io.BytesIO(zf.read())) as im:
+                            im = im.convert("RGB")
+                            im.thumbnail((320, 460), Image.Resampling.LANCZOS)
+                            im.save(thumb_dest, "JPEG", quality=85)
+            # Caso 2: Caminho direto de arquivo .zip ou .cbz
+            elif os.path.isfile(img_path) and img_path.lower().endswith(('.zip', '.cbz')):
+                with zipfile.ZipFile(img_path, 'r') as z:
+                    zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+                    if not zip_imgs:
+                        return "", 404
+                    zip_imgs.sort()
+                    with z.open(zip_imgs[0]) as zf:
+                        with Image.open(io.BytesIO(zf.read())) as im:
+                            im = im.convert("RGB")
+                            im.thumbnail((320, 460), Image.Resampling.LANCZOS)
+                            im.save(thumb_dest, "JPEG", quality=85)
+            # Caso 3: Imagem solta no disco
+            elif os.path.exists(img_path):
+                with Image.open(img_path) as im:
+                    im = im.convert("RGB")
+                    im.thumbnail((320, 460), Image.Resampling.LANCZOS)
+                    im.save(thumb_dest, "JPEG", quality=85)
+            else:
+                return "", 404
         return send_file(thumb_dest, mimetype="image/jpeg")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -580,29 +730,52 @@ def api_upload():
 
 @app.route("/api/drive_folders")
 def api_drive_folders():
-    """Lista pastas de mangás disponíveis no Google Drive montado (/content/drive/MyDrive)."""
-    drive_root = "/content/drive/MyDrive"
-    if not os.path.exists(drive_root):
+    """Lista pastas e arquivos zip/cbz de mangás disponíveis no Google Drive."""
+    roots = find_drive_roots()
+    if not roots:
         return jsonify({"available": False, "folders": []})
         
     folders = []
-    search_dirs = [drive_root]
-    manga_sub = os.path.join(drive_root, "MANGAS")
-    if os.path.exists(manga_sub):
-        search_dirs.insert(0, manga_sub)
+    seen = set()
+    search_dirs = []
+    for r in roots:
+        manga_sub = os.path.join(r, "MANGAS")
+        if os.path.exists(manga_sub):
+            search_dirs.append(manga_sub)
+        search_dirs.append(r)
         
     for base in search_dirs:
         try:
             for item in sorted(os.listdir(base)):
-                p = os.path.join(base, item)
-                if os.path.isdir(p) and not item.startswith("."):
+                p = os.path.abspath(os.path.join(base, item))
+                if p in seen or item.startswith(".") or item == "_ocr" or item == "MANGAS [PT-BR]":
+                    continue
+                # Se for pasta
+                if os.path.isdir(p):
                     imgs = [f for f in os.listdir(p) if f.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
                     if imgs:
+                        seen.add(p)
                         folders.append({
                             "name": item,
                             "path": p,
-                            "pages": len(imgs)
+                            "pages": len(imgs),
+                            "is_archive": False
                         })
+                # Se for arquivo .zip ou .cbz
+                elif os.path.isfile(p) and item.lower().endswith(('.zip', '.cbz')):
+                    try:
+                        with zipfile.ZipFile(p, 'r') as z:
+                            zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+                            if zip_imgs:
+                                seen.add(p)
+                                folders.append({
+                                    "name": f"📦 {item}",
+                                    "path": p,
+                                    "pages": len(zip_imgs),
+                                    "is_archive": True
+                                })
+                    except Exception:
+                        pass
         except Exception:
             pass
             
@@ -638,11 +811,29 @@ def api_pick_path():
 
 @app.route("/api/inspect_folder", methods=["POST"])
 def api_inspect_folder():
-    """Inspeciona pasta informada para contar páginas e detectar idioma."""
+    """Inspeciona pasta informada para contar páginas e detectar idioma. Se for .zip/.cbz, descompacta antes."""
     data = request.json or {}
     p = data.get("path", "").strip('\"\'')
-    if not p or not os.path.exists(p) or not os.path.isdir(p):
-        return jsonify({"valid": False, "error": "Pasta não encontrada"})
+    if not p or not os.path.exists(p):
+        return jsonify({"valid": False, "error": "Pasta ou arquivo não encontrado"})
+        
+    # Se for arquivo compactado .zip ou .cbz, descompacta para pasta correspondente
+    if os.path.isfile(p) and p.lower().endswith(('.zip', '.cbz')):
+        target_dir = os.path.splitext(p)[0]
+        need_extract = True
+        if os.path.exists(target_dir) and os.path.isdir(target_dir):
+            existing_imgs = [f for f in os.listdir(target_dir) if f.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+            if existing_imgs:
+                need_extract = False
+                p = target_dir
+        if need_extract:
+            extracted_path = extract_manga_archive(p, target_dir)
+            if not extracted_path:
+                return jsonify({"valid": False, "error": "Falha ao descompactar o arquivo ZIP/CBZ"})
+            p = extracted_path
+
+    if not os.path.isdir(p):
+        return jsonify({"valid": False, "error": "Caminho inválido"})
         
     imgs = [f for f in os.listdir(p) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
     if not imgs:
@@ -664,6 +855,56 @@ def api_inspect_folder():
         "first_img": first_img,
         "detected_engine": auto_lang,
         "detected_label": lang_labels.get(auto_lang, "Automático")
+    })
+
+@app.route("/api/drive/extract_all", methods=["POST"])
+def api_drive_extract_all():
+    """Varre a pasta de MANGAS e descompacta todos os arquivos .zip e .cbz encontrados em subpastas individuais."""
+    data = request.json or {}
+    folder_path = data.get("path")
+    
+    if not folder_path:
+        for root in find_drive_roots():
+            candidate = os.path.join(root, "MANGAS")
+            if os.path.exists(candidate):
+                folder_path = candidate
+                break
+                
+    if not folder_path:
+        cfg = auto_translate.load_config()
+        folder_path = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
+        
+    if not folder_path or not os.path.exists(folder_path):
+        return jsonify({"success": False, "error": "Pasta de mangás não encontrada"}), 404
+        
+    archives = [f for f in sorted(os.listdir(folder_path)) if f.lower().endswith(('.zip', '.cbz'))]
+    if not archives:
+        return jsonify({"success": True, "count": 0, "message": "Nenhum arquivo .zip ou .cbz pendente encontrado na pasta."})
+        
+    extracted_count = 0
+    errors = []
+    
+    for arc in archives:
+        arc_path = os.path.join(folder_path, arc)
+        target_dir = os.path.splitext(arc_path)[0]
+        # Se já existe e tem imagens, não re-extrai para economizar tempo
+        if os.path.exists(target_dir) and os.path.isdir(target_dir):
+            imgs = [f for f in os.listdir(target_dir) if f.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+            if imgs:
+                continue
+        try:
+            res = extract_manga_archive(arc_path, target_dir)
+            if res:
+                extracted_count += 1
+        except Exception as e:
+            errors.append(f"{arc}: {str(e)}")
+            
+    return jsonify({
+        "success": True,
+        "count": extracted_count,
+        "total_archives": len(archives),
+        "errors": errors,
+        "message": f"{extracted_count} obra(s) descompactada(s) com sucesso na pasta MANGAS!" if extracted_count > 0 else "Todas as obras já haviam sido descompactadas!"
     })
 
 @app.route("/api/start", methods=["POST"])
@@ -902,10 +1143,12 @@ def api_config():
                 json.dump(new_cfg, f, indent=2, ensure_ascii=False)
             extra_paths = [
                 r"C:\Users\ja329\tools\manga-translator\config.json",
-                os.path.join(r"C:\Users\ja329\.gemini\antigravity\scratch\SKILL-TRADUCAO-MANGA", "config.json"),
-                "/content/drive/MyDrive/.manga_studio/config.json",
-                "/content/drive/MyDrive/MANGAS [PT-BR]/.config.json"
+                os.path.join(r"C:\Users\ja329\.gemini\antigravity\scratch\SKILL-TRADUCAO-MANGA", "config.json")
             ]
+            for root in find_drive_roots():
+                extra_paths.append(os.path.join(root, ".manga_studio", "config.json"))
+                extra_paths.append(os.path.join(root, "MANGAS [PT-BR]", ".config.json"))
+
             for extra_p in extra_paths:
                 try:
                     p_dir = os.path.dirname(extra_p)
@@ -919,16 +1162,19 @@ def api_config():
     else:
         cfg = auto_translate.load_config()
         # Se as chaves locais estiverem vazias, mas houver perfil salvo no Google Drive:
-        drive_cfg = "/content/drive/MyDrive/.manga_studio/config.json"
-        if (not cfg.get("groq_api_keys") and not cfg.get("groq_api_key")) and os.path.exists(drive_cfg):
-            try:
-                with open(drive_cfg, "r", encoding="utf-8") as df:
-                    d_data = json.load(df)
-                    cfg.update(d_data)
-            except Exception: pass
+        if not cfg.get("groq_api_keys") and not cfg.get("groq_api_key"):
+            for root in find_drive_roots():
+                drive_cfg = os.path.join(root, ".manga_studio", "config.json")
+                if os.path.exists(drive_cfg):
+                    try:
+                        with open(drive_cfg, "r", encoding="utf-8") as df:
+                            d_data = json.load(df)
+                            cfg.update(d_data)
+                            break
+                    except Exception: pass
         cfg["app_version"] = APP_VERSION
         cfg["app_version_name"] = APP_VERSION_NAME
-        cfg["drive_connected"] = os.path.exists("/content/drive/MyDrive")
+        cfg["drive_connected"] = bool(find_drive_roots())
         return jsonify(cfg)
 
 @app.route("/api/delete_manga", methods=["POST"])
@@ -955,6 +1201,10 @@ def api_delete_manga():
         os.path.abspath("/content/drive/MyDrive"),
         os.path.abspath("/content/manga-translator")
     ]
+    for r in find_drive_roots():
+        forbidden_roots.append(os.path.abspath(r))
+        forbidden_roots.append(os.path.abspath(os.path.join(r, "MANGAS")))
+        forbidden_roots.append(os.path.abspath(os.path.join(r, "MANGAS [PT-BR]")))
     for fb in forbidden_roots:
         if abs_p == fb:
             return jsonify({"success": False, "error": "Operação não permitida neste diretório de sistema."}), 403

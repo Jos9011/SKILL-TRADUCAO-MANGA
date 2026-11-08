@@ -653,7 +653,7 @@
 
     .manga-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
       gap: 20px;
     }
 
@@ -666,6 +666,8 @@
       position: relative;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
+      box-sizing: border-box;
     }
 
     .manga-card:hover {
@@ -761,15 +763,29 @@
 
     .card-actions-row {
       display: flex;
+      flex-direction: column;
       gap: 6px;
       margin-top: 10px;
       padding-top: 8px;
       border-top: 1px solid rgba(255, 255, 255, 0.08);
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .card-actions-subrow {
+      display: flex;
+      gap: 5px;
+      width: 100%;
+      align-items: center;
     }
 
     .card-action-btn {
       flex: 1;
-      padding: 5px 8px;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding: 6px 4px;
       font-size: 0.72rem;
       font-weight: 600;
       border-radius: 6px;
@@ -783,6 +799,7 @@
       gap: 4px;
       transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
       text-decoration: none;
+      box-sizing: border-box;
     }
 
     .card-action-btn:hover {
@@ -800,6 +817,36 @@
     .card-action-btn.primary:hover {
       background: var(--spotify-green);
       color: #000000;
+    }
+
+    .card-action-btn.audit {
+      color: #ffd700;
+      background: rgba(255, 215, 0, 0.1);
+      border-color: rgba(255, 215, 0, 0.35);
+    }
+
+    .card-action-btn.audit:hover {
+      background: #ffd700;
+      color: #000000;
+    }
+
+    .card-action-btn.danger {
+      color: #ff5555;
+      background: rgba(255, 85, 85, 0.1);
+      border-color: rgba(255, 85, 85, 0.3);
+    }
+
+    .card-action-btn.danger:hover {
+      background: #ff5555;
+      color: #ffffff;
+    }
+
+    .card-action-btn.btn-icon-only {
+      flex: 0 0 30px;
+      width: 30px;
+      height: 28px;
+      padding: 0;
+      font-size: 0.85rem;
     }
 
     .version-tag {
@@ -2192,21 +2239,25 @@
           <div class="card-title" title="${escapeHtml(m.clean_name)}">${escapeHtml(m.clean_name)}</div>
           <div class="card-subtitle">${m.pages} páginas • Traduzido</div>
           <div class="card-actions-row">
-            <button class="card-action-btn primary" title="Ler online no navegador" onclick="event.stopPropagation(); openReader('${escapeQuotes(m.path)}', '${escapeQuotes(m.reader_url)}');">
-              📖 Ler
-            </button>
-            <button class="card-action-btn" title="Avaliar leitura e disparar auto-auditoria da IA" onclick="event.stopPropagation(); openAuditModal('${escapeQuotes(m.path)}', '${escapeQuotes(m.clean_name)}');" style="color: #ffd700; border-color: rgba(255,215,0,0.4);">
-              ⭐ Auditar
-            </button>
-            <button class="card-action-btn" title="Baixar pasta completa como ZIP" onclick="event.stopPropagation(); downloadFolderZip('${escapeQuotes(m.path)}');">
-              📥 ZIP
-            </button>
-            <button class="card-action-btn" title="Baixar no formato Comic Book (CBZ)" onclick="event.stopPropagation(); downloadCbz('${escapeQuotes(m.cbz_path || m.path)}');">
-              📦 CBZ
-            </button>
-            <button class="card-action-btn" title="Excluir este mangá traduzido" onclick="event.stopPropagation(); confirmDeleteManga('${escapeQuotes(m.path)}', '${escapeQuotes(m.clean_name)}');" style="color: #ff5555; border-color: rgba(255,85,85,0.3);">
-              🗑️
-            </button>
+            <div class="card-actions-subrow">
+              <button class="card-action-btn primary" title="Ler online no navegador" onclick="event.stopPropagation(); openReader('${escapeQuotes(m.path)}', '${escapeQuotes(m.reader_url)}');">
+                📖 Ler
+              </button>
+              <button class="card-action-btn audit" title="Avaliar leitura e disparar auto-auditoria da IA" onclick="event.stopPropagation(); openAuditModal('${escapeQuotes(m.path)}', '${escapeQuotes(m.clean_name)}');">
+                ⭐ Auditar
+              </button>
+            </div>
+            <div class="card-actions-subrow">
+              <button class="card-action-btn" title="Baixar no formato Comic Book (CBZ)" onclick="event.stopPropagation(); downloadCbz('${escapeQuotes(m.cbz_path || m.path)}');">
+                📦 CBZ
+              </button>
+              <button class="card-action-btn" title="Baixar pasta completa como ZIP" onclick="event.stopPropagation(); downloadFolderZip('${escapeQuotes(m.path)}');">
+                📥 ZIP
+              </button>
+              <button class="card-action-btn danger btn-icon-only" title="Excluir este mangá traduzido" onclick="event.stopPropagation(); confirmDeleteManga('${escapeQuotes(m.path)}', '${escapeQuotes(m.clean_name)}');">
+                🗑️
+              </button>
+            </div>
           </div>
         </div>
       `).join('');
@@ -2224,12 +2275,14 @@
           <div class="card-title" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
           <div class="card-subtitle">${m.pages} páginas • Pronto para traduzir</div>
           <div class="card-actions-row">
-            <button class="card-action-btn primary" title="Configurar e traduzir este mangá" onclick="event.stopPropagation(); inspectFolder('${escapeQuotes(m.path)}'); switchTab('translate');">
-              ⚡ Traduzir
-            </button>
-            <button class="card-action-btn" title="Excluir esta obra enviada" onclick="event.stopPropagation(); confirmDeleteManga('${escapeQuotes(m.path)}', '${escapeQuotes(m.name)}');" style="color: #ff5555; border-color: rgba(255,85,85,0.3);">
-              🗑️ Excluir
-            </button>
+            <div class="card-actions-subrow">
+              <button class="card-action-btn primary" title="Configurar e traduzir este mangá" onclick="event.stopPropagation(); inspectFolder('${escapeQuotes(m.path)}'); switchTab('translate');">
+                ⚡ Traduzir
+              </button>
+              <button class="card-action-btn danger" title="Excluir esta obra enviada" onclick="event.stopPropagation(); confirmDeleteManga('${escapeQuotes(m.path)}', '${escapeQuotes(m.name)}');">
+                🗑️ Excluir
+              </button>
+            </div>
           </div>
         </div>
       `).join('');

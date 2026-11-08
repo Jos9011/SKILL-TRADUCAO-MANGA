@@ -760,19 +760,28 @@ def translate_sfx_phrase(text):
 PRESERVE_WORDS = {
     'ONII-SAN', 'ONE-SAN', 'SENSEI', 'SENPAI', 'KOHAI', 'KOUHAI',
     'OTAKU', 'COSPLAY', 'ISEKAI', 'DOUJIN', 'HENTAI', 'MANGA',
-    'PT-BR', 'R18', 'PDF', 'JPG', 'PNG', 'WEBP', 'NORUN', 'MISHA', 'CHISE', 'LOVEMEA'
+    'PT-BR', 'R18', 'PDF', 'JPG', 'PNG', 'WEBP', 'NORUN', 'MISHA', 'CHISE', 'LOVEMEA',
+    'MADOROMI', 'MIYOBI', 'FURIYA', 'ROCHE'
 }
 
+VALID_2LETTER_WORDS = {'in', 'on', 'at', 'to', 'is', 'it', 'he', 'me', 'we', 'my', 'by', 'up', 'so', 'do', 'no', 'go', 'if', 'as', 'of', 'or', 'am', 'an', 'us'}
+
 def repair_glued_text(text, src_lang="en-US"):
-    """Separa palavras coladas no OCR em inglês/latino usando wordninja e regex."""
+    """Separa palavras coladas no OCR em inglês/latino com proteção estrita para nomes, romaji e palavras reais."""
     if not text or src_lang in ("ja-JP", "zh-CN", "ko-KR"):
         return text
         
     if re.match(r'^(?:https?://|www\.|discord\.gg)', text, re.IGNORECASE):
         return text
 
-    # 1. Corrige quebras de linha com hífens (ex: 'MON- ARCH' -> 'MONARCH')
-    text = re.sub(r'([A-Za-z]+)-\s+([A-Za-z]+)', r'\1\2', text)
+    # 1. Corrige quebras de linha com hífens preservando honoríficos japoneses
+    honorifics = {'san', 'sama', 'kun', 'chan', 'dono', 'senpai', 'sensei', 'tan'}
+    def _fix_hyphen(m):
+        w1, w2 = m.group(1), m.group(2)
+        if w2.lower() in honorifics:
+            return f"{w1}-{w2}"
+        return f"{w1}{w2}"
+    text = re.sub(r'([A-Za-z]+)-\s+([A-Za-z]+)', _fix_hyphen, text)
 
     # 2. Corrige pronomes e nomes divididos erroneamente pelo OCR
     text = re.sub(r'\bS\s+he\b', 'She', text)
@@ -795,15 +804,64 @@ def repair_glued_text(text, src_lang="en-US"):
     if not wordninja:
         return text
 
+    lm = getattr(wordninja, 'DEFAULT_LANGUAGE_MODEL', None)
     tokens = text.split()
     fixed_tokens = []
     
     for token in tokens:
         clean_tok = re.sub(r'[^a-zA-Z]', '', token)
-        # Se a palavra tiver 4+ letras e não for nome/termo reservado
-        if len(clean_tok) >= 4 and clean_tok.upper() not in PRESERVE_WORDS:
-            splits = wordninja.split(clean_tok)
-            if len(splits) >= 2 and len(splits) < len(clean_tok):
+        # Palavras curtas (< 7 letras) NÃO devem ser separadas por wordninja para não quebrar romaji e nomes
+        if len(clean_tok) < 7:
+            fixed_tokens.append(token)
+            continue
+        
+        # Preserva palavras reservadas e nomes
+        if clean_tok.upper() in PRESERVE_WORDS:
+            fixed_tokens.append(token)
+            continue
+
+        clean_low = clean_tok.lower()
+        # Se a palavra já existe no dicionário/modelo de linguagem com boa frequência, NUNCA divida
+        if lm and clean_low in lm._wordcost and lm._wordcost[clean_low] < 12.0:
+            fixed_tokens.append(token)
+            continue
+            
+        # Palavras em TitleCase (iniciadas com maiúscula) em mangás são quase sempre Nomes Próprios
+        if clean_tok[0].isupper() and clean_tok[1:].islower():
+            fixed_tokens.append(token)
+            continue
+
+        # Proteção contra sufixos comuns em inglês (masterless, beastkin, etc.)
+        is_suffix = False
+        for sfx in ('less', 'ness', 'ship', 'ful', 'able', 'like', 'ward', 'wise', 'kin'):
+            if clean_low.endswith(sfx):
+                base = clean_low[:-len(sfx)]
+                if lm and base in lm._wordcost and lm._wordcost[base] < 11.0:
+                    is_suffix = True
+                    break
+        if is_suffix:
+            fixed_tokens.append(token)
+            continue
+
+        splits = wordninja.split(clean_tok)
+        if len(splits) >= 2 and len(splits) < len(clean_tok):
+            # Valida rigorosamente cada fragmento
+            valid = True
+            for s in splits:
+                s_low = s.lower()
+                if len(s) == 1 and s_low not in {'a', 'i'}:
+                    valid = False
+                    break
+                if len(s) == 2 and s_low not in VALID_2LETTER_WORDS:
+                    valid = False
+                    break
+                if lm:
+                    cost = lm._wordcost.get(s_low, 999.0)
+                    if cost > 11.0:
+                        valid = False
+                        break
+
+            if valid:
                 prefix = re.match(r'^[^a-zA-Z]+', token)
                 suffix = re.search(r'[^a-zA-Z]+$', token)
                 p_str = prefix.group(0) if prefix else ''
@@ -816,9 +874,36 @@ def repair_glued_text(text, src_lang="en-US"):
                     fixed_tok = ' '.join(splits)
                 fixed_tokens.append(p_str + fixed_tok + s_str)
                 continue
+                
         fixed_tokens.append(token)
         
     return ' '.join(fixed_tokens)
+
+def smart_join_lines(lines, is_cjk=False):
+    """Junta linhas de um mesmo balão com inteligência morfológica:
+    - Para texto asiático (CJK), junta sem espaços.
+    - Para texto latino, reconecta hífens de quebra de linha preservando honoríficos (-san, -sama, etc.)."""
+    if not lines:
+        return ""
+    cleaned_lines = [str(l).strip() for l in lines if l and str(l).strip()]
+    if not cleaned_lines:
+        return ""
+    if is_cjk:
+        return "".join(cleaned_lines)
+    
+    honorifics = {'san', 'sama', 'kun', 'chan', 'dono', 'senpai', 'sensei', 'tan'}
+    text = cleaned_lines[0]
+    for nxt in cleaned_lines[1:]:
+        if text.endswith('-'):
+            clean_nxt = nxt.lstrip('-').strip()
+            first_w = re.sub(r'[^a-zA-Z]', '', clean_nxt.split()[0]).lower() if clean_nxt else ''
+            if first_w in honorifics or (len(first_w) >= 3 and first_w.startswith('s') and all(c == 'a' for c in first_w[1:-1])):
+                text = text + clean_nxt
+            else:
+                text = text[:-1] + clean_nxt
+        else:
+            text = text + " " + nxt
+    return text
 
 def should_merge_lines(b1, b2):
     """Verifica se duas caixas de OCR pertencem ao MESMO balão, evitando fusão de balões adjacentes."""
@@ -935,7 +1020,8 @@ def smart_group_bubbles(blocks):
         ymax = max(b["box"][3] for b in comp_blocks)
         
         lines_text = [b["text"].strip() for b in comp_blocks]
-        full_text = " ".join(lines_text)
+        is_cjk_bubble = any(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", lt) for lt in lines_text)
+        full_text = smart_join_lines(lines_text, is_cjk=is_cjk_bubble)
         full_text = repair_glued_text(full_text)
         raw_boxes = [b["box"] for b in comp_blocks]
         
@@ -1719,22 +1805,85 @@ def init_ai_translation_engine(cfg, is_adult=True):
 
     return None, None, {"cfg": cfg}
 
+def collapse_spaced_letters(text):
+    """Reconecta letras ou sílabas individuais separadas por kerning da fonte (ex: 'S A A AN' -> 'SAAAN')."""
+    def _repl(m):
+        toks = m.group(0).split()
+        if all(len(t) == 1 for t in toks):
+            if set(t.lower() for t in toks).issubset({'a', 'i'}):
+                return m.group(0)
+            return ''.join(toks)
+        return m.group(0)
+    return re.sub(r'\b[A-Za-z](?:\s+[A-Za-z]){2,}\b', _repl, text)
+
 def clean_ocr_scan_noise(text):
-    """Limpa artefatos típicos de OCR em scans de mangá em inglês/japonês antes de enviar para a IA."""
+    """Limpa artefatos típicos de OCR, quebras de linhas e fontes de mangá em inglês/japonês antes de enviar para a IA."""
     if not text:
         return ""
     t = text
-    # Corrige contrações com apóstrofo quebrado pelo OCR (ex: "Don'+", "can'+", "I+'s")
+
+    # 1. Reconecta letras individuais espaçadas (kerning de balão)
+    t = collapse_spaced_letters(t)
+
+    # 2. Corrige contrações com apóstrofo quebrado ou separado por espaços pelo OCR
     t = re.sub(
-        r"\b(don|can|won|didn|doesn|isn|aren)['\+]+(?:\s*t)?(?=[^a-zA-Z]|$)",
-        lambda m: (m.group(1).capitalize() if m.group(1)[0].isupper() else m.group(1).lower()) + "'t",
+        r"\b(WHERE|YOU|I|DON|DIDN|DOESN|ISN|AREN|WASN|WEREN|HAVEN|HASN|HADN|WOULDN|SHOULDN|COULDN|CAN|IT|THAT|WHAT|LET|COUNTRY)\s+([ST]|RE|VE|LL|M|D)\b",
+        lambda m: m.group(1) + "'" + m.group(2),
         t,
         flags=re.IGNORECASE
     )
+    t = re.sub(r"\b(don|can|won|didn|doesn|isn|aren)['\+]+(?:\s*t)?(?=[^a-zA-Z]|$)", lambda m: m.group(1) + "'t", t, flags=re.IGNORECASE)
     t = re.sub(r"\bhave\s*n[tf]\b", "haven't", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bHAVE\s+NT\b", "HAVEN'T", t)
     t = re.sub(r"\bI\s*['\+]+\s*s\b", "It's", t)
     t = re.sub(r"\bI\s*['\+]+\s*m\b", "I'm", t)
     t = re.sub(r"['\+]+s\b", "'s", t)
+    t = re.sub(r"\b([A-Za-z]{3,})\s+S\b", r"\1'S", t)
+    t = re.sub(r"\bIT\s+LL\b", "IT'LL", t, flags=re.IGNORECASE)
+
+    # 3. Desfragmentação de palavras quebradas por hífens ou espaçamento interno
+    t = re.sub(r"(?i)\bCONS\s*E\s*[-]?\s*QUE\s*N\s*CES\b", "CONSEQUENCES", t)
+    t = re.sub(r"(?i)\bAC\s*KNOWL(?:[-]|EDGE)?\b", "ACKNOWLEDGE", t)
+    t = re.sub(r"(?i)\bWit\s*c\s*H['’\s]*S\b", "Witch's", t)
+    t = re.sub(r"(?i)\bWit\s*c\s*H\b", "Witch", t)
+    t = re.sub(r"(?i)\bH\s*app\s*Y\b", "HAPPY", t)
+    t = re.sub(r"(?i)\bIRU\s*LY\b", "TRULY", t)
+    t = re.sub(r"(?i)\bLN\s*ABLE\b", "UNABLE", t)
+    t = re.sub(r"(?i)\bln\s*able\b", "unable", t)
+    t = re.sub(r"(?i)\b(?:it,\s*)?feels?\s+poo\s*6\b", "feels so good", t)
+    t = re.sub(r"(?i)\b(?:poo|ipo)\s*6\b", "good", t)
+    t = re.sub(r"(?i)\bwhat\s+am\s+T\s+even\s+s\s*aging\b", "what am I even saying", t)
+    t = re.sub(r"(?i)\bARE\s+YO\s+LI\s+OKAY\b", "ARE YOU OKAY", t)
+    t = re.sub(r"(?i)\bYO\s+LI\b", "YOU", t)
+    t = re.sub(r"(?i)\bI-IS\s+S\s*IHL\s+REAL\s+LIFE\b", "IS THIS REAL LIFE", t)
+    t = re.sub(r"(?i)\bS\s*IHL\b", "THIS", t)
+    t = re.sub(r"(?i)\bSPITTING\s+WAGE\b", "SPITTING IMAGE", t)
+    t = re.sub(r"(?i)\bIS\s+A\s+WIN\s+A\s+DREAM\b", "I SAW IN A DREAM", t)
+    t = re.sub(r"(?i)\bOP\s+THEIR\s+HEART\b", "OF THEIR HEART", t)
+    t = re.sub(r"(?i)\bDREAM\s+OP\b", "DREAM OF", t)
+    t = re.sub(r"(?i)\bM\s*LIST\s+MEET\b", "MUST MEET", t)
+    t = re.sub(r"(?i)\bMASTER\s+LESS\b", "MASTERLESS", t)
+    t = re.sub(r"(?i)\bBEAST\s+KIN\b", "BEASTKIN", t)
+    t = re.sub(r"(?i)\bFURY\s+A(?:\s*-\s*SAMA|\s+SAMA)\b", "Furiya-sama", t)
+    t = re.sub(r"(?i)\bFURY\s+A\b", "Furiya", t)
+    t = re.sub(r"(?i)\bmad\s+or\s+omi\b", "Madoromi", t)
+    t = re.sub(r"(?i)\bmi\s+y\s+obi\b", "Miyobi", t)
+    t = re.sub(r"(?i)\bONEE\s+SAM\s+AS\b", "Onee-sama's", t)
+    t = re.sub(r"(?i)\bBEDTIME\s+ARRANGEMENT\s+S\b", "BEDTIME ARRANGEMENTS", t)
+    t = re.sub(r"(?i)\bARRANGEMENT\s+S\b", "ARRANGEMENTS", t)
+    t = re.sub(r"(?i)\bIAM\b", "I AM", t)
+    t = re.sub(r"(?i)\bFORME\b", "FOR ME", t)
+    t = re.sub(r"(?i)\bNMO\s*AW\b", "MOVE MY", t)
+    t = re.sub(r"(?i)\bROCHE\s*[-–—]?\s*SAN\b", "Roche-san", t)
+    t = re.sub(r"(?i)\bROCHE\s+SAN\b", "Roche-san", t)
+    t = re.sub(r"(?i)\bFU\s*[-–—]?\s*CHAN\b", "Fu-chan", t)
+    t = re.sub(r"(?i)\bFU\s+CHAN\b", "Fu-chan", t)
+    t = re.sub(r"(?i)\bONEE\s*[-–—]?\s*SAMA\b", "Onee-sama", t)
+    t = re.sub(r"(?i)\bONEE\s+SAMA\b", "Onee-sama", t)
+
+    # 4. Outros ruídos e onomatopeias
+    t = re.sub(r"(?i)\b(?:p\s*lap|sp\s*lap)\b", "plap", t)
+    t = re.sub(r"(?i)\b(?:sch\s*luck|sh\s*luck)\b", "shluck", t)
     t = re.sub(r"\bhit\s*ing\b", "hitting", t, flags=re.IGNORECASE)
     t = re.sub(r"\bWwa\s*it\b", "Wait", t, flags=re.IGNORECASE)
     t = re.sub(r"\bbea\s*lit\s*le\b", "be a little", t, flags=re.IGNORECASE)
@@ -1742,14 +1891,14 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"\bop\s*want\b", "really want", t, flags=re.IGNORECASE)
     t = re.sub(r"\bWhere\s*no[^\w\s]*\s*(?:op\s*)?want\b", "Where do you want", t, flags=re.IGNORECASE)
 
-    # Corrige quebras de letras esticadas / balões de grito e clímax
+    # Balões de clímax e grito
     t = re.sub(r"\bI\s*CAN(?:\s*['\+]?\s*T)?\s*H\s*OLD\s*IT\s*ANYMORE!*\b", "I CAN'T HOLD IT ANYMORE!", t, flags=re.IGNORECASE)
     t = re.sub(r"\bCAN\s*TH\s*OLD\b", "CAN'T HOLD", t, flags=re.IGNORECASE)
     t = re.sub(r"\bI['\s\+]*[mM]\s+[cC][uU][\s\-_]*[mM]+[\s\-_]*[mM]*[iI][nN][gG]!*", "I'm CUMMING!", t, flags=re.IGNORECASE)
     t = re.sub(r"\b[cC][uU][\s\-_]*[mM]+[\s\-_]*[mM]*[iI][nN][gG]!*", "CUMMING!", t, flags=re.IGNORECASE)
     t = re.sub(r"\b[cC][uU]\s*[mM]\s*[mM][iI][nN][eE]!*", "CUMMING!", t, flags=re.IGNORECASE)
 
-    # Desfragmentação de OCR latino / espanhol (letras e sílabas separadas indevidamente por espaços)
+    # Desfragmentação de OCR latino / espanhol
     t = re.sub(r"(?i)\bjoy\s+eri\s*a\b", "joyería", t)
     t = re.sub(r"(?i)\bjoy\s+as\b", "joyas", t)
     t = re.sub(r"(?i)\bjoy\s+a\b", "joya", t)
@@ -1784,7 +1933,7 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"(?i)\bto\s+do\b", "todo", t)
     t = re.sub(r"(?i)\bmer\s+can\s+ci\s*a\b", "mercancía", t)
 
-    # Desfragmentação de nomes e termos japoneses / ruídos em inglês
+    # Nomes e ruídos japoneses
     t = re.sub(r"(?i)\bhats\s+uk\s+o\b", "Hatsuko", t)
     t = re.sub(r"(?i)\boya\s+kod\s+on\b", "Oyakodon", t)
     t = re.sub(r"(?i)\bto\s+lg\s+h\b", "tough", t)
@@ -1792,8 +1941,6 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"(?i)\bread\s+the\s+j\s+do\s+ow\b", "read the room", t)
     t = re.sub(r"(?i)\bharu\s+na\b", "Haruna", t)
     t = re.sub(r"(?i)\bshun\s+kun\b", "Shun-kun", t)
-
-    # Desfragmentação de fontes Comic / Estilizadas (Misaki / BUTA e scanlations ocidentais)
     t = re.sub(r"(?i)\b(?:yuk\s+un|yuk-un|\.yuk\s*un)\b", "Yu-kun", t)
     t = re.sub(r"(?i)\b(?:natsuki\s+san|natsuki-san)\b", "Natsuki-san", t)
     t = re.sub(r"(?i)\bs\s+ihi\s+woman\b", "This woman", t)
@@ -2707,6 +2854,35 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None):
             "- GEMIDOS E RUÍDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você' nem confunda 'Anh...!' com 'irmão mais velho'. Mantenha o som expressivo (ex: 'Ugh... uh... mmph...', 'Anh...!').\n"
         )
 
+    ocr_reconstruction_clause = (
+        "DIRETRIZES DE RECONSTRUÇÃO DE OCR E PALAVRAS FRAGMENTADAS (MANGÁ & COMIC FONTS):\n"
+        "- Os textos fornecidos vêm de reconhecimento óptico (OCR) de balões de quadrinhos e contêm falhas frequentes de quebra e diagramação:\n"
+        "- PALAVRAS QUEBRADAS OU SEPARADAS INDEVIDAMENTE: Reconstrua mentalmente a palavra antes de traduzir:\n"
+        "  * 'CONS E- QUE N CES' / 'CONSEQUE N CES' -> 'consequences' -> 'consequências'\n"
+        "  * 'AC KNOWL-' -> 'acknowledge' -> 'reconhecer'\n"
+        "  * 'ARRANGE- MENT S' / 'ARRANGEMENT S' -> 'arrangements' -> 'preparativos'\n"
+        "  * 'SUP- PRESSED' -> 'suppressed' -> 'suprimidos'\n"
+        "  * 'Wit c H\'S' -> 'Witch\'s' -> 'da bruxa'\n"
+        "  * 'H app Y' -> 'happy' -> 'feliz'\n"
+        "  * 'IRU LY' -> 'truly' -> 'realmente'\n"
+        "  * 'mad or omi' -> 'Madoromi' (título da obra / nome próprio)\n"
+        "  * 'mi y obi' -> 'Miyobi' (autor / círculo)\n"
+        "  * 'FURY A' -> 'Furiya' (nome de personagem)\n"
+        "  * 'ROCHE -SAN' -> 'Roche-san'\n"
+        "  * 'ONEE SAM AS' -> 'Onee-sama\'s' ('da minha irmã mais velha')\n"
+        "- CARACTERES CONFUNDIDOS PELO SCAN ÓPTICO:\n"
+        "  * 'It, feels poo 6' -> 'It feels so good' -> 'É tão gostoso / É uma delícia'\n"
+        "  * 'LN ABLE TO SLEEP' -> 'UNABLE TO SLEEP' -> 'Incapaz de dormir / Sem conseguir dormir' (NUNCA inverta o sentido!)\n"
+        "  * 'what am T even s aging' -> 'what am I even saying' -> 'o que eu estou dizendo'\n"
+        "  * 'ARE YO LI OKAY' -> 'ARE YOU OKAY' -> 'você está bem?'\n"
+        "  * 'I-IS S IHL REAL LIFE' -> 'IS THIS REAL LIFE' -> 'isso é a vida real?'\n"
+        "  * 'SPITTING WAGE ... IS A WIN' -> 'SPITTING IMAGE ... I SAW IN' -> 'a cara/cópia da mulher que vi em um sonho'\n"
+        "  * 'OP THEIR HEART' -> 'OF THEIR HEART' -> 'do seu coração'\n"
+        "  * 'M LIST MEET' -> 'MUST MEET' -> 'tem que conhecer'\n"
+        "- CONTINUIDADE ENTRE BALÕES: Leia todos os balões da página para entender frases divididas entre dois balões adjacentes e traduza a narrativa com coerência fluida.\n"
+        "- REGRA FUNDAMENTAL: Reconstrua SEMPRE o diálogo real pretendido pelo autor no contexto da cena antes de gerar a tradução para PT-BR.\n"
+    )
+
     return f"""{persona_intro}Sua missão é realizar a tradução e adaptação contextual de excelência literária para Português do Brasil (PT-BR).
 
 SUAS TAREFAS OBRIGATÓRIAS:
@@ -2725,6 +2901,7 @@ SUAS TAREFAS OBRIGATÓRIAS:
    - Mantenha a pontuação dramática de mangá (!, ?, ..., ~).
    - NUNCA use palavras em espanhol ou portunhol.
 
+{ocr_reconstruction_clause}
 {multilang_clause}
 {adult_clause}
 {glossary_rules}
@@ -3177,7 +3354,7 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progres
                 xs = [p[0] for p in coords]
                 ys = [p[1] for p in coords]
                 
-                clean_ocr_text = repair_glued_text(text, src_lang="ko-KR" if is_korean else "en-US")
+                clean_ocr_text = text.strip()
                 blocks_for_grouping.append({
                     "box": [min(xs), min(ys), max(xs), max(ys)],
                     "text": clean_ocr_text
@@ -3258,7 +3435,10 @@ def is_valid_translation(orig_text, trans_text):
         'invalid source language', 'mymemory warning', 'delfim perverso',
         'como uma inteligência artificial', 'como uma ia', 'traduza o texto original',
         'regras obrigatórias', 'system message', 'mensagem do sistema', 'o gato está sentado'
-    ]
+                'system message', 'mensagem do sistema', 'invalid source language', 'mymemory warning',
+                'parece cocô', 'cons e que n ces', 'louco ou omi', 'meu e obi', 's aging', 'estou envelhecendo',
+                'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,'
+            ]
     ct_lower = clean_trans.lower()
     if any(cm in ct_lower for cm in corrupt_markers) or ct_lower in ('auto', '[auto]'):
         return False
@@ -3442,7 +3622,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             xmin, ymin, xmax, ymax = [int(round(float(v))) for v in blk.get("box", [0, 0, 0, 0])]
             is_vertical = blk.get("vertical", True)
             lines = blk.get("lines", [])
-            text = " ".join(lines).strip()
+            is_cjk_blk = any(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", l) for l in lines)
+            text = smart_join_lines(lines, is_cjk=is_cjk_blk).strip()
             if not text:
                 continue
             blocks_for_grouping.append({
@@ -3486,7 +3667,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 'delfim perverso', 'o gato está sentado', 'vem lá, meu amigo',
                 'estou traduzindo o texto', 'com base nas regras', 'ok, vamos traduzir',
                 'traduza o texto original', 'como uma inteligência artificial', 'regras obrigatórias',
-                'system message', 'mensagem do sistema', 'invalid source language', 'mymemory warning'
+                'system message', 'mensagem do sistema', 'invalid source language', 'mymemory warning',
+                'parece cocô', 'cons e que n ces', 'louco ou omi', 'meu e obi', 's aging', 'estou envelhecendo',
+                'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,'
             ]
             for k, v in raw_cache.items():
                 v_clean = str(v).strip().lower()

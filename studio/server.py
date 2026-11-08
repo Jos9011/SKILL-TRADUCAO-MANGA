@@ -412,6 +412,9 @@ def api_download_folder():
             if "cache" in root or "__pycache__" in root:
                 continue
             for file in files:
+                # Inclui apenas imagens traduzidas e leitor para evitar erros de caminho longo (0x80010135) no Windows
+                if not file.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.html')):
+                    continue
                 full_f = os.path.join(root, file)
                 rel_f = os.path.relpath(full_f, folder_path)
                 zipf.write(full_f, arcname=rel_f)

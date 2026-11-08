@@ -2856,43 +2856,89 @@ def get_rapidocr_engine(is_korean=False):
                 print(f"[!] Aviso ao iniciar RapidOCR Coreano: {e}")
     return RapidOCR()
 
+def is_mokuro_available():
+    """Verifica se o Mokuro está disponível no ambiente sem carregar modelos pesados."""
+    import shutil, importlib.util
+    if shutil.which("mokuro") is not None:
+        return True
+    try:
+        if importlib.util.find_spec("mokuro") is not None:
+            return True
+    except Exception:
+        pass
+    return False
+
 def detect_manga_language_and_engine(manga_dir):
     """
     Detecta automaticamente o idioma da obra e seleciona o motor ideal:
     - 'korean': Manhwa / Coreano (Hangul) -> Usa RapidOCR Coreano (NUNCA usa Mokuro)
-    - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (manga-ocr)
+    - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (manga-ocr) se disponível
     - 'rapidocr': Ocidental / Inglês / Espanhol -> Usa RapidOCR padrão
     """
     folder_name = os.path.basename(manga_dir)
-    # 1. Se o nome da pasta contiver Hangul coreano (ex: 두근두근 공부 시간)
-    if re.search(r'[\uac00-\ud7af]', folder_name) or "manhwa" in folder_name.lower() or "webtoon" in folder_name.lower():
+    folder_lower = folder_name.lower()
+
+    # 1. Se o título já especificar idioma latino / ocidental explícito em tags [English], [Spanish], etc.
+    latin_tags = [
+        r'\[(english|ingl[êe]s|ingles|en)\]', r'\((english|ingl[êe]s|ingles|en)\)',
+        r'\[(spanish|espa[ñn]ol|espanhol|es)\]', r'\((spanish|espa[ñn]ol|espanhol|es)\)',
+        r'\[(portugu[êe]s|portugues|pt|pt-br)\]', r'\((portugu[êe]s|portugues|pt|pt-br)\)',
+        r'\[(french|fran[çc]ais|fr)\]', r'\((french|fran[çc]ais|fr)\)',
+        r'\[(german|deutsch|de)\]', r'\((german|deutsch|de)\)',
+        r'\[(italian|italiano|it)\]', r'\((italian|italiano|it)\)',
+        r'\[(russian|russo|ru)\]', r'\((russian|russo|ru)\)',
+    ]
+    for tag_pattern in latin_tags:
+        if re.search(tag_pattern, folder_name, re.IGNORECASE):
+            print(f"[+] Idioma identificado pela tag no título: OCIDENTAL/LATINO ({folder_name}) -> Usando RapidOCR Universal.")
+            return "rapidocr"
+
+    # 2. Se o nome da pasta contiver Hangul coreano (ex: 두근두근 공부 시간) ou tags coreanas
+    if re.search(r'[\uac00-\ud7af]', folder_name) or "manhwa" in folder_lower or "webtoon" in folder_lower or re.search(r'\[(korean|coreano|kr|ko)\]', folder_name, re.IGNORECASE):
         print("[+] Idioma detectado pelo título: COREANO (Hangul) -> Usando RapidOCR Coreano.")
         return "korean"
 
-    # 2. Se o próprio nome contiver Kana japonês
-    if re.search(r'[\u3040-\u30ff]', folder_name):
-        return "mokuro"
+    # 3. Se o próprio nome contiver Kana japonês ou tag japonesa
+    if re.search(r'[\u3040-\u30ff]', folder_name) or re.search(r'\[(japanese|japon[êe]s|japones|raw|jp)\]', folder_name, re.IGNORECASE):
+        if is_mokuro_available():
+            return "mokuro"
+        else:
+            print("[i] Mangá com caracteres japoneses no título, mas Mokuro não está disponível. Usando RapidOCR Universal.")
+            return "rapidocr"
 
-    # 3. Analisa amostra de imagem
+    # 4. Analisa amostras de imagens (amostra até 3 páginas distribuídas para maior precisão)
     try:
         import glob
         img_files = glob.glob(os.path.join(manga_dir, "*.*"))
         img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
         if not img_files:
-            return "mokuro"
+            return "mokuro" if is_mokuro_available() else "rapidocr"
 
-        sample_idx = min(len(img_files) // 2, len(img_files) - 1)
-        src_path = img_files[sample_idx]
+        sample_indices = []
+        if len(img_files) <= 3:
+            sample_indices = list(range(len(img_files)))
+        else:
+            sample_indices = [
+                min(len(img_files) // 4, len(img_files) - 1),
+                min(len(img_files) // 2, len(img_files) - 1),
+                min((3 * len(img_files)) // 4, len(img_files) - 1)
+            ]
 
         engine = RapidOCR()
-        with open(src_path, "rb") as f:
-            img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
-            img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        res, _ = engine(img_cv)
-        if not res:
-            return "mokuro"
+        combined_texts = []
+        for s_idx in sample_indices:
+            src_path = img_files[s_idx]
+            try:
+                with open(src_path, "rb") as f:
+                    img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                    img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                res, _ = engine(img_cv)
+                if res:
+                    combined_texts.append(" ".join([box[1] for box in res]))
+            except Exception:
+                continue
 
-        full_sample_text = " ".join([box[1] for box in res])
+        full_sample_text = " ".join(combined_texts)
         korean_count = len(re.findall(r'[\uac00-\ud7af]', full_sample_text))
         japanese_count = len(re.findall(r'[\u3040-\u30ff]', full_sample_text))
         chinese_count = len(re.findall(r'[\u4e00-\u9fff]', full_sample_text))
@@ -2905,14 +2951,20 @@ def detect_manga_language_and_engine(manga_dir):
             return "rapidocr"
         if latin_count > 10 and latin_count > (japanese_count * 2):
             spanish_matches = len(re.findall(r'\b(el|la|los|las|de|en|un|una|por|con|para|del|al|que|es|como|mas|pero|cuando|muchas|gracias|joyas?|tiendas?)\b', full_sample_text, re.IGNORECASE))
-            if spanish_matches >= 3 or any(w in folder_name.lower() for w in ["vengan", "espanol", "español", "spanish", "capitulo"]):
+            if spanish_matches >= 3 or any(w in folder_lower for w in ["vengan", "espanol", "español", "spanish", "capitulo"]):
                 print("[+] Obra identificada com texto em ESPANHOL -> Ativando tradução especializada Espanhol -> PT-BR.")
             else:
                 print("[+] Obra identificada com alfabeto LATINO (Inglês/Ocidental) -> Usando RapidOCR.")
             return "rapidocr"
-        return "mokuro"
+
+        # Se detectou japonês ou se foi inconclusivo:
+        if is_mokuro_available():
+            return "mokuro"
+        else:
+            print("[i] Amostra sem Mokuro instalado no ambiente. Usando RapidOCR Universal com suporte multilíngue.")
+            return "rapidocr"
     except Exception:
-        return "mokuro"
+        return "mokuro" if is_mokuro_available() else "rapidocr"
 
 def check_needs_rapidocr(manga_dir):
     """Analisa imagens para determinar se o conteúdo é ocidental/latino ou coreano."""
@@ -3166,6 +3218,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         else:
             expected_engine = "mokuro"
 
+    # Verificação de segurança: se Mokuro foi escolhido mas não está instalado no ambiente
+    if expected_engine == "mokuro" and not is_mokuro_available():
+        print("[!] Aviso: Mokuro não está instalado neste ambiente. Alternando automaticamente para RapidOCR Universal...")
+        expected_engine = "rapidocr"
+
     print(f"[+] Motor OCR definido: {expected_engine.upper()}")
 
     needs_new_ocr = True
@@ -3203,14 +3260,21 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         else:
             print("[*] Executando motor Asiático especializado (Mokuro)...")
             import subprocess
+            mokuro_ok = False
             try:
                 subprocess.run([sys.executable, "-m", "mokuro", manga_dir, "--disable_confirmation"], check=True)
                 temp_mokuro = os.path.join(parent_dir, manga_name + ".mokuro")
                 if os.path.exists(temp_mokuro):
                     shutil.move(temp_mokuro, mokuro_path)
-            except subprocess.CalledProcessError as e:
+                mokuro_ok = os.path.exists(mokuro_path)
+            except Exception as e:
                 print(f"[!] Erro ao executar o Mokuro: {e}")
-                return False
+                mokuro_ok = False
+
+            if not mokuro_ok:
+                print("[*] Ativando fallback automático para RapidOCR Universal para garantir a conclusão da tradução...")
+                expected_engine = "rapidocr"
+                generate_rapidocr_json(manga_dir, mokuro_path, is_korean=False, progress_cb=progress_cb)
 
     if not os.path.exists(mokuro_path):
         print("[!] Arquivo de texto OCR não foi gerado. Falha na leitura.")

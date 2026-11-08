@@ -1005,6 +1005,69 @@ def api_glossary():
                 data = json.load(f)
         return jsonify({"data": data})
 
+@app.route("/api/rate_manga", methods=["POST"])
+def api_rate_manga():
+    """Recebe a nota do leitor (1 a 5 estrelas) e dispara a auto-auditoria inteligente da IA."""
+    data = request.json or {}
+    path = data.get("path", "").strip('\"\'')
+    rating = int(data.get("rating", 3))
+    comment = data.get("comment", "").strip()
+    
+    if not path or not os.path.exists(path):
+        return jsonify({"success": False, "error": "Caminho do mangá não encontrado."}), 400
+
+    reviews_file = os.path.join(SYS_DIR, "manga_reviews.json")
+    reviews = []
+    if os.path.exists(reviews_file):
+        try:
+            with open(reviews_file, "r", encoding="utf-8") as rf:
+                reviews = json.load(rf)
+        except Exception:
+            reviews = []
+            
+    import datetime
+    review_entry = {
+        "manga_path": path,
+        "manga_name": os.path.basename(path),
+        "rating": rating,
+        "comment": comment,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    reviews.append(review_entry)
+    try:
+        with open(reviews_file, "w", encoding="utf-8") as rf:
+            json.dump(reviews, rf, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    audit_report = None
+    if rating <= 3 or data.get("force_audit", True):
+        try:
+            audit_report = auto_translate.audit_manga_translation(path, rating=rating, user_comment=comment)
+        except Exception as e:
+            audit_report = {"success": False, "error": str(e)}
+
+    return jsonify({
+        "success": True,
+        "rating": rating,
+        "review": review_entry,
+        "audit_report": audit_report
+    })
+
+@app.route("/api/audit_manga", methods=["POST"])
+def api_audit_manga():
+    """Audita a integridade de uma obra traduzida e exibe diagnóstico detalhado."""
+    data = request.json or {}
+    path = data.get("path", "").strip('\"\'')
+    if not path or not os.path.exists(path):
+        return jsonify({"success": False, "error": "Caminho do mangá inválido."}), 400
+        
+    try:
+        report = auto_translate.audit_manga_translation(path, rating=data.get("rating"), user_comment=data.get("comment", ""))
+        return jsonify({"success": True, "audit_report": report})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 def open_chrome_app(url, port=5050):
     """Abre a janela nativa do Chrome em modo Desktop App (sem barra de URL)."""
     profile_dir = os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "MangaStudioAppProfile")

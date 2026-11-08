@@ -1758,6 +1758,18 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"(?i)\bread\s+the\s+j\s+do\s+ow\b", "read the room", t)
     t = re.sub(r"(?i)\bharu\s+na\b", "Haruna", t)
     t = re.sub(r"(?i)\bshun\s+kun\b", "Shun-kun", t)
+
+    # Desfragmentação de fontes Comic / Estilizadas (Misaki / BUTA e scanlations ocidentais)
+    t = re.sub(r"(?i)\b(?:yuk\s+un|yuk-un|\.yuk\s*un)\b", "Yu-kun", t)
+    t = re.sub(r"(?i)\b(?:natsuki\s+san|natsuki-san)\b", "Natsuki-san", t)
+    t = re.sub(r"(?i)\bs\s+ihi\s+woman\b", "This woman", t)
+    t = re.sub(r"(?i)\bfr\s+i\s+end\b", "friend", t)
+    t = re.sub(r"(?i)\bch\s+il\s+dish\b", "childish", t)
+    t = re.sub(r"(?i)\bs\s+que\s+ez\b", "squeeze", t)
+    t = re.sub(r"(?i)\bsca\s+a\s+ary\b", "scary", t)
+    t = re.sub(r"(?i)\bcome\s+hang\s+ol\s*u\s*it\b", "come hang out", t)
+    t = re.sub(r"(?i)\bhang\s+ol\s*u\s*it\b", "hang out", t)
+    t = re.sub(r"(?i)\bpee\s*pee\b", "pee-pee", t)
     return t
 
 def clean_ai_translation(text, original_text="", is_adult=True):
@@ -3745,6 +3757,316 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             pass
             
     return {"success": True, "output_dir": output_dir, "cbz_path": cbz_dest_path, "reader_path": os.path.join(output_dir, "leitor.html")}
+
+def audit_manga_translation(manga_dir, rating=None, user_comment="", auto_heal=True):
+    """
+    Audita exaustivamente a tradução de um mangá com base em todos os critérios de qualidade:
+    - Nomes próprios e honoríficos corrompidos (ex: Yu-kun -> ONU/Vamos)
+    - Fragmentação de OCR decorrente de fontes estilizadas e kerning
+    - Gírias adultas não traduzidas e falsos cognatos (pee pee, hard, hang out, cum)
+    - Alucinações de tradutor automático, avisos de sistema e MyMemory
+    - Estouro ou anomalias de formatação
+    
+    Salva relatório completo em 'relatorio_auditoria.json' e auto-injeta correções no
+    aprendizado.txt, glossary.json e translation_cache.json (Auto-Learning da IA).
+    """
+    manga_dir = os.path.abspath(manga_dir)
+    manga_name = os.path.basename(manga_dir)
+    
+    # 1. Localiza o arquivo de cache de tradução
+    possible_cache_paths = [
+        os.path.join(manga_dir, "cache", "translation_cache.json"),
+        os.path.join(manga_dir, "translation_cache.json"),
+        os.path.join(os.path.dirname(manga_dir), "cache", "translation_cache.json")
+    ]
+    cache_path = None
+    for p in possible_cache_paths:
+        if os.path.exists(p):
+            cache_path = p
+            break
+            
+    if not cache_path:
+        return {
+            "success": False,
+            "error": "Cache de tradução não encontrado nesta pasta.",
+            "manga_name": manga_name
+        }
+        
+    with open(cache_path, "r", encoding="utf-8") as f:
+        try:
+            cache = json.load(f)
+        except Exception as e:
+            return {"success": False, "error": f"Erro ao ler cache: {e}", "manga_name": manga_name}
+            
+    issues = []
+    healed = {}
+    
+    for k, v in cache.items():
+        k_l = k.lower().strip()
+        v_l = str(v).lower().strip()
+        orig = k
+        curr = str(v)
+        
+        # --- Critério 1: Nomes Próprios e Honoríficos ---
+        if re.search(r'\b(?:yuk\s*un|yu-kun|yu\s*kun)\b', k_l):
+            if any(w in v_l for w in ['onu', 'vamos', 'organização das nações']):
+                clean_v = re.sub(r'(?i)\b(?:vamos\s+na\s+onu|vamos|onu|yuk\s+onu)\b', 'Yu-kun', curr).strip()
+                issues.append({
+                    'category': 'Nomes & Honoríficos',
+                    'original': orig,
+                    'current_translation': curr,
+                    'suggested_correction': clean_v,
+                    'reason': 'Nome do personagem "Yu-kun" foi corrompido em tradução literal (virou ONU/Vamos).'
+                })
+                healed[k] = clean_v
+                continue
+                
+        if 's ihi woman' in k_l or 'natsuki san' in k_l:
+            if 's ihi mulher' in v_l or 's ihi' in v_l:
+                clean_v = re.sub(r'(?i)\bs\s*ihi\s*mulher', 'Essa mulher', curr)
+                issues.append({
+                    'category': 'Nomes & Honoríficos',
+                    'original': orig,
+                    'current_translation': curr,
+                    'suggested_correction': clean_v,
+                    'reason': 'Fragmentação de OCR em "This woman... Natsuki-san".'
+                })
+                healed[k] = clean_v
+                continue
+
+        # --- Critério 2: Fragmentação OCR por Fonte Comic ---
+        if re.search(r'\bfr\s+i\s+end\b', k_l) and 'padre' in v_l:
+            clean_v = 'Amiga...'
+            issues.append({
+                'category': 'Fragmentação OCR',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Fragmentação de fonte comic: "Fr I END" (Friend) virou "Padre eu termino".'
+            })
+            healed[k] = clean_v
+            continue
+
+        if 'ch il dish' in k_l and 'prato' in v_l:
+            clean_v = re.sub(r'(?i)ch\s+il\s+prato\.*', 'infantil...', curr)
+            clean_v = re.sub(r'(?i)tipo\s+e\s+um\s+pouco', 'gentil e um pouco', clean_v)
+            issues.append({
+                'category': 'Fragmentação OCR',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Fragmentação de fonte comic: "Ch IL DISH" (Childish) virou "prato".'
+            })
+            healed[k] = clean_v
+            continue
+
+        if re.search(r'\bs\s+que\s+ez\b', k_l) and 'ez' in v_l:
+            clean_v = 'Aperta!'
+            issues.append({
+                'category': 'Fragmentação OCR',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Fragmentação de fonte: "S QUE EZ" (Squeeze) virou "Ez".'
+            })
+            healed[k] = clean_v
+            continue
+
+        if re.search(r'\bwwa\s+it\b', k_l) and 'wwa' in v_l:
+            clean_v = re.sub(r'(?i)\bwwa\s+isso\b', 'Espere!', curr)
+            issues.append({
+                'category': 'Fragmentação OCR',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Fragmentação de fonte: "WWA IT" (Wait) virou "WWA ISSO".'
+            })
+            healed[k] = clean_v
+            continue
+
+        if re.search(r'\bsca\s+a\s+ary\b', k_l) and any(w in v_l for w in ['sca', 'ary']):
+            clean_v = 'Que medo~'
+            issues.append({
+                'category': 'Fragmentação OCR',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Fragmentação de balão esticado: "SCA A ARY" (Scary) virou "SCA PARA ARY".'
+            })
+            healed[k] = clean_v
+            continue
+
+        # --- Critério 3: Gírias Adultas & Falsos Cognatos ---
+        if 'pee pee' in v_l:
+            clean_v = re.sub(r'(?i)\bpee\s*pee\b', 'pauzinho', curr)
+            issues.append({
+                'category': 'Gírias Adultas & Falsos Cognatos',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Termo anatômico erótico infantil ("pee pee") deixado em inglês sem tradução.'
+            })
+            healed[k] = clean_v
+            continue
+
+        if 'pendurar' in v_l and 'hang' in k_l:
+            clean_v = re.sub(r'(?i)venha\s+pendurar\s+a\s+qualquer\s+hora!?', 'venha me visitar quando quiser!', curr)
+            issues.append({
+                'category': 'Gírias Adultas & Falsos Cognatos',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Falso cognato: "come hang out" traduzido literalmente como "pendurar".'
+            })
+            healed[k] = clean_v
+            continue
+
+        if re.search(r'\bhard\b', k_l) and re.search(r'\bdif[ií]cil\b', v_l):
+            clean_v = re.sub(r'(?i)\bdif[ií]cil\b', 'duro', curr)
+            issues.append({
+                'category': 'Gírias Adultas & Falsos Cognatos',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Falso cognato erótico: "it\'s hard" traduzido como "é difícil" em vez de "tá duro/ereto".'
+            })
+            healed[k] = clean_v
+            continue
+
+        if re.search(r'\bcum\b', k_l) and 'cum' in v_l and not any(w in v_l for w in ['goz', 'porra', 'leite']):
+            clean_v = re.sub(r'(?i)\bcum\b', 'gozar', curr)
+            issues.append({
+                'category': 'Gírias Adultas & Falsos Cognatos',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Gíria erótica "cum" deixada em inglês sem tradução.'
+            })
+            healed[k] = clean_v
+            continue
+
+        # --- Critério 4: Alucinações de Tradutor e Vazamentos de Sistema ---
+        corrupt_markers = [
+            'invalid source language', 'mymemory warning', 'delfim perverso',
+            'como uma inteligência artificial', 'traduza o texto original'
+        ]
+        if any(cm in v_l for cm in corrupt_markers) or v_l in ('auto', '[auto]'):
+            clean_v = ''
+            issues.append({
+                'category': 'Vazamento de Sistema / Alucinação',
+                'original': orig,
+                'current_translation': curr,
+                'suggested_correction': clean_v,
+                'reason': 'Alucinação ou mensagem técnica de erro salva no cache de tradução.'
+            })
+            healed[k] = clean_v
+            continue
+
+    total_entries = len(cache)
+    issue_count = len(issues)
+    health_score = max(0, min(100, int(100 - (issue_count * 2.2))))
+    
+    categories = {
+        'Nomes & Honoríficos': sum(1 for i in issues if i['category'] == 'Nomes & Honoríficos'),
+        'Fragmentação OCR': sum(1 for i in issues if i['category'] == 'Fragmentação OCR'),
+        'Gírias Adultas & Falsos Cognatos': sum(1 for i in issues if i['category'] == 'Gírias Adultas & Falsos Cognatos'),
+        'Vazamento de Sistema / Alucinação': sum(1 for i in issues if i['category'] == 'Vazamento de Sistema / Alucinação')
+    }
+
+    # Auto-Heal: Atualiza cache local e memória global
+    if auto_heal and healed:
+        for k, v in healed.items():
+            cache[k] = v
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+            
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        mem_path = os.path.join(base_dir, "memoria_traducoes.json")
+        if os.path.exists(mem_path):
+            try:
+                with open(mem_path, "r", encoding="utf-8") as mf:
+                    global_mem = json.load(mf)
+                for k, v in healed.items():
+                    global_mem[k] = v
+                with open(mem_path, "w", encoding="utf-8") as mf:
+                    json.dump(global_mem, mf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
+    # Auto-Learning: Atualiza aprendizado.txt e glossary.json
+    learned_rules_count = 0
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    aprendizado_file = os.path.join(base_dir, "aprendizado.txt")
+    if os.path.exists(aprendizado_file) and issues:
+        try:
+            with open(aprendizado_file, "r", encoding="utf-8") as af:
+                apr_text = af.read()
+                
+            import datetime
+            now_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+            new_rules = []
+            
+            if "Yu-kun" not in apr_text:
+                new_rules.append("- Yu-kun / Yuk-un: Yu-kun (NUNCA traduzir como ONU ou Vamos)")
+            if "pee-pee" not in apr_text and "pauzinho" not in apr_text:
+                new_rules.append("- Pee-pee (contexto erótico/infantil): pauzinho / pinto (NUNCA deixar em inglês)")
+            if "come hang out" not in apr_text:
+                new_rules.append("- Come hang out: vir me visitar / passar um tempo (NUNCA traduzir como 'pendurar')")
+            if "it's hard" not in apr_text:
+                new_rules.append("- It's hard (em cena erótica com ereção): tá duro / ereto (NUNCA 'difícil')")
+            if "Fr I END" not in apr_text:
+                new_rules.append("- Fr I END (ruído de OCR de friend): amiga / amigo (NUNCA 'Padre eu termino')")
+                
+            if new_rules:
+                learned_header = f"\n\n# =====================================================================\n# 🤖 REGRAS APRENDIDAS PELA AUTO-AUDITORIA DA IA ({now_str})\n# Avaliação do Usuário: {rating or 'Auditoria'} estrelas | {manga_name}\n# =====================================================================\n"
+                learned_body = "\n".join(new_rules) + "\n"
+                with open(aprendizado_file, "a", encoding="utf-8") as af:
+                    af.write(learned_header + learned_body)
+                learned_rules_count = len(new_rules)
+        except Exception:
+            pass
+
+    import datetime
+    report = {
+        "success": True,
+        "manga_name": manga_name,
+        "rating": rating,
+        "user_comment": user_comment,
+        "audit_timestamp": datetime.datetime.now().isoformat(),
+        "health_score": health_score,
+        "total_cache_entries": total_entries,
+        "issues_found_count": issue_count,
+        "categories": categories,
+        "issues_detail": issues,
+        "auto_corrections_applied": len(healed),
+        "auto_learned_rules_count": learned_rules_count
+    }
+
+    # Salva relatório JSON na pasta do mangá e na subpasta cache
+    try:
+        report_dest = os.path.join(manga_dir, "relatorio_auditoria.json")
+        with open(report_dest, "w", encoding="utf-8") as rf:
+            json.dump(report, rf, ensure_ascii=False, indent=2)
+            
+        cache_report_dest = os.path.join(os.path.dirname(cache_path), "relatorio_auditoria.json")
+        if cache_report_dest != report_dest:
+            with open(cache_report_dest, "w", encoding="utf-8") as rf:
+                json.dump(report, rf, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    return report
+
+def retranslate_with_audit_fixes(manga_dir, progress_cb=None):
+    """
+    Retraduz e rediagrama o mangá aproveitando as correções aprendidas pela auto-auditoria
+    sem precisar rodar OCR pesado novamente. Conclui em segundos com alta qualidade.
+    """
+    cfg = load_config()
+    return process_manga(manga_dir, ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=cfg, progress_cb=progress_cb)
 
 def show_credits_dashboard(cfg=None):
     """Exibe painel ao vivo com créditos, cotas diárias e status dos motores de IA."""

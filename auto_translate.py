@@ -1225,12 +1225,20 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
         model_name = engine_opts["active_model"]
 
     target_models = []
-    for cand in [model_name, fallback_model, "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]:
+    cand_list = [
+        model_name,
+        fallback_model,
+        "openai/gpt-oss-120b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "qwen/qwen3.8-27b"
+    ]
+    for cand in cand_list:
         if cand and cand not in target_models and cand not in exhausted_groq:
             target_models.append(cand)
 
     if not target_models:
-        raise RuntimeError("Todos os modelos Groq atingiram a cota temporária.")
+        raise RuntimeError("Todos os modelos Groq para esta chave atingiram a cota temporária.")
 
     last_err = None
     for m in target_models:
@@ -1267,23 +1275,30 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     except Exception:
                         pass
 
-                    # Groq TPM: espera inteligente até 12 segundos antes de esgotar o modelo
-                    if wait_sec <= 12 and attempt < max_retries - 1:
+                    # Groq TPM: espera inteligente se for rápida (<= 8s), caso contrário pula para o próximo modelo
+                    if wait_sec <= 8.0 and attempt < max_retries - 1:
                         print(f"\n[*] Groq em pausa de cota ({wait_sec:.1f}s)... Aguardando liberação de tokens...")
                         time.sleep(wait_sec)
                         continue
                     else:
-                        print(f"\n[!] Modelo '{m}' com cota saturada no Groq (pausa necessária: {wait_sec:.0f}s).")
-                        print(f"[+] Alternando para o próximo modelo compatível...")
+                        print(f"\n[!] Modelo '{m}' com cota saturada no Groq. Alternando para o próximo modelo...")
                         exhausted_groq.add(m)
                         break
-                elif e.code in (404, 500, 502, 503):
+                elif e.code in (400, 404, 500, 502, 503, 504):
+                    print(f"\n[!] Modelo '{m}' indisponível no Groq (HTTP {e.code}). Alternando...")
                     exhausted_groq.add(m)
                     break
-                raise e
+                else:
+                    exhausted_groq.add(m)
+                    break
             except Exception as e:
                 last_err = e
-                raise e
+                if attempt < max_retries - 1:
+                    time.sleep(1.5)
+                    continue
+                else:
+                    exhausted_groq.add(m)
+                    break
 
     if last_err:
         raise last_err
@@ -1623,6 +1638,7 @@ def init_ai_translation_engine(cfg, is_adult=True):
                 print(f"[+] Motor Groq Cloud Ativo com Chave ({masked_g}) | Modelo: '{groq_model}' (Zero Censura | Nuvem)")
                 engine_opts = {
                     "api_key": groq_key,
+                    "api_keys": groq_keys,
                     "fallback_model": groq_fallback,
                     "temperature": cfg.get("temperature", 0.0),
                     "cfg": cfg,
@@ -2440,6 +2456,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                 masked_k = groq_k[:8] + "..." + groq_k[-4:] if len(groq_k) > 12 else "***"
                 remaining = [k for k in all_groq_keys if k.strip() not in exhausted_keys]
                 if remaining:
+                    engine_opts["exhausted_groq_models"] = set()
                     print(f"\n[!] Chave Groq ({masked_k}) com cota saturada. Rotacionando para próxima chave Groq ({len(remaining)} restante(s))...")
                     return execute_translation_request(messages, engine_opts=engine_opts, is_adult=is_adult, max_tokens=max_tokens, is_batch=is_batch, dialogue_map=dialogue_map)
                 else:

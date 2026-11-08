@@ -2157,6 +2157,33 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     cleaned = _preserve_case(r'\bbonita\s+para\s+lg\s*h\b', 'bem difícil', cleaned)
     cleaned = _preserve_case(r'\bpara\s+lg\s*h\b', 'bem difícil', cleaned)
 
+    # BARREIRA DE FERRO (QUALITY GATE): Nomes de personagens, fontes comic e gírias adultas em tempo real
+    if re.search(r'\b(?:yuk\s*un|yu-kun|yu\s*kun)\b', orig_lower):
+        cleaned = re.sub(r'(?i)\b(?:vamos\s+na\s+onu|vamos|onu|yuk\s+onu)\b', 'Yu-kun', cleaned)
+    if 's ihi woman' in orig_lower or 'natsuki san' in orig_lower:
+        cleaned = re.sub(r'(?i)\bs\s*ihi\s*mulher', 'Essa mulher', cleaned)
+    if re.search(r'\bfr\s+i\s+end\b', orig_lower) and 'padre' in cleaned.lower():
+        cleaned = 'Amiga...'
+    if 'ch il dish' in orig_lower:
+        cleaned = re.sub(r'(?i)ch\s+il\s+prato\.*', 'infantil...', cleaned)
+        cleaned = re.sub(r'(?i)tipo\s+e\s+um\s+pouco', 'gentil e um pouco', cleaned)
+    if re.search(r'\bs\s+que\s+ez\b', orig_lower):
+        cleaned = re.sub(r'(?i)\beu\s+sei\s+isso\s+ez\b', 'Aperta!', cleaned)
+        cleaned = re.sub(r'(?i)\bez\b', 'Aperta!', cleaned)
+    if re.search(r'\bwwa\s+it\b', orig_lower):
+        cleaned = re.sub(r'(?i)\bwwa\s+isso\b', 'Espere!', cleaned)
+    if re.search(r'\bsca\s+a\s+ary\b', orig_lower):
+        cleaned = re.sub(r'(?i)\bsca\s+para\s+ary\b', 'Que medo~', cleaned)
+    if re.search(r'\bpee\s*pee\b', orig_lower) or 'pee pee' in cleaned.lower():
+        cleaned = re.sub(r'(?i)\bpee\s*pee\b', 'pauzinho', cleaned)
+    if re.search(r'\bhang\s+(?:ol\s*u\s*it|out)\b', orig_lower):
+        cleaned = re.sub(r'(?i)venha\s+pendurar\s+a\s+qualquer\s+hora!?', 'venha me visitar quando quiser!', cleaned)
+        cleaned = re.sub(r'(?i)\bpendurar\b', 'visitar', cleaned)
+    if re.search(r'\bhard\b', orig_lower) and is_adult and re.search(r'\bdif[íi]cil\b', cleaned, re.IGNORECASE):
+        cleaned = re.sub(r'(?i)\bdif[íi]cil\b', 'duro', cleaned)
+    if re.search(r'\bcum\b', orig_lower) and is_adult and re.search(r'\bcum\b', cleaned, re.IGNORECASE) and not any(w in cleaned.lower() for w in ['goz', 'porra', 'leite']):
+        cleaned = re.sub(r'(?i)\bcum\b', 'gozar', cleaned)
+
     # Dinâmica familiar enteado/madrasta (mulher) e falsos amigos
     cleaned = _preserve_case(r'\bvoc[êe]\s+[eé]\s+um\s+estranho\b', 'você é uma estranha', cleaned)
     cleaned = _preserve_case(r'\bde\s+forma\s+material\b', 'de forma maternal', cleaned)
@@ -3208,6 +3235,17 @@ def is_valid_translation(orig_text, trans_text):
     if len(clean_orig) >= 3 and len(clean_trans) <= 2:
         if clean_trans.lower() not in ("ah", "ai", "oi", "eh", "oh", "ui", "hm", "ha", "ei", "ué", "ok"):
             return False
+
+    # Rejeita alucinações, mensagens de sistema e erros técnicos de tradutores automáticos
+    corrupt_markers = [
+        'invalid source language', 'mymemory warning', 'delfim perverso',
+        'como uma inteligência artificial', 'como uma ia', 'traduza o texto original',
+        'regras obrigatórias', 'system message', 'mensagem do sistema', 'o gato está sentado'
+    ]
+    ct_lower = clean_trans.lower()
+    if any(cm in ct_lower for cm in corrupt_markers) or ct_lower in ('auto', '[auto]'):
+        return False
+
     return True
 
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None):

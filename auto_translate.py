@@ -1675,13 +1675,31 @@ def init_ai_translation_engine(cfg, is_adult=True):
         elif provider in ("openrouter", "cloud"):
             print(f"[!] Erro: Provedor configurado como 'openrouter', mas 'openrouter_api_keys'/'openrouter_api_key' está vazia em config.json.")
 
-    # 2. Ollama (Remoto na Nuvem / Colab ou Local)
+    # 3. Ollama (Remoto na Nuvem / Colab ou Local)
     host = cfg.get("ollama_host", "http://localhost:11434")
     model_pref = cfg.get("ollama_model", "dolphin-llama3:latest")
     print(f"[*] Verificando conexão com Ollama em '{host}'...")
     ollama_ok, selected_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=model_pref)
     if ollama_ok:
-        return "ollama", selected_model, {"host": host, "temperature": cfg.get("temperature", 0.0), "cfg": cfg}
+        return "ollama", selected_model, {"host": host, "temperature": cfg.get("temperature", 0.0), "cfg": cfg, "active_engine": "ollama"}
+    else:
+        print(f"[!] Aviso: Ollama não disponível no host '{host}' (ambiente sem GPU ou servidor offline).")
+        # Fallback de alta fidelidade para Groq Cloud se disponível
+        if groq_key:
+            g_ok, g_msg = check_groq_available(groq_key, groq_model)
+            if g_ok:
+                masked_g = groq_key[:8] + "..." + groq_key[-4:] if len(groq_key) > 12 else "***"
+                print(f"[+] Fallback Inteligente: Ativando Groq Cloud com Chave ({masked_g}) | Modelo: '{groq_model}'")
+                return "groq", groq_model, {
+                    "api_key": groq_key,
+                    "fallback_model": groq_fallback,
+                    "temperature": cfg.get("temperature", 0.0),
+                    "cfg": cfg,
+                    "active_model": groq_model,
+                    "active_engine": "groq",
+                    "exhausted_engines": {"ollama"},
+                    "exhausted_groq_models": set()
+                }
 
     return None, None, {"cfg": cfg}
 
@@ -2336,13 +2354,32 @@ def google_translate_free(text, source_lang="auto", target_lang="pt"):
 def execute_translation_request(messages, engine_opts=None, is_adult=True, max_tokens=1024, is_batch=False, dialogue_map=None):
     """
     Roteador Inteligente e Resiliente de IAs.
-    Tenta o motor ativo e, se este esgotar cotas (TPM/TPD/HTTP 429), promove o próximo motor
-    DEFINITIVAMENTE (Groq -> OpenRouter -> Ollama -> Google Cloud), sem loops infinitos nem pausas travadas.
+    Tenta o motor ativo e, se este esgotar cotas (TPM/TPD/HTTP 429) ou falhar por ausência de GPU,
+    promove o próximo motor DEFINITIVAMENTE (Ollama/Groq -> OpenRouter -> Google Cloud),
+    sem loops infinitos nem pausas travadas.
     """
     engine_opts = engine_opts if engine_opts is not None else {}
     exhausted = engine_opts.setdefault("exhausted_engines", set())
     cfg = engine_opts.get("cfg", {})
     temp = engine_opts.get("temperature", 0.0)
+    active_engine = engine_opts.get("active_engine", "groq")
+
+    # 0. SE O MOTOR PRIORITÁRIO CONFIGURADO FOR OLLAMA (Modo Híbrido), TENTA OLLAMA PRIMEIRO
+    if active_engine == "ollama" and "ollama" not in exhausted:
+        host = engine_opts.get("host") or cfg.get("ollama_host", "http://localhost:11434")
+        ollama_ok, o_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=cfg.get("ollama_model"))
+        if ollama_ok:
+            try:
+                resp = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=max_tokens)
+                if resp:
+                    return resp
+            except Exception as o_err:
+                exhausted.add("ollama")
+                print(f"\n[!] Ollama indisponível ({o_err}).")
+                print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Acionando Groq Cloud Nuvem...")
+        else:
+            exhausted.add("ollama")
+            print(f"\n[!] Servidor Ollama offline ou sem GPU. Ativando fallback para Groq Cloud Nuvem...")
 
     # 1. TENTA GROQ SE AINDA NÃO ESGOTADO (COM ROTAÇÃO AUTOMÁTICA DE MÚLTIPLAS CHAVES)
     if "groq" not in exhausted:

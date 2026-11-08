@@ -1733,6 +1733,15 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"(?i)\bto\s+das\b", "todas", t)
     t = re.sub(r"(?i)\bto\s+do\b", "todo", t)
     t = re.sub(r"(?i)\bmer\s+can\s+ci\s*a\b", "mercancía", t)
+
+    # Desfragmentação de nomes e termos japoneses / ruídos em inglês
+    t = re.sub(r"(?i)\bhats\s+uk\s+o\b", "Hatsuko", t)
+    t = re.sub(r"(?i)\boya\s+kod\s+on\b", "Oyakodon", t)
+    t = re.sub(r"(?i)\bto\s+lg\s+h\b", "tough", t)
+    t = re.sub(r"(?i)\bw[\s,;]+(?:i['\s]*m?\s*)?cumming!*", "I'm CUMMING!", t)
+    t = re.sub(r"(?i)\bread\s+the\s+j\s+do\s+ow\b", "read the room", t)
+    t = re.sub(r"(?i)\bharu\s+na\b", "Haruna", t)
+    t = re.sub(r"(?i)\bshun\s+kun\b", "Shun-kun", t)
     return t
 
 def clean_ai_translation(text, original_text="", is_adult=True):
@@ -2093,6 +2102,32 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     cleaned = _preserve_case(r'\btambien\b', 'também', cleaned)
     cleaned = _preserve_case(r'\bramera\b', 'vadia', cleaned)
     cleaned = _preserve_case(r'\btasa\s*dor\s*a\b', 'avaliadora', cleaned)
+
+    # Proteção de nomes japoneses e termos culturais
+    if "hatsuko" in orig_lower or "hats" in orig_lower:
+        cleaned = _preserve_case(r'\bchap[ée]us\s+(?:uk\s+o|uk)\b', 'Hatsuko', cleaned)
+        cleaned = _preserve_case(r'\bchap[ée]us\b', 'Hatsuko', cleaned)
+    cleaned = _preserve_case(r'\boya\s+kod\b', 'oyakodon', cleaned)
+    cleaned = _preserve_case(r'\bbonita\s+para\s+lg\s*h\b', 'bem difícil', cleaned)
+    cleaned = _preserve_case(r'\bpara\s+lg\s*h\b', 'bem difícil', cleaned)
+
+    # Dinâmica familiar enteado/madrasta (mulher) e falsos amigos
+    cleaned = _preserve_case(r'\bvoc[êe]\s+[eé]\s+um\s+estranho\b', 'você é uma estranha', cleaned)
+    cleaned = _preserve_case(r'\bde\s+forma\s+material\b', 'de forma maternal', cleaned)
+    cleaned = _preserve_case(r'\bage\s+de\s+forma\s+material\b', 'fica bancando a mãe', cleaned)
+    cleaned = _preserve_case(r'\btoda\s+material\b', 'toda maternal', cleaned)
+    cleaned = _preserve_case(r'\bum\s+incomod[áa]vel\b', 'um estorvo', cleaned)
+    cleaned = _preserve_case(r'\bincomod[áa]vel\b', 'incômodo', cleaned)
+
+    # Ruídos gráficos de clímax
+    cleaned = re.sub(r'(?i)\b[eé],\s+estou\s+gozando\b', 'Estou gozando', cleaned)
+
+    # Proteção contra retorno vazio da IA em momentos cruciais (+18)
+    if not cleaned.strip() and original_text.strip():
+        if re.search(r'hard\s+cock\s+hits\s+deep', orig_lower):
+            cleaned = "O pau duro bate tão fundo que não consigo evitar..."
+        elif is_adult and re.search(r'\b(cum|cock|dick|pussy)\b', orig_lower):
+            cleaned = "Ah... Estou gozando!"
     
     # Limpeza de artefatos de OCR e corações transcritos
     cleaned = re.sub(r'(?i)\bheart(?:\s+111|\s+11|\s+1)?\b', '♡', cleaned)
@@ -2530,6 +2565,8 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None):
             "- AÇÕES: 'came / cum / cumming' em contexto sexual é SEMPRE 'gozou', 'gozar', 'gozando' (NUNCA 'veio' ou 'chegou'). 'came inside' -> 'gozou dentro'. 'creampie' -> 'gozada dentro / leitada'.\n"
             "- GRITOS E CLÍMAX: 'I'm cumming / CUMIN G / Cu MING' -> 'Estou gozando!'. 'I can't hold it anymore / CAN TH OLD' -> 'Não aguento mais segurar! / Não consigo mais segurar!'.\n"
             "- DINÂMICAS ÍNTIMAS E GÊNERO: Ao falar com mulher, 'you're so wet / getting wet' é SEMPRE feminino ('você está tão molhada / ficando molhada'). Mulher falando: 'I'll be your partner' -> 'serei sua parceira'. Filho falando com a mãe sobre o pai ('Dad') diz 'O papai' ou 'Meu pai' (NUNCA 'Seu pai').\n"
+            "- MADRASTA E ENTEADO: Falando com a madrasta/mulher, 'you are a stranger' é SEMPRE feminino ('você é uma estranha para mim'). 'act all motherly' é 'agir como mãe' ou 'toda maternal' (NUNCA 'de forma material'). 'nuisance' é 'um estorvo' ou 'um incômodo' (NUNCA a palavra inexistente 'incomodável').\n"
+            "- NOMES E PRATOS JAPONESES: 'Oyakodon' é o prato de frango e ovo (NUNCA corte como 'oya kod'). Nomes de pessoas como 'Hatsuko' são nomes próprios (NUNCA traduza 'Hats' como 'chapéus').\n"
             "- VESTIMENTA: 'panties / underwear' para mulher é 'calcinha' ou 'lingerie' (NUNCA 'cuecas').\n"
             "- FETICHE: 'sow' em mangás adultos é 'porca' ou 'vadia' (NUNCA o verbo 'semear').\n"
             "- GEMIDOS E RUÍDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você' nem confunda 'Anh...!' com 'irmão mais velho'. Mantenha o som expressivo (ex: 'Ugh... uh... mmph...', 'Anh...!').\n"

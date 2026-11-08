@@ -554,6 +554,22 @@ def create_cbz_archive(source_dir, output_cbz_path):
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
 
+def get_image_files(directory):
+    """Retorna lista ordenada com caminhos completos de todas as imagens suportadas em um diretório (imune a colchetes e caracteres especiais no caminho)."""
+    if not directory or not os.path.exists(directory) or not os.path.isdir(directory):
+        return []
+    valid_exts = ('.webp', '.jpg', '.jpeg', '.png', '.bmp')
+    try:
+        files = [
+            os.path.join(directory, f) for f in os.listdir(directory)
+            if f.lower().endswith(valid_exts) and os.path.isfile(os.path.join(directory, f))
+        ]
+        files.sort(key=lambda p: natural_sort_key(os.path.basename(p)))
+        return files
+    except Exception as e:
+        print(f"[!] Erro ao listar imagens em {directory}: {e}")
+        return []
+
 def detect_language_from_samples(texts):
     """Detecta automaticamente o idioma predominante (Japonês, Coreano, Chinês, Inglês, etc.)."""
     full_str = " ".join(texts)
@@ -2908,9 +2924,7 @@ def detect_manga_language_and_engine(manga_dir):
 
     # 4. Analisa amostras de imagens (amostra até 3 páginas distribuídas para maior precisão)
     try:
-        import glob
-        img_files = glob.glob(os.path.join(manga_dir, "*.*"))
-        img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
+        img_files = get_image_files(manga_dir)
         if not img_files:
             return "mokuro" if is_mokuro_available() else "rapidocr"
 
@@ -2993,11 +3007,10 @@ def is_ocr_noise(text, score):
 
 def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progress_cb=None):
     """Extrai textos usando RapidOCR (com suporte a Hangul Coreano e detecção de textos coloridos)."""
-    import glob
-    
-    img_files = glob.glob(os.path.join(manga_dir, "*.*"))
-    img_files = [f for f in img_files if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.png', '.bmp'))]
-    img_files.sort(key=natural_sort_key)
+    img_files = get_image_files(manga_dir)
+    if not img_files:
+        print(f"[!] Erro crítico: Nenhuma imagem válida encontrada em '{manga_dir}'.")
+        return False
     
     engine = get_rapidocr_engine(is_korean=is_korean)
     pages = []
@@ -3240,8 +3253,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 (expected_engine == "mokuro" and file_version not in ("rapidocr", "rapidocr_korean"))
             )
             
-            if total_blocks > 0 and engine_matches:
-                print(f"[+] Cache OCR ({expected_engine.upper()}) encontrado ({total_blocks} balões). Reutilizando...")
+            if len(pages) > 0 and total_blocks > 0 and engine_matches:
+                print(f"[+] Cache OCR ({expected_engine.upper()}) encontrado ({total_blocks} balões em {len(pages)} páginas). Reutilizando...")
                 needs_new_ocr = False
             else:
                 try: os.remove(mokuro_path)
@@ -3282,6 +3295,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 
     with open(mokuro_path, "r", encoding="utf-8") as f:
         mokuro_data = json.load(f)
+
+    raw_pages = mokuro_data.get("pages", [])
+    if not raw_pages:
+        print("[!] Erro crítico: O OCR não extraiu nenhuma página deste mangá. Abortando processo.")
+        return False
         
     pages_data = []
     all_raw_texts = []
@@ -3619,6 +3637,13 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 
         out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
         img_pil.save(out_file, quality=95)
+
+    rendered_files = [f for f in os.listdir(temp_render_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+    if not rendered_files:
+        print("[!] Erro crítico: Nenhuma página diagramada foi gerada no diretório temporário. Abortando processo para evitar salvar pasta vazia.")
+        try: shutil.rmtree(temp_render_dir)
+        except Exception: pass
+        return False
             
     # 5. Criar leitor web responsivo
     create_html_reader(temp_render_dir, clean_name)

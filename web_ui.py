@@ -10,7 +10,7 @@ try:
 except ImportError:
     gr = None
 
-from auto_translate import process_manga, load_config, BASE_OUTPUT_DIR
+from auto_translate import process_manga, load_config, BASE_OUTPUT_DIR, natural_sort_key
 
 def translate_manga_ui(files, ocr_choice, adult_choice, provider_choice, openrouter_key):
     if not files:
@@ -98,11 +98,12 @@ def translate_manga_ui(files, ocr_choice, adult_choice, provider_choice, openrou
     if not output_dir or not os.path.exists(output_dir):
         return None, None, "### ❌ Falha ao localizar a pasta com os resultados traduzidos."
         
-    # Coleta todas as imagens traduzidas geradas para a galeria
-    rendered_images = []
-    for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
-        rendered_images.extend(glob.glob(os.path.join(output_dir, ext)))
-    rendered_images.sort()
+    # Coleta todas as imagens traduzidas geradas para a galeria (imune a colchetes no caminho)
+    rendered_images = [
+        os.path.join(output_dir, f) for f in os.listdir(output_dir)
+        if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')) and os.path.isfile(os.path.join(output_dir, f))
+    ]
+    rendered_images.sort(key=natural_sort_key)
     
     # Se cbz_path não foi retornado diretamente, localiza o .cbz
     if not cbz_path or not os.path.exists(cbz_path):

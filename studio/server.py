@@ -748,16 +748,22 @@ def api_start_translation():
                 progress_cb=progress_callback
             )
             with job_lock:
-                job_state["status"] = "done"
-                job_state["percentage"] = 100
-                job_state["message"] = "Mangá traduzido e salvo com sucesso!"
-                if isinstance(res, dict):
-                    out_p = res.get("output_dir", "")
-                    if out_p:
-                        m_id = get_manga_hash(out_p)
-                        res["id"] = m_id
-                        res["reader_url"] = f"/read/{m_id}/"
-                    job_state["result"] = res
+                if not res or res is False:
+                    job_state["status"] = "error"
+                    job_state["error"] = "Falha no processamento do mangá."
+                    job_state["message"] = "Erro: O processamento falhou ou nenhuma imagem traduzida foi gerada."
+                    job_state["logs"].append("[!] Erro: Nenhuma página traduzida foi salva.")
+                else:
+                    job_state["status"] = "done"
+                    job_state["percentage"] = 100
+                    job_state["message"] = "Mangá traduzido e salvo com sucesso!"
+                    if isinstance(res, dict):
+                        out_p = res.get("output_dir", "")
+                        if out_p:
+                            m_id = get_manga_hash(out_p)
+                            res["id"] = m_id
+                            res["reader_url"] = f"/read/{m_id}/"
+                        job_state["result"] = res
         except Exception as e:
             err_msg = str(e) or e.__class__.__name__
             tb_msg = traceback.format_exc()

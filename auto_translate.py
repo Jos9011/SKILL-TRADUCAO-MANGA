@@ -1267,16 +1267,16 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     except Exception:
                         pass
 
-                    # Se a pausa for longa (> 6 segundos) ou na 2ª tentativa, esgota o modelo e pula para o próximo sem travar
-                    if wait_sec > 6 or attempt >= 1:
-                        print(f"\n[!] Modelo '{m}' com cota saturada no Groq (pausa solicitada: {wait_sec:.0f}s).")
-                        print(f"[+] Alternando IMEDIATAMENTE para o próximo modelo/motor sem travar...")
+                    # Groq TPM: espera inteligente até 12 segundos antes de esgotar o modelo
+                    if wait_sec <= 12 and attempt < max_retries - 1:
+                        print(f"\n[*] Groq em pausa de cota ({wait_sec:.1f}s)... Aguardando liberação de tokens...")
+                        time.sleep(wait_sec)
+                        continue
+                    else:
+                        print(f"\n[!] Modelo '{m}' com cota saturada no Groq (pausa necessária: {wait_sec:.0f}s).")
+                        print(f"[+] Alternando para o próximo modelo compatível...")
                         exhausted_groq.add(m)
                         break
-
-                    print(f"\n[*] Groq em pausa breve ({wait_sec:.1f}s)...")
-                    time.sleep(wait_sec)
-                    continue
                 elif e.code in (404, 500, 502, 503):
                     exhausted_groq.add(m)
                     break
@@ -2271,12 +2271,28 @@ REGRAS OBRIGATÓRIAS:
 5. Priorize concisão e impacto para o texto caber perfeitamente no balão de fala."""
 
 def google_translate_free(text, source_lang="auto", target_lang="pt"):
-    """Traduz texto diretamente usando o endpoint gratuito e ultra-rápido do Google."""
+    """Traduz texto diretamente usando Google Translate com detecção de idioma e fallback resiliente."""
     if not text or not str(text).strip():
         return ""
     clean = str(text).strip()
+
+    # Se source_lang for 'auto', detecta pelo conteúdo para evitar erros de APIs secundárias (ex: MyMemory)
+    sl = source_lang
+    if sl == "auto":
+        if re.search(r'[\u4e00-\u9fff]', clean) and not re.search(r'[\u3040-\u30ff]', clean):
+            sl = "zh-CN"
+        elif re.search(r'[\u3040-\u30ff]', clean):
+            sl = "ja"
+        elif re.search(r'[\uac00-\ud7af]', clean):
+            sl = "ko"
+        elif re.search(r'\b(el|la|los|las|de|en|un|una|por|con|para|del|al|que|es|como|mas|pero)\b', clean, re.IGNORECASE):
+            sl = "es"
+        else:
+            sl = "en"
+
+    # Tentativa 1: Endpoint GTX do Google
     try:
-        url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" + source_lang + "&tl=" + target_lang + "&dt=t&q=" + urllib.parse.quote(clean)
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source_lang}&tl={target_lang}&dt=t&q=" + urllib.parse.quote(clean)
         req = urllib.request.Request(
             url,
             headers={
@@ -2286,13 +2302,23 @@ def google_translate_free(text, source_lang="auto", target_lang="pt"):
         with urllib.request.urlopen(req, timeout=6) as r:
             data = json.loads(r.read().decode("utf-8"))
             if data and data[0]:
-                return "".join(seg[0] for seg in data[0] if seg and seg[0])
+                res_txt = "".join(seg[0] for seg in data[0] if seg and seg[0])
+                if res_txt and res_txt.strip():
+                    return res_txt.strip()
     except Exception:
-        try:
-            from deep_translator import MyMemoryTranslator
-            return MyMemoryTranslator(source='auto', target='pt-BR').translate(clean)
-        except Exception:
-            pass
+        pass
+
+    # Tentativa 2: deep_translator MyMemory com código de idioma explícito (NUNCA passa 'auto')
+    try:
+        from deep_translator import MyMemoryTranslator
+        mymem_sl = sl if sl != "auto" else "zh-CN"
+        if mymem_sl in ("zh", "chinese"): mymem_sl = "zh-CN"
+        res = MyMemoryTranslator(source=mymem_sl, target='pt-BR').translate(clean)
+        if res and "INVALID SOURCE LANGUAGE" not in res and "MYMEMORY WARNING" not in res:
+            return res.strip()
+    except Exception:
+        pass
+
     return clean
 
 def execute_translation_request(messages, engine_opts=None, is_adult=True, max_tokens=1024, is_batch=False, dialogue_map=None):
@@ -3351,15 +3377,18 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         try:
             with open(cache_file, "r", encoding="utf-8") as cf:
                 raw_cache = json.load(cf)
-            # Purga automaticamente entradas corrompidas por alucinações ou vazamentos de IA
+            # Purga automaticamente entradas corrompidas por alucinações, erros de API ou vazamentos de IA
             corrupt_markers = [
                 'delfim perverso', 'o gato está sentado', 'vem lá, meu amigo',
                 'estou traduzindo o texto', 'com base nas regras', 'ok, vamos traduzir',
                 'traduza o texto original', 'como uma inteligência artificial', 'regras obrigatórias',
-                'system message', 'mensagem do sistema'
+                'system message', 'mensagem do sistema', 'invalid source language', 'mymemory warning'
             ]
             for k, v in raw_cache.items():
-                if not any(cm in v.lower() for cm in corrupt_markers) and is_valid_translation(k, v):
+                v_clean = str(v).strip().lower()
+                if v_clean in ('auto', '[auto]'):
+                    continue
+                if not any(cm in v_clean for cm in corrupt_markers) and is_valid_translation(k, v):
                     cache[k] = v
         except Exception:
             pass

@@ -227,14 +227,14 @@ def select_font_for_bubble(text, is_shout=False, is_thought=False):
         if os.path.exists(r"C:\Windows\Fonts\impact.ttf"):
             return r"C:\Windows\Fonts\impact.ttf"
             
-    # 2. Pensamentos, sussurros, notas e diálogos suaves (itálico)
+    # 2. Pensamentos, sussurros, notas e diálogos suaves (itálico com suporte completo a acentos PT-BR)
     if is_thought or (clean.startswith('(') and clean.endswith(')')) or '~' in clean or clean.startswith('*'):
-        if os.path.exists(ANIME_ACE_ITALIC):
-            return ANIME_ACE_ITALIC
-        if os.path.exists(MANGA_TEMPLE_ITALIC):
-            return MANGA_TEMPLE_ITALIC
         if os.path.exists(DIALOGUE_ITALIC_FONT):
             return DIALOGUE_ITALIC_FONT
+        if os.path.exists(ANIME_ACE_ITALIC) and not re.search(r'[ÁÀÂÃÉÊÍÓÔÕÚÜÇáàâãéêíóôõúüç]', clean):
+            return ANIME_ACE_ITALIC
+        if os.path.exists(MANGA_TEMPLE_ITALIC) and not re.search(r'[ÁÀÂÃÉÊÍÓÔÕÚÜÇáàâãéêíóôõúüç~]', clean):
+            return MANGA_TEMPLE_ITALIC
         if os.path.exists(r"C:\Windows\Fonts\comici.ttf"):
             return r"C:\Windows\Fonts\comici.ttf"
             
@@ -342,16 +342,21 @@ def get_glyph_font(char, primary_font):
         
     fsize = getattr(primary_font, 'size', 20)
     
-    # Cadeia de fontes de fallback profissionais do Windows:
+    # Cadeia de fontes de fallback multiplataforma (Windows + Linux/Colab + embutidas):
     # 1. Símbolos, corações, notas musicais, estrelas
-    # 2. Caracteres CJK (chinês, japonês, coreano) para nunca virar caixa preta
-    # 3. Segoe UI padrão e Emoji
+    # 2. Fonte de diálogo local com cobertura latina completa + DejaVu/Noto Linux
+    # 3. Caracteres CJK (chinês, japonês, coreano)
     fallback_candidates = [
         ("sym", r"C:\Windows\Fonts\seguisym.ttf"),
+        ("dialogue_fb", DIALOGUE_FONT),
+        ("komika_fb", KOMIKA_FONT),
         ("cjk", r"C:\Windows\Fonts\msyh.ttc"),
         ("cjk_jp", r"C:\Windows\Fonts\msgothic.ttc"),
         ("segoe", r"C:\Windows\Fonts\segoeui.ttf"),
-        ("emj", r"C:\Windows\Fonts\seguiemj.ttf")
+        ("emj", r"C:\Windows\Fonts\seguiemj.ttf"),
+        ("lin_dejavu", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ("lin_liberation", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+        ("lin_cjk", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     ]
     
     for key_name, fpath in fallback_candidates:
@@ -367,6 +372,42 @@ def get_glyph_font(char, primary_font):
                 return cand_font
                 
     return None
+
+_LINE_WIDTH_CACHE = {}
+
+def measure_manga_line_width(draw, line, font, stroke_width=0):
+    """Mede a largura exata em pixels correspondente ao desenho caractere por caractere de draw_manga_text_line."""
+    line = sanitize_lettering_text(line)
+    if not line:
+        return 0.0
+    fpath = getattr(font, 'path', '')
+    fsize = getattr(font, 'size', 20)
+    key = (fpath, fsize, line, int(stroke_width))
+    cached = _LINE_WIDTH_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    tot_w = 0.0
+    has_chars = False
+    for c in line:
+        if c.isspace():
+            bb = draw.textbbox((0, 0), " ", font=font)
+            tot_w += max(4, bb[2] - bb[0])
+            continue
+        use_f = get_glyph_font(c, font)
+        if use_f is None:
+            continue
+        has_chars = True
+        bb = draw.textbbox((0, 0), c, font=use_f)
+        tot_w += max(1, bb[2] - bb[0])
+
+    if has_chars and stroke_width > 0:
+        tot_w += stroke_width * 2.0
+
+    if len(_LINE_WIDTH_CACHE) > 20000:
+        _LINE_WIDTH_CACHE.clear()
+    _LINE_WIDTH_CACHE[key] = tot_w
+    return tot_w
 
 def draw_manga_text_line(draw, xy, line, font, fill=(0, 0, 0), stroke_width=0, stroke_fill=(255, 255, 255), anchor="mm"):
     """Desenha linha tipográfica com suporte multi-fonte transparente e garantia anti-tofu absoluta (zero quadrados)."""
@@ -969,6 +1010,19 @@ def should_merge_lines(b1, b2):
         
     return False
 
+def is_majority_cjk(lines_text):
+    """Retorna True apenas se o bloco for genuinamente CJK/Hangul, evitando que 1 símbolo '人'/'一' em balão inglês cole palavras."""
+    if not lines_text:
+        return False
+    joined = " ".join(str(lt) for lt in lines_text if lt)
+    cjk_cnt = len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", joined))
+    if cjk_cnt == 0:
+        return False
+    latin_cnt = len(re.findall(r"[A-Za-z]", joined))
+    if latin_cnt >= 3 and cjk_cnt < latin_cnt:
+        return False
+    return True
+
 def smart_group_bubbles(blocks):
     """Agrupa linhas de texto próximas usando conectividade de grafos, suportando leitura oriental e ocidental."""
     n = len(blocks)
@@ -1020,14 +1074,16 @@ def smart_group_bubbles(blocks):
         ymax = max(b["box"][3] for b in comp_blocks)
         
         lines_text = [b["text"].strip() for b in comp_blocks]
-        is_cjk_bubble = any(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", lt) for lt in lines_text)
+        is_cjk_bubble = is_majority_cjk(lines_text)
         full_text = smart_join_lines(lines_text, is_cjk=is_cjk_bubble)
         full_text = repair_glued_text(full_text)
         raw_boxes = [b["box"] for b in comp_blocks]
+        orig_line_count = sum(max(1, int(b.get("orig_line_count", len(b.get("lines", [])) or 1))) for b in comp_blocks)
         
         bubbles.append({
             "box": [xmin, ymin, xmax, ymax],
             "raw_boxes": raw_boxes,
+            "orig_line_count": orig_line_count,
             "lines": lines_text,
             "combined_text": full_text,
             "is_vertical": is_vertical
@@ -1036,78 +1092,534 @@ def smart_group_bubbles(blocks):
     bubbles.sort(key=lambda b: (b["box"][1], b["box"][0]))
     return bubbles
 
-def clean_speech_bubble(img, box):
-    """Limpeza inteligente de balões: remove 100% de textos pretos, coloridos e corações sem danificar a borda."""
-    xmin, ymin, xmax, ymax = box
+def clean_speech_bubble(img, box, balloon_mask=None):
+    """Limpeza cirúrgica em multi-camadas:
+    - Isola estritamente o entorno da caixa OCR (evita destruir bordas, cabelos e arte externa com padding gigante).
+    - Adapta-se à cor real do papel/balão (sem chapar branco puro #FFFFFF em balões off-white ou creme).
+    - Trata texto claro em cartão escuro, contorno duplo (outline de SFX) e halos anti-aliased em fundos variados.
+    """
+    xmin, ymin, xmax, ymax = [int(round(v)) for v in box]
     bw = xmax - xmin
     bh = ymax - ymin
     ih, iw = img.shape[:2]
-    
-    pad_x = max(int(bw * 0.40), 45)
-    pad_y = max(int(bh * 0.40), 45)
-    
-    x0 = max(0, xmin - pad_x)
-    y0 = max(0, ymin - pad_y)
-    x1 = min(iw, xmax + pad_x)
-    y1 = min(ih, ymax + pad_y)
-    
-    roi = img[y0:y1, x0:x1]
-    if roi.size == 0:
+    if bw <= 0 or bh <= 0 or ih <= 0 or iw <= 0:
         return
-        
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    
-    # Verifica se a região tem fundo branco preponderante (balão de fala)
-    white_ratio = np.mean(gray > 200)
-    if white_ratio > 0.45:
-        # Detecta textos pretos, coloridos (rosa/vermelho/azul) e corações
-        is_text = (gray < 175) | ((hsv[:, :, 1] > 25) & (gray < 238))
+
+    # Área gravável estrita (apenas margem segura de 4-8px para serifs/acentos, NUNCA 40%/45px!)
+    pad_x = min(max(4, int(bw * 0.05)), 8)
+    pad_y = min(max(4, int(bh * 0.05)), 8)
+    ex0 = max(0, xmin - pad_x)
+    ey0 = max(0, ymin - pad_y)
+    ex1 = min(iw, xmax + pad_x)
+    ey1 = min(ih, ymax + pad_y)
+    if ex1 <= ex0 or ey1 <= ey0:
+        return
+
+    # Janela de contexto (somente leitura) para diferenciar contornos externos/bordas do balão
+    ctx_pad = 22
+    cx0 = max(0, xmin - ctx_pad)
+    cy0 = max(0, ymin - ctx_pad)
+    cx1 = min(iw, xmax + ctx_pad)
+    cy1 = min(ih, ymax + ctx_pad)
+
+    ctx_roi = img[cy0:cy1, cx0:cx1]
+    erase_roi = img[ey0:ey1, ex0:ex1]
+    ocr_roi = img[max(0, ymin):min(ih, ymax), max(0, xmin):min(iw, xmax)]
+    if ctx_roi.size == 0 or erase_roi.size == 0:
+        return
+
+    gray_ctx = cv2.cvtColor(ctx_roi, cv2.COLOR_BGR2GRAY)
+    hsv_ctx = cv2.cvtColor(ctx_roi, cv2.COLOR_BGR2HSV)
+    gray_erase = cv2.cvtColor(erase_roi, cv2.COLOR_BGR2GRAY)
+    gray_ocr = cv2.cvtColor(ocr_roi, cv2.COLOR_BGR2GRAY) if ocr_roi.size > 0 else gray_erase
+
+    # Coordenadas locais da caixa OCR e da zona gravável dentro de ctx_roi
+    ox0, oy0 = max(0, xmin - cx0), max(0, ymin - cy0)
+    ox1, oy1 = min(ctx_roi.shape[1], xmax - cx0), min(ctx_roi.shape[0], ymax - cy0)
+    lx0, ly0 = ex0 - cx0, ey0 - cy0
+    lx1, ly1 = ex1 - cx0, ey1 - cy0
+    rh, rw = gray_ctx.shape
+
+    white_ratio_erase = float(np.mean(gray_ocr > 188))
+    if white_ratio_erase > 0.45:
+        # --- CAMADA A: BALÃO CLARO / BRANCO / OFF-WHITE / TINTADO ---
+        # Amostra a cor real do papel priorizando o anel interno ao redor da caixa OCR para não confundir contorno branco (#FFF) de letra com papel cinza/tintado
+        sample_gray = gray_erase if gray_erase.size >= 16 else gray_ctx
+        sample_bgr = erase_roi if erase_roi.size >= 48 else ctx_roi
+
+        rx0, ry0 = max(0, ox0 - 8), max(0, oy0 - 8)
+        rx1, ry1 = min(rw, ox1 + 8), min(rh, oy1 + 8)
+        ring_mask = np.zeros((rh, rw), dtype=bool)
+        ring_mask[ry0:ry1, rx0:rx1] = True
+        ring_mask[max(0, oy0):min(rh, oy1), max(0, ox0):min(rw, ox1)] = False
+        ring_grays = gray_ctx[ring_mask]
+        ring_bright_mask = ring_grays >= 165
+        ring_bright = ring_grays[ring_bright_mask] if ring_grays.size > 0 else np.array([])
+        used_ring_paper = False
+
+        if ring_bright.size >= 20:
+            ring_med = float(np.median(ring_bright))
+            ring_p75 = float(np.percentile(ring_bright, 75))
+            # Verifica pixels de fundo longe dos traços das letras (separa balão cinza com contorno branco de balão branco sobre retícula)
+            ocr_dark = (gray_ocr < 175).astype(np.uint8)
+            near_dark = cv2.dilate(ocr_dark, np.ones((7, 7), np.uint8)) > 0
+            far_bright = gray_ocr[(~near_dark) & (gray_ocr >= 165)]
+            far_ok = True if far_bright.size < 24 else (float(np.median(far_bright)) < 235.0)
+            if ring_med < 236 and ring_p75 < 232 and far_ok and float(np.mean(np.abs(gray_ocr.astype(np.int16) - int(round(ring_med))) <= 20)) >= 0.10:
+                ring_match = np.abs(ring_bright.astype(np.int16) - int(round(ring_med))) <= 20
+                if np.sum(ring_match) >= 12:
+                    ring_bgr_pool = ctx_roi[ring_mask][ring_bright_mask][ring_match]
+                    med_bgr = np.median(ring_bgr_pool, axis=0)
+                    fill_bgr = (int(round(med_bgr[0])), int(round(med_bgr[1])), int(round(med_bgr[2])))
+                    used_ring_paper = True
+
+        if not used_ring_paper:
+            inner_bright_thr = max(178, int(np.percentile(sample_gray, 55)))
+            bright_mask_s = sample_gray >= inner_bright_thr
+            if np.sum(bright_mask_s) >= 12:
+                bright_px = sample_bgr[bright_mask_s]
+                med_bgr = np.median(bright_px, axis=0)
+                b_val, g_val, r_val = int(round(med_bgr[0])), int(round(med_bgr[1])), int(round(med_bgr[2]))
+                if min(b_val, g_val, r_val) >= 246 and (max(b_val, g_val, r_val) - min(b_val, g_val, r_val)) <= 8:
+                    fill_bgr = (255, 255, 255)
+                else:
+                    fill_bgr = (b_val, g_val, r_val)
+            else:
+                fill_bgr = (255, 255, 255)
+
+        bg_luma = int(round(0.114 * fill_bgr[0] + 0.587 * fill_bgr[1] + 0.299 * fill_bgr[2]))
+        bg_luma = max(165, bg_luma)
+        luma_diff = bg_luma - gray_ctx.astype(np.int16)
+
+        # Limiar adaptativo captura inclusive halos cinzentos suaves sem morder o fundo claro
+        dark_delta = max(26, int(bg_luma * 0.13))
+        is_text = (luma_diff > dark_delta) | ((hsv_ctx[:, :, 1] > 26) & (gray_ctx < min(244, bg_luma - 8)))
         text_mask = is_text.astype(np.uint8) * 255
-        
+
         contours, _ = cv2.findContours(text_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         clean_mask = np.zeros_like(text_mask)
-        rh, rw = gray.shape
-        
-        for c in contours:
-            cx, cy, cw, ch = cv2.boundingRect(c)
-            # Se o contorno encosta na borda externa do ROI, pode ser a borda do balão ou arte externa
-            touches_margin = (cx <= 1 or cy <= 1 or (cx + cw) >= rw - 1 or (cy + ch) >= rh - 1)
-            # Mas se está dentro do núcleo da caixa de texto detectada pelo OCR, é texto garantido!
-            in_text_core = (cx >= (xmin - x0 - 6) and (cx + cw) <= (xmax - x0 + 6) and
-                            cy >= (ymin - y0 - 6) and (cy + ch) <= (ymax - y0 + 6))
-            if in_text_core or not touches_margin:
-                cv2.drawContours(clean_mask, [c], -1, 255, -1)
-                
-        clean_mask = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
-        roi[clean_mask > 0] = (255, 255, 255)
-    else:
-        # Inpainting seguro para texturas, retículas e arte de fundo
-        is_text = (gray < 165) | ((hsv[:, :, 1] > 35) & (gray < 235))
-        mask = cv2.dilate(is_text.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=2)
-        img[y0:y1, x0:x1] = cv2.inpaint(roi, mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
 
-def wrap_text_to_width(draw, text, font, max_w):
-    """Quebra texto por palavras usando largura em pixels real da fonte com balanceamento anti-viúvas/órfãos."""
+        # Máscara restritiva para contornos grandes que encostam na borda externa do balão
+        inner_ocr_mask = np.zeros_like(text_mask)
+        ix0_in = min(max(0, ox0 + 1), rw)
+        iy0_in = min(max(0, oy0 + 1), rh)
+        ix1_in = max(ix0_in, min(rw, ox1 - 1))
+        iy1_in = max(iy0_in, min(rh, oy1 - 1))
+        inner_ocr_mask[iy0_in:iy1_in, ix0_in:ix1_in] = 255
+
+        for c in contours:
+            rcx, rcy, rcw, rch = cv2.boundingRect(c)
+            touches_ctx_edge = (rcx <= 1 or rcy <= 1 or (rcx + rcw) >= rw - 1 or (rcy + rch) >= rh - 1)
+            is_outer_ring = (rcw >= bw + 14 and rch >= bh + 14) or (rcw > bw + 26) or (rch > bh + 26)
+            overlaps_text = not (rcx + rcw < ox0 - 5 or rcx > ox1 + 5 or rcy + rch < oy0 - 5 or rcy > oy1 + 5)
+            if not overlaps_text:
+                continue
+
+            if not touches_ctx_edge and not is_outer_ring:
+                cv2.drawContours(clean_mask, [c], -1, 255, -1)
+            elif white_ratio_erase > 0.45:
+                # Letra tocou a borda do balão: remove somente os traços estritamente dentro da caixa OCR
+                single_c = np.zeros_like(text_mask)
+                cv2.drawContours(single_c, [c], -1, 255, -1)
+                clean_mask |= (single_c & inner_ocr_mask)
+
+        # Varredura de halo anti-aliasing (+ contorno branco em balão cinza/tintado) e confinamento à erase_box
+        dil_clean = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+        halo_near = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1) > 0
+        halo_ring = halo_near & (luma_diff > 12)
+        if bg_luma < 236:
+            halo_wide = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1) > 0
+            halo_ring = halo_ring | (halo_wide & ((gray_ctx.astype(np.int16) - bg_luma) > 26))
+        final_mask = ((dil_clean > 0) | halo_ring).astype(np.uint8) * 255
+
+        # Nunca pinta fora de erase_box (e respeita balloon_mask se fornecida)
+        erase_gate = np.zeros_like(text_mask)
+        erase_gate[ly0:ly1, lx0:lx1] = 255
+        if balloon_mask is not None:
+            bmask_crop = balloon_mask[cy0:cy1, cx0:cx1]
+            if bmask_crop.shape == erase_gate.shape:
+                erase_gate &= ((bmask_crop > 0).astype(np.uint8) * 255)
+        final_mask &= erase_gate
+        ctx_roi[final_mask > 0] = fill_bgr
+    else:
+        # --- CAMADA B: CARTÕES ESCUROS / TEXTURAS / RETÍCULAS / SFX COLORIDOS ---
+        # Amostra a moldura periférica fora da caixa OCR (para inferir polaridade e cor base)
+        perim_mask = np.ones((rh, rw), dtype=bool)
+        px_in0, py_in0 = max(0, ox0 - 1), max(0, oy0 - 1)
+        px_in1, py_in1 = min(rw, ox1 + 1), min(rh, oy1 + 1)
+        perim_mask[py_in0:py_in1, px_in0:px_in1] = False
+        perim_grays = gray_ctx[perim_mask] if np.any(perim_mask) else gray_ctx.ravel()
+        outer_med_gray = float(np.median(perim_grays)) if perim_grays.size > 0 else float(np.median(gray_ctx))
+        outer_med_bgr = np.median(ctx_roi[perim_mask], axis=0) if np.any(perim_mask) else np.median(ctx_roi.reshape(-1, 3), axis=0)
+
+        is_white_on_dark = (
+            (outer_med_gray < 115)
+            and (float(np.mean(gray_ocr > max(92, outer_med_gray + 38))) > 0.04)
+            and (float(np.mean(gray_ocr < max(110, outer_med_gray + 26))) > 0.30)
+        )
+
+        if is_white_on_dark:
+            max_ch = np.max(ctx_roi, axis=2)
+            lum_thr = min(208, max(88, outer_med_gray + 34))
+            cand_mask = ((gray_ctx > lum_thr) | (max_ch > outer_med_gray + 42)).astype(np.uint8) * 255
+        else:
+            med_local = cv2.medianBlur(gray_ctx, 21)
+            dark_fg = ((med_local.astype(np.int16) - gray_ctx.astype(np.int16)) > 24) | (gray_ctx < 115)
+            bgr_dist = np.linalg.norm(ctx_roi.astype(np.float32) - outer_med_bgr.astype(np.float32), axis=2)
+            color_fg = (hsv_ctx[:, :, 1] > 35) & (bgr_dist > 38)
+            base_fg = dark_fg | color_fg
+
+            # Inclui contorno branco de destaque (outline) colado às letras em SFX/retículas
+            outline_white = (gray_ctx.astype(np.int16) - med_local.astype(np.int16)) > 36
+            near_fg = cv2.dilate(base_fg.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1) > 0
+            cand_mask = (base_fg | (outline_white & near_fg)).astype(np.uint8) * 255
+
+        contours, _ = cv2.findContours(cand_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        keep_mask = np.zeros_like(cand_mask)
+        inner_ocr_mask = np.zeros_like(cand_mask)
+        inner_ocr_mask[max(0, oy0):min(rh, oy1), max(0, ox0):min(rw, ox1)] = 255
+
+        for c in contours:
+            rcx, rcy, rcw, rch = cv2.boundingRect(c)
+            overlaps_text = not (rcx + rcw < ox0 - 3 or rcx > ox1 + 3 or rcy + rch < oy0 - 3 or rcy > oy1 + 3)
+            if not overlaps_text:
+                continue
+            touches_ctx_edge = (rcx <= 1 or rcy <= 1 or (rcx + rcw) >= rw - 1 or (rcy + rch) >= rh - 1)
+            huge_bg = (rcw * rch) > (rw * rh * 0.65) and touches_ctx_edge
+            if not huge_bg:
+                cv2.drawContours(keep_mask, [c], -1, 255, -1)
+            else:
+                # Fundo escuro conectado com a arte externa: limita apenas à caixa OCR
+                single_c = np.zeros_like(cand_mask)
+                cv2.drawContours(single_c, [c], -1, 255, -1)
+                keep_mask |= (single_c & inner_ocr_mask)
+
+        # Fallback de segurança se quase nada foi selecionado em cartão pequeno
+        if np.sum(keep_mask > 0) < 6:
+            keep_mask = cand_mask & inner_ocr_mask
+
+        # Confina estritamente à erase_box (pad 5-10px): ZERO pixels borrados fora do texto!
+        erase_gate = np.zeros_like(cand_mask)
+        erase_gate[ly0:ly1, lx0:lx1] = 255
+        final_mask = cv2.dilate(keep_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1) & erase_gate
+
+        if np.any(final_mask > 0):
+            if is_white_on_dark and perim_grays.size > 15 and float(np.std(perim_grays)) < 18.0 and outer_med_gray < 75:
+                fill_dark = (int(round(outer_med_bgr[0])), int(round(outer_med_bgr[1])), int(round(outer_med_bgr[2])))
+                ctx_roi[final_mask > 0] = fill_dark
+            else:
+                inpainted = cv2.inpaint(ctx_roi, final_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+                img[ey0:ey1, ex0:ex1] = inpainted[ly0:ly1, lx0:lx1]
+
+def analyze_safe_balloon(cleaned_gray, orig_gray, box, limits):
+    """
+    Camada geométrica anti-extravasamento:
+    Detecta o contorno fechado real do balão (descartando rabichos e vazamentos de borda aberta),
+    calcula centro seguro ancorado ao texto original e perfil de larguras por altura.
+    """
+    ih, iw = cleaned_gray.shape[:2]
+    xmin, ymin, xmax, ymax = [int(round(v)) for v in box]
+    bw = max(1, xmax - xmin)
+    bh = max(1, ymax - ymin)
+    cx = (xmin + xmax) / 2.0
+    cy = (ymin + ymax) / 2.0
+    x_min_limit, x_max_limit, y_min_limit, y_max_limit = limits
+
+    ox0, oy0 = max(0, xmin), max(0, ymin)
+    ox1, oy1 = min(iw, xmax), min(ih, ymax)
+    sub_c = cleaned_gray[oy0:oy1, ox0:ox1]
+    sub_o = orig_gray[oy0:oy1, ox0:ox1] if orig_gray is not None else sub_c
+    is_white_bg = float(np.mean(sub_c > 175)) > 0.48 if sub_c.size > 0 else True
+    is_dark_card = False
+    render_white_on_dark = False
+    if not is_white_bg and sub_o.size > 0:
+        med_c = float(np.median(sub_c))
+        med_o = float(np.median(sub_o))
+        if med_c < 85 and float(np.mean(sub_c < 105)) > 0.65:
+            is_dark_card = True
+            if med_o < 90 and float(np.mean(sub_o > max(92, med_o + 40))) > 0.04:
+                render_white_on_dark = True
+
+    result = {
+        "is_white_bg": is_white_bg,
+        "is_dark_card": is_dark_card,
+        "render_white_on_dark": render_white_on_dark,
+        "is_enclosed": False,
+        "shape_type": "rect" if not is_white_bg else "oval",
+        "safe_cx": cx,
+        "safe_cy": cy,
+        "safe_min_x": max(float(xmin), x_min_limit),
+        "safe_max_x": min(float(xmax), x_max_limit),
+        "safe_min_y": max(float(ymin), y_min_limit),
+        "safe_max_y": min(float(ymax), y_max_limit),
+        "target_w": float(bw),
+        "target_h": float(bh),
+        "band_profile": None
+    }
+
+    if is_white_bg or is_dark_card:
+        # Janela de busca limitada às partições dos vizinhos e expansão proporcional segura
+        sx0 = max(int(math.ceil(x_min_limit)), int(xmin - max(60, bw * 0.85)))
+        sx1 = min(int(math.floor(x_max_limit)), int(xmax + max(60, bw * 0.85)))
+        sy0 = max(int(math.ceil(y_min_limit)), int(ymin - max(50, bh * 0.75)))
+        sy1 = min(int(math.floor(y_max_limit)), int(ymax + max(50, bh * 0.75)))
+
+        if sx1 > sx0 + 16 and sy1 > sy0 + 16:
+            s_roi = cleaned_gray[sy0:sy1, sx0:sx1]
+            sh, sw = s_roi.shape
+            if is_white_bg:
+                sub_bg = float(np.median(sub_c)) if sub_c.size > 0 else 245.0
+                if sub_bg >= 232:
+                    b_thresh = int(np.clip(sub_bg - 26, 190, 212))
+                elif sub_bg >= 180:
+                    b_thresh = int(np.clip(sub_bg - 28, 150, 200))
+                else:
+                    hi_p = float(np.percentile(s_roi, 75))
+                    b_thresh = int(np.clip(hi_p - 30, 150, 210))
+                raw_bin = (s_roi > b_thresh).astype(np.uint8) * 255
+            else:
+                raw_bin = (s_roi < 95).astype(np.uint8) * 255
+
+            # Fecha eventuais pixels residuais minúsculos de letras antigas sem unir balões separados
+            closed = cv2.morphologyEx(raw_bin, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+            # Corta rabichos estreitos e micro-frestas na borda do balão
+            k_tail = max(5, min(9, int(min(bw, bh) * 0.14) | 1))
+            opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_tail, k_tail)))
+
+            # Seleciona componente conectado que melhor cobre a caixa OCR original
+            lx0 = max(0, ox0 - sx0)
+            ly0 = max(0, oy0 - sy0)
+            lx1 = min(sw, ox1 - sx0)
+            ly1 = min(sh, oy1 - sy0)
+
+            n_lbl, labels, stats, _ = cv2.connectedComponentsWithStats(opened)
+            best_lbl = 0
+            best_score = 0
+            if lx1 > lx0 and ly1 > ly0 and n_lbl > 1:
+                crop_lbl = labels[ly0:ly1, lx0:lx1]
+                vals, counts = np.unique(crop_lbl[crop_lbl > 0], return_counts=True)
+                for v, cnt in zip(vals, counts):
+                    if cnt > best_score:
+                        best_score = int(cnt)
+                        best_lbl = int(v)
+
+            if best_lbl == 0 and n_lbl <= 1:
+                n_lbl2, labels2, stats2, _ = cv2.connectedComponentsWithStats(closed)
+                if lx1 > lx0 and ly1 > ly0 and n_lbl2 > 1:
+                    crop_lbl2 = labels2[ly0:ly1, lx0:lx1]
+                    vals, counts = np.unique(crop_lbl2[crop_lbl2 > 0], return_counts=True)
+                    if len(counts) > 0:
+                        idx_m = int(np.argmax(counts))
+                        best_lbl = int(vals[idx_m])
+                        best_score = int(counts[idx_m])
+                        labels = labels2
+                        stats = stats2
+
+            if best_lbl > 0 and best_score > 16:
+                comp = (labels == best_lbl).astype(np.uint8)
+                cx_bb, cy_bb, cw_bb, ch_bb, area_bb = stats[best_lbl]
+
+                # Checagem anti-vazamento (detecta fundo aberto sem borda)
+                top_touch = float(np.mean(comp[0, :] > 0))
+                bot_touch = float(np.mean(comp[-1, :] > 0))
+                left_touch = float(np.mean(comp[:, 0] > 0))
+                right_touch = float(np.mean(comp[:, -1] > 0))
+                open_sides = sum(1 for t in (top_touch, bot_touch, left_touch, right_touch) if t > 0.38)
+                fill_roi = float(np.mean(comp > 0))
+                leaked_wide = (open_sides >= 2 and fill_roi > 0.62) or (
+                    open_sides >= 1 and ((cw_bb > max(bw * 2.15, bw + 125)) or (ch_bb > max(bh * 2.15, bh + 125)))
+                )
+
+                if not leaked_wide:
+                    result["is_enclosed"] = True
+                    # Fecha furos internos estritamente cercados pelo balão (pontos residuais não podem furar o perfil)
+                    inv_comp = ((comp == 0).astype(np.uint8) * 255)
+                    pad_inv = cv2.copyMakeBorder(inv_comp, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=255)
+                    ff_mask = np.zeros((pad_inv.shape[0] + 2, pad_inv.shape[1] + 2), np.uint8)
+                    cv2.floodFill(pad_inv, ff_mask, (0, 0), 128)
+                    holes_comp = (pad_inv[1:-1, 1:-1] == 255).astype(np.uint8)
+                    if np.any(holes_comp) and int(np.sum(holes_comp)) < max(400, int(area_bb * 0.35)):
+                        comp = (comp | holes_comp).astype(np.uint8)
+
+                    rect_fill = float(np.sum(comp > 0)) / max(1.0, float(cw_bb * ch_bb))
+                    result["shape_type"] = "rect" if (rect_fill >= 0.85 or is_dark_card) else "oval"
+
+                    # Encontra centro seguro dentro da área interior ancorado ao centro OCR original
+                    dist = cv2.distanceTransform(comp, cv2.DIST_L2, 5)
+                    max_dx = min(bw * 0.30, 32.0)
+                    max_dy = min(bh * 0.30, 32.0)
+                    ax0 = max(0, int(round((cx - max_dx) - sx0)))
+                    ax1 = min(sw, int(round((cx + max_dx) - sx0)) + 1)
+                    ay0 = max(0, int(round((cy - max_dy) - sy0)))
+                    ay1 = min(sh, int(round((cy + max_dy) - sy0)) + 1)
+                    if ax1 > ax0 and ay1 > ay0 and np.any(comp[ay0:ay1, ax0:ax1]):
+                        sub_d = dist[ay0:ay1, ax0:ax1]
+                        py_m, px_m = np.unravel_index(np.argmax(sub_d), sub_d.shape)
+                        local_cx = ax0 + int(px_m)
+                        local_cy = ay0 + int(py_m)
+                    else:
+                        local_cx = int(np.clip(round(cx - sx0), 0, sw - 1))
+                        local_cy = int(np.clip(round(cy - sy0), 0, sh - 1))
+
+                    # Verifica coluna/linha contínua ao redor do centro
+                    row_comp = comp[local_cy, :] > 0
+                    col_comp = comp[:, local_cx] > 0
+
+                    def _cont_span(arr, idx_c):
+                        if not arr[idx_c]:
+                            hits = np.where(arr)[0]
+                            if len(hits) == 0:
+                                return idx_c, idx_c
+                            idx_c = int(hits[np.argmin(np.abs(hits - idx_c))])
+                        l_i = idx_c
+                        while l_i > 0 and arr[l_i - 1]:
+                            l_i -= 1
+                        r_i = idx_c
+                        while r_i < len(arr) - 1 and arr[r_i + 1]:
+                            r_i += 1
+                        return l_i, r_i
+
+                    rx_l, rx_r = _cont_span(row_comp, local_cx)
+                    ry_t, ry_b = _cont_span(col_comp, local_cy)
+
+                    inner_pad = max(4, min(9, int(round(min(bw, bh) * 0.08))))
+                    smx = max(float(sx0 + rx_l + inner_pad), x_min_limit)
+                    smax = min(float(sx0 + rx_r - inner_pad), x_max_limit)
+                    smy = max(float(sy0 + ry_t + inner_pad), y_min_limit)
+                    smay = min(float(sy0 + ry_b - inner_pad), y_max_limit)
+
+                    if smax > smx + 18 and smay > smy + 18:
+                        cand_cx = (smx + smax) / 2.0
+                        cand_cy = (smy + smay) / 2.0
+                        # Limita deslocamento extremo de centro mesmo dentro de balões muito assimétricos
+                        cand_cx = float(np.clip(cand_cx, cx - max_dx, cx + max_dx))
+                        cand_cy = float(np.clip(cand_cy, cy - max_dy, cy + max_dy))
+                        # Re-centraliza largura/altura simétricas disponíveis em torno do cand_cx/cy
+                        half_w = min(cand_cx - smx, smax - cand_cx)
+                        if half_w >= 14:
+                            smx = cand_cx - half_w
+                            smax = cand_cx + half_w
+                        result["safe_cx"] = cand_cx
+                        result["safe_cy"] = cand_cy
+                        result["safe_min_x"] = smx
+                        result["safe_max_x"] = smax
+                        result["safe_min_y"] = smy
+                        result["safe_max_y"] = smay
+                        result["target_w"] = max(24.0, smax - smx)
+                        result["target_h"] = max(24.0, smay - smy)
+
+                        # Constrói perfil real de larguras por faixa vertical (9 amostras entre topo e base)
+                        y_in0 = max(0, int(round(smy - sy0)))
+                        y_in1 = min(sh - 1, int(round(smay - sy0)))
+                        lcx_final = int(np.clip(round(cand_cx - sx0), 0, sw - 1))
+                        if y_in1 > y_in0 + 6:
+                            profile = []
+                            for frac in np.linspace(0.0, 1.0, 9):
+                                yy = int(round(y_in0 + frac * (y_in1 - y_in0)))
+                                row_ws = []
+                                for dy in range(-2, 3):
+                                    ryy = int(np.clip(yy + dy, y_in0, y_in1))
+                                    if comp[ryy, lcx_final] > 0:
+                                        rl, rr = _cont_span(comp[ryy, :] > 0, lcx_final)
+                                        ah = min(lcx_final - (rl + inner_pad), (rr - inner_pad) - lcx_final)
+                                        if ah > 0:
+                                            row_ws.append(float(ah * 2.0))
+                                if not row_ws:
+                                    rl, rr = _cont_span(comp[yy, :] > 0, lcx_final)
+                                    ah = min(lcx_final - (rl + inner_pad), (rr - inner_pad) - lcx_final)
+                                    w_safe = max(18.0, float(ah * 2.0))
+                                else:
+                                    w_safe = max(18.0, float(np.median(row_ws)))
+                                profile.append((float(frac), min(result["target_w"], w_safe)))
+                            result["band_profile"] = profile
+                        return result
+
+    # Fallback seguro (fundo texturizado, SFX aberto ou borda aberta): mantém ancoragem no texto OCR original
+    result["is_enclosed"] = False
+    result["safe_cx"] = float(np.clip(cx, x_min_limit + 10, max(x_min_limit + 10, x_max_limit - 10)))
+    result["safe_cy"] = float(np.clip(cy, y_min_limit + 10, max(y_min_limit + 10, y_max_limit - 10)))
+    max_tw = min((result["safe_cx"] - x_min_limit) * 2.0, (x_max_limit - result["safe_cx"]) * 2.0)
+    max_th = min((result["safe_cy"] - y_min_limit) * 2.0, (y_max_limit - result["safe_cy"]) * 2.0)
+    fallback_w = max(bw * 1.15, min(bw + 24.0, bw * 1.25))
+    # Para coluna vertical CJK estreita em margem lisa (branca ou cinza claro) sem arte ao lado, permite abertura horizontal controlada
+    if is_white_bg and bw < 60 and bh > bw * 1.8 and max_tw > bw + 30:
+        cand_w = min(max_tw * 0.85, max(90.0, min(145.0, bh * 0.72)))
+        wx0 = max(int(math.ceil(x_min_limit)), int(round(result["safe_cx"] - cand_w / 2.0)))
+        wx1 = min(int(math.floor(x_max_limit)), int(round(result["safe_cx"] + cand_w / 2.0)))
+        wy0 = max(0, int(ymin))
+        wy1 = min(ih, int(ymax))
+        inner_bg = float(np.median(sub_c)) if sub_c.size > 0 else 255.0
+        if wx1 > wx0 + bw and wy1 > wy0 + 10 and inner_bg > 165:
+            side_patch = cleaned_gray[wy0:wy1, wx0:wx1].astype(np.float32)
+            if side_patch.size > 0:
+                uniform_frac = float(np.mean(np.abs(side_patch - inner_bg) < 26.0))
+                dark_frac = float(np.mean(side_patch < (inner_bg - 38.0)))
+                if uniform_frac > 0.86 and dark_frac < 0.08:
+                    fallback_w = max(fallback_w, float(wx1 - wx0 - 6))
+    result["target_w"] = max(28.0, min(max_tw if max_tw > 28 else bw, fallback_w))
+    result["target_h"] = max(26.0, min(max_th if max_th > 26 else bh, max(bh * 1.10, bh + 12.0)))
+    result["safe_min_x"] = result["safe_cx"] - result["target_w"] / 2.0
+    result["safe_max_x"] = result["safe_cx"] + result["target_w"] / 2.0
+    result["safe_min_y"] = result["safe_cy"] - result["target_h"] / 2.0
+    result["safe_max_y"] = result["safe_cy"] + result["target_h"] / 2.0
+    return result
+
+def _try_hyphenate_word(draw, word, font, max_w, stroke_width=0, min_len=5):
+    """Tenta dividir palavra longa em PT-BR com hífen silábico seguro para caber em max_w."""
+    if not _pyphen_dic or len(word) < min_len:
+        return None
+    clean_parts = _pyphen_dic.inserted(word).split('-')
+    if len(clean_parts) <= 1:
+        return None
+    part1 = ""
+    p_idx = 0
+    best_split = None
+    while p_idx < len(clean_parts) - 1:
+        cand = part1 + clean_parts[p_idx]
+        rem = "".join(clean_parts[p_idx + 1:])
+        min_part = 2 if len(word) <= 7 else 3
+        if len(cand) >= min_part and len(rem) >= 2:
+            if measure_manga_line_width(draw, cand + "-", font, stroke_width) <= max_w:
+                part1 = cand
+                p_idx += 1
+                best_split = (part1 + "-", rem)
+                continue
+        if len(cand) < min_part:
+            part1 = cand
+            p_idx += 1
+        else:
+            break
+    return best_split
+
+def wrap_text_to_width(draw, text, font, max_w, stroke_width=0):
+    """Quebra texto por palavras usando largura exata (com suporte a hifenização PT-BR e anti-órfãos)."""
     paragraphs = text.split('\n')
     all_lines = []
+    min_h_len = 5 if max_w < 140 else 7
     for p in paragraphs:
-        words = p.split()
+        words = list(p.split())
         if not words:
             continue
         curr = []
-        for w in words:
+        idx = 0
+        while idx < len(words):
+            w = words[idx]
             test_l = ' '.join(curr + [w])
-            bbox = draw.textbbox((0, 0), test_l, font=font)
-            if (bbox[2] - bbox[0]) <= max_w:
+            if measure_manga_line_width(draw, test_l, font, stroke_width) <= max_w:
                 curr.append(w)
+                idx += 1
             else:
                 if curr:
                     all_lines.append(' '.join(curr))
-                    curr = [w]
-                else:
-                    all_lines.append(w)
                     curr = []
+                else:
+                    split_res = _try_hyphenate_word(draw, w, font, max_w, stroke_width, min_len=min_h_len)
+                    if split_res:
+                        all_lines.append(split_res[0])
+                        words[idx] = split_res[1]
+                    else:
+                        all_lines.append(w)
+                        idx += 1
         if curr:
             all_lines.append(' '.join(curr))
             
@@ -1117,41 +1629,55 @@ def wrap_text_to_width(draw, text, font, max_w):
         prev_words = all_lines[-2].split()
         if len(last_words) == 1 and len(last_words[0]) <= 5 and len(prev_words) >= 3:
             word_to_shift = prev_words[-1]
-            cand_prev = ' '.join(prev_words[:-1])
-            cand_last = word_to_shift + ' ' + all_lines[-1]
-            bb_last = draw.textbbox((0, 0), cand_last, font=font)
-            if (bb_last[2] - bb_last[0]) <= max_w:
-                all_lines[-2] = cand_prev
-                all_lines[-1] = cand_last
+            if not word_to_shift.endswith('-'):
+                cand_prev = ' '.join(prev_words[:-1])
+                cand_last = word_to_shift + ' ' + all_lines[-1]
+                if measure_manga_line_width(draw, cand_last, font, stroke_width) <= max_w:
+                    all_lines[-2] = cand_prev
+                    all_lines[-1] = cand_last
                 
     return all_lines
 
-def wrap_text_diamond(draw, text, font, max_w, max_h):
-    """Quebra texto no formato de diamante/elipse típico dos balões de mangá com suporte a hifenização PT-BR e anti-órfãos."""
+def wrap_text_diamond(draw, text, font, max_w, max_h, stroke_width=0, shape_type="oval", band_profile=None, line_spacing=1.14):
+    """Quebra texto seguindo o formato real do balão (perfil medido / elipse suave / retângulo) com hifenização ativa PT-BR."""
     words = text.split()
     if not words:
         return []
         
     line_bbox = draw.textbbox((0, 0), "Ag", font=font)
-    line_h = (line_bbox[3] - line_bbox[1]) * 1.15
+    line_h = max(4.0, (line_bbox[3] - line_bbox[1]) * line_spacing)
     max_k = max(1, int(max_h / line_h))
-    
-    single_bbox = draw.textbbox((0, 0), text, font=font)
-    if (single_bbox[2] - single_bbox[0]) <= max_w:
-        return [text]
 
     def get_allowed_w(li, total_lines):
+        if band_profile and total_lines >= 1:
+            # Calcula a posição Y real do bloco centralizado dentro da altura do balão
+            span = min(1.0, (total_lines * line_h) / max(1.0, float(max_h)))
+            y_frac = 0.5 + (((li + 0.5) / float(total_lines)) - 0.5) * span
+            y_frac = min(1.0, max(0.0, y_frac))
+            xs = [pt[0] for pt in band_profile]
+            ws = [pt[1] for pt in band_profile]
+            return min(max_w, float(np.interp(y_frac, xs, ws)))
+        if shape_type == "rect":
+            return max_w
         if total_lines <= 1:
             return max_w
-        # y varia de -0.85 a +0.85 (curvatura da elipse do balão)
-        y = ((li + 0.5) - total_lines / 2.0) / (total_lines / 2.0) * 0.85
-        factor = math.sqrt(max(0.25, 1.0 - y * y))
+        # Balões verticais estreitos têm corpo mais reto (cápsula), ovais largos curvam mais nas pontas
+        is_narrow_vert = (max_h > max_w * 1.35) or (max_w < 120)
+        curve = 0.52 if is_narrow_vert else 0.72
+        min_f = 0.55 if is_narrow_vert else 0.42
+        y = ((li + 0.5) - total_lines / 2.0) / (total_lines / 2.0) * curve
+        factor = math.sqrt(max(min_f, 1.0 - y * y))
         return max_w * factor
 
+    single_w = measure_manga_line_width(draw, text, font, stroke_width)
+    mid_allowed = get_allowed_w(0, 1)
+    if single_w <= mid_allowed:
+        return [text]
+
+    min_h_len = 5 if max_w < 140 else 7
     best_lines = None
     best_penalty = float('inf')
 
-    # Testa números de linhas de 2 até max_k
     for k in range(2, max_k + 1):
         lines = []
         w_idx = 0
@@ -1164,36 +1690,27 @@ def wrap_text_diamond(draw, text, font, max_w, max_h):
             while w_idx < len(words_copy):
                 w = words_copy[w_idx]
                 test_l = ' '.join(curr + [w])
-                bbox = draw.textbbox((0, 0), test_l, font=font)
-                if (bbox[2] - bbox[0]) <= allowed_w or not curr:
+                tw = measure_manga_line_width(draw, test_l, font, stroke_width)
+                if tw <= allowed_w:
                     curr.append(w)
                     w_idx += 1
+                elif not curr:
+                    # Palavra única maior que allowed_w: tenta hifenização silábica primeiro
+                    split_res = _try_hyphenate_word(draw, w, font, allowed_w, stroke_width, min_len=min_h_len)
+                    if split_res:
+                        curr.append(split_res[0])
+                        words_copy[w_idx] = split_res[1]
+                        break
+                    elif tw <= max_w:
+                        curr.append(w)
+                        w_idx += 1
+                    else:
+                        possible = False
+                        break
                 else:
-                    # Tenta hifenização silábica segura (anti-órfão: ambas as partes com >= 3 caracteres)
-                    if _pyphen_dic and len(w) >= 7 and not curr:
-                        hyphenated = _pyphen_dic.inserted(w).split('-')
-                        if len(hyphenated) > 1:
-                            part1 = ""
-                            p_idx = 0
-                            while p_idx < len(hyphenated) - 1:
-                                candidate = part1 + hyphenated[p_idx]
-                                rem = "".join(hyphenated[p_idx + 1:])
-                                if len(candidate) >= 3 and len(rem) >= 3:
-                                    bb = draw.textbbox((0, 0), candidate + "-", font=font)
-                                    if (bb[2] - bb[0]) <= allowed_w:
-                                        part1 = candidate
-                                        p_idx += 1
-                                    else:
-                                        break
-                                else:
-                                    p_idx += 1
-                            if part1:
-                                part2 = "".join(hyphenated[p_idx:])
-                                if len(part2) >= 3:
-                                    curr.append(part1 + "-")
-                                    words_copy[w_idx] = part2
-                                    continue
                     break
+            if not possible:
+                break
             if curr:
                 lines.append(' '.join(curr))
             elif w_idx < len(words_copy):
@@ -1201,11 +1718,11 @@ def wrap_text_diamond(draw, text, font, max_w, max_h):
                 break
                 
         if possible and w_idx == len(words_copy):
-            # Verifica se todas as linhas cabem na largura útil
+            # Verifica estritamente cada linha contra a largura daquela faixa do balão
             all_fit = True
-            for l_str in lines:
-                bb = draw.textbbox((0, 0), l_str, font=font)
-                if (bb[2] - bb[0]) > max_w:
+            for idx_l, l_str in enumerate(lines):
+                lw = measure_manga_line_width(draw, l_str, font, stroke_width)
+                if lw > max_w or (band_profile and lw > get_allowed_w(idx_l, len(lines)) + 2.0):
                     all_fit = False
                     break
             if all_fit:
@@ -1216,6 +1733,8 @@ def wrap_text_diamond(draw, text, font, max_w, max_h):
                         penalty += 50
                     else:
                         penalty += 15
+                # Penalidade leve por muitos hífens se uma quebra sem hífen também couber
+                penalty += sum(8 for l in lines if l.endswith('-'))
                 if penalty < best_penalty:
                     best_penalty = penalty
                     best_lines = lines
@@ -1225,49 +1744,126 @@ def wrap_text_diamond(draw, text, font, max_w, max_h):
     if best_lines:
         return best_lines
                 
-    # Fallback para quebra proporcional linear se diamond estrito não encaixar
-    return wrap_text_to_width(draw, text, font, max_w)
+    # Fallback para quebra proporcional linear usando o menor ancho útil ou max_w
+    safe_lin_w = min(max_w, min((get_allowed_w(i, max(2, max_k)) for i in range(max(2, max_k))), default=max_w) * 1.15 if band_profile else max_w)
+    return wrap_text_to_width(draw, text, font, safe_lin_w, stroke_width=stroke_width)
 
-def fit_text_to_box(draw, text, max_w, max_h, font_path):
-    """Ajusta proporcionalmente o tamanho da fonte e quebras de linha com 18% de breathing room e leading de scanlation."""
+def fit_text_to_box_ex(draw, text, max_w, max_h, font_path, stroke_width=1, shape_type="oval", band_profile=None, page_w=None, orig_line_h=None, page_med_h=None, is_display=False, pre_padded=False):
+    """Ajusta proporcionalmente fonte e quebras com calibração de escala da página, evitando texto minúsculo ou gigante."""
     text = sanitize_lettering_text(text).strip()
     words = text.split()
     if not words:
-        return ImageFont.truetype(font_path, 12), []
+        return ImageFont.truetype(font_path, 12), [], 1.14
         
-    # Margens de segurança de scanlation (18% horizontal e 20% vertical de breathing room)
-    usable_w = max(24, int(max_w * 0.82))
-    usable_h = max(24, int(max_h * 0.80))
+    # Quando a caixa já veio com inner_pad de analyze_safe_balloon, evita corte duplo excessivo
+    w_mult = 0.92 if (pre_padded or band_profile is not None) else 0.85
+    h_mult = 0.90 if (pre_padded or band_profile is not None) else 0.84
+    usable_w = max(24, int(max_w * w_mult))
+    usable_h = max(24, int(max_h * h_mult))
+    scaled_profile = None
+    if band_profile:
+        scaled_profile = [(p_y, max(20.0, p_w * w_mult)) for (p_y, p_w) in band_profile]
 
-    ideal_max = int(min(usable_h * 0.45, usable_w * 0.35, 56))
-    max_font_size = max(18, min(ideal_max, 56))
-    
-    # Busca tamanho ideal com passo 1 para ajuste contínuo suave
-    for font_size in range(max_font_size, 7, -1):
-        font = ImageFont.truetype(font_path, font_size)
-        line_bbox = draw.textbbox((0, 0), "Ag", font=font)
-        line_h = (line_bbox[3] - line_bbox[1]) * 1.15
-        max_possible_lines = int(usable_h / line_h)
-        if max_possible_lines < 1:
-            continue
-            
-        candidate_lines = wrap_text_diamond(draw, text, font, usable_w, usable_h)
-        if candidate_lines and len(candidate_lines) <= max_possible_lines:
-            # Verifica se todas as linhas respeitam estritamente a largura útil
-            if all((draw.textbbox((0, 0), l, font=font)[2] - draw.textbbox((0, 0), l, font=font)[0]) <= usable_w for l in candidate_lines):
-                return font, candidate_lines
-            
-    # Fallback dinâmico linear se o diamante for restritivo demais para balões estreitos
-    for fallback_size in range(12, 7, -1):
-        font = ImageFont.truetype(font_path, fallback_size)
-        fallback_lines = wrap_text_to_width(draw, text, font, usable_w)
-        line_bbox = draw.textbbox((0, 0), "Ag", font=font)
-        line_h = (line_bbox[3] - line_bbox[1]) * 1.15
-        if len(fallback_lines) * line_h <= usable_h:
-            return font, fallback_lines
+    # Calibração de teto tipográfico: mantém consistência com a resolução da página e tamanho original
+    geom_max = int(min(usable_h * 0.45, usable_w * 0.35, 56))
+    if page_w and page_w > 100:
+        raw_norm = page_w * 0.023
+        norm_cap = max(18, min(40, int(round(page_w * 0.0205))))
+        ref_h = orig_line_h if (orig_line_h and orig_line_h >= 10) else (page_med_h or page_w * 0.017)
+        if is_display or (orig_line_h and orig_line_h > max(34.0, raw_norm * 1.32)):
+            scale_cap = min(56, max(norm_cap, int(round(ref_h * 1.15))))
+        else:
+            med_anchor = page_med_h if (page_med_h and page_med_h >= 10) else ref_h
+            max_dial_cap = max(21, min(42, int(round(page_w * 0.0205))))
+            scale_cap = min(max_dial_cap, max(16, int(round(max(ref_h * 0.92, med_anchor * 1.15))), int(round(norm_cap * 0.92))))
+            scale_cap = min(scale_cap, max(norm_cap, int(round(med_anchor * 1.25))))
+            if len(words) <= 2 and len(text) <= 10 and not is_display:
+                # Evita que "SIM!" solto exploda em balão enorme
+                scale_cap = min(scale_cap, max(18, int(round(max(ref_h * 0.90, med_anchor * 1.12))), int(round(page_w * 0.0195))))
+        ideal_max = min(geom_max if len(words) > 2 else max(geom_max, scale_cap), scale_cap)
+    else:
+        ideal_max = geom_max
+
+    max_font_size = max(14, min(ideal_max, 56))
+    min_readable = max(13, int(round((page_w or 1200) * 0.0105)))
+    min_readable = min(min_readable, 15)
+
+    def _eff_stroke(fs):
+        if stroke_width == 0:
+            return 0
+        if stroke_width == 1:
+            return 1
+        return max(2, int(round(fs * 0.08)))
+
+    def _try_search(hi_fs, lo_fs, lead, use_diamond=True):
+        for fs in range(hi_fs, lo_fs - 1, -1):
+            font = ImageFont.truetype(font_path, fs)
+            st = _eff_stroke(fs)
+            line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+            line_h = max(4.0, (line_bbox[3] - line_bbox[1]) * lead)
+            max_lines = int(usable_h / line_h)
+            if max_lines < 1:
+                continue
+            if use_diamond:
+                cands = wrap_text_diamond(draw, text, font, usable_w, usable_h, stroke_width=st, shape_type=shape_type, band_profile=scaled_profile, line_spacing=lead)
+            else:
+                eff_w = usable_w
+                if scaled_profile:
+                    # Usa largura segura do terço central para modo compacto em balões estreitos (sem colapsar por micro-entalhe)
+                    mid_ws = [pw for py, pw in scaled_profile if 0.2 <= py <= 0.8]
+                    if mid_ws:
+                        safe_mid_w = float(np.percentile(mid_ws, 25)) if len(mid_ws) >= 3 else min(mid_ws)
+                        eff_w = min(usable_w, safe_mid_w)
+                cands = wrap_text_to_width(draw, text, font, eff_w, stroke_width=st)
+            if cands and len(cands) <= max_lines:
+                fits_all = True
+                span = min(1.0, (len(cands) * line_h) / max(1.0, float(usable_h)))
+                for li, l_str in enumerate(cands):
+                    lw = measure_manga_line_width(draw, l_str, font, st)
+                    lim_w = usable_w
+                    if scaled_profile and len(cands) >= 1:
+                        yf = 0.5 + (((li + 0.5) / float(len(cands))) - 0.5) * span
+                        yf = min(1.0, max(0.0, yf))
+                        lim_w = min(usable_w, float(np.interp(yf, [p[0] for p in scaled_profile], [p[1] for p in scaled_profile])) + 1.5)
+                    if lw > lim_w:
+                        fits_all = False
+                        break
+                if fits_all:
+                    return font, cands, lead
+        return None
+
+    # Passo 1: Busca fonte ideal legível (>= min_readable) no formato do balão (leading 1.14)
+    res = _try_search(max_font_size, min_readable, 1.14, use_diamond=True)
+    if res:
+        return res
+
+    # Passo 2: Antes de encolher para micro-texto (<=12px), tenta leading compacto de scanlation (1.06)
+    res = _try_search(min(max_font_size, min_readable + 6), min_readable, 1.06, use_diamond=True)
+    if res:
+        return res
+
+    # Passo 3: Modo linear compacto com hifenização para balões verticais muito estreitos (>= 12px)
+    res = _try_search(min(max_font_size, min_readable + 4), 12, 1.07, use_diamond=False)
+    if res:
+        return res
+
+    # Passo 4: Degradação suave (11 -> 8px) somente quando realmente inevitável
+    res = _try_search(11, 8, 1.08, use_diamond=False)
+    if res:
+        return res
 
     font = ImageFont.truetype(font_path, 8)
-    return font, wrap_text_to_width(draw, text, font, usable_w)
+    return font, wrap_text_to_width(draw, text, font, usable_w, stroke_width=_eff_stroke(8)), 1.08
+
+def fit_text_to_box(draw, text, max_w, max_h, font_path, stroke_width=1, shape_type="oval", band_profile=None, page_w=None, orig_line_h=None, page_med_h=None, is_display=False, pre_padded=False):
+    """Wrapper retrocompatível de fit_text_to_box_ex retornando (font, lines)."""
+    font, lines, _ = fit_text_to_box_ex(
+        draw, text, max_w, max_h, font_path,
+        stroke_width=stroke_width, shape_type=shape_type, band_profile=band_profile,
+        page_w=page_w, orig_line_h=orig_line_h, page_med_h=page_med_h,
+        is_display=is_display, pre_padded=pre_padded
+    )
+    return font, lines
 
 def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
     """Verifica se a chave da API do Groq é válida e se o modelo responde."""
@@ -2187,8 +2783,13 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             if cleaned.strip().lower() in ('semear', 'sementeira', 'semeadura'):
                 cleaned = 'Porca' if cleaned[0].isupper() else 'porca'
 
-        # Limpeza de gemidos repetidos traduzidos mecanicamente como 'você, você'
-        if re.search(r'\bvoc[êe]\b', cleaned, flags=re.IGNORECASE) and not re.search(r'\byou\b', orig_lower):
+        # Limpeza de gemidos repetidos isolados ('u u u') traduzidos mecanicamente como 'você, você'
+        # Nunca substitui 'você' em frases reais em chinês/japonês/coreano/espanhol ou inglês com palavras reais!
+        has_second_person_or_words = bool(
+            re.search(r'(?:you|your|yours|yo\s*u|t[uú]|usted|contigo|你|您|君|お前|あなた|貴方|너|당신|[a-z]{3,})', orig_lower)
+        )
+        has_isolated_u_moan = bool(re.search(r'(?:^|[\s,;.!?\-~])u(?:[\s,;.!?\-~]+u)+(?=$|[\s,;.!?\-~])', orig_lower))
+        if re.search(r'\bvoc[êe]\b', cleaned, flags=re.IGNORECASE) and has_isolated_u_moan and not has_second_person_or_words:
             cleaned = re.sub(r'\bvoc[êe]\b', 'uh', cleaned, flags=re.IGNORECASE)
 
         # Honey -> Amor / Querido (NUNCA doce-pessoa)
@@ -2365,12 +2966,14 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         elif is_adult and re.search(r'\b(cum|cock|dick|pussy)\b', orig_lower):
             cleaned = "Ah... Estou gozando!"
     
-    # Limpeza de artefatos de OCR e corações transcritos
+    # Limpeza de artefatos de OCR e corações transcritos ('heart', '√', '✔')
     cleaned = re.sub(r'(?i)\bheart(?:\s+111|\s+11|\s+1)?\b', '♡', cleaned)
+    cleaned = re.sub(r'[√✔]+', '♡', cleaned)
     
-    # 9. Proteção para gemidos/sons curtos (evita que um 'NGH!' vire um parágrafo)
+    # 9. Proteção para gemidos/sons latinos curtos (evita que 'NGH!' vire um parágrafo; nunca trunca frases CJK onde 3-6 ideogramas são sentenças completas!)
     orig_stripped = original_text.strip()
-    if len(orig_stripped) <= 6 and len(cleaned.split()) > 3:
+    is_orig_cjk = bool(re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', orig_stripped))
+    if not is_orig_cjk and len(orig_stripped) <= 6 and len(cleaned.split()) > 3:
         cleaned = cleaned.split()[0].strip()
 
     # Fragmentos residuais de OCR truncado ou ruídos de redes sociais
@@ -3425,20 +4028,23 @@ def is_valid_translation(orig_text, trans_text):
     # Rejeita saídas truncadas de uma única letra quando o original tem 3 ou mais caracteres (ex: 'O' para frase longa)
     if len(clean_orig) >= 3 and len(clean_trans) <= 1:
         return False
-    # Rejeita saídas de até 2 letras a menos que sejam interjeições coloquiais autênticas
+    # Rejeita saídas de até 2 letras a menos que sejam interjeições ou pronomes autênticos
     if len(clean_orig) >= 3 and len(clean_trans) <= 2:
-        if clean_trans.lower() not in ("ah", "ai", "oi", "eh", "oh", "ui", "hm", "ha", "ei", "ué", "ok"):
+        ct_l = clean_trans.lower()
+        allowed_short = {"ah", "ai", "oi", "eh", "oh", "ui", "hm", "ha", "ei", "ué", "ok", "hã", "tá", "né"}
+        if len(clean_orig) <= 4:
+            allowed_short |= {"eu", "é!", "já", "vá"}
+        if ct_l not in allowed_short:
             return False
 
     # Rejeita alucinações, mensagens de sistema e erros técnicos de tradutores automáticos
     corrupt_markers = [
         'invalid source language', 'mymemory warning', 'delfim perverso',
         'como uma inteligência artificial', 'como uma ia', 'traduza o texto original',
-        'regras obrigatórias', 'system message', 'mensagem do sistema', 'o gato está sentado'
-                'system message', 'mensagem do sistema', 'invalid source language', 'mymemory warning',
-                'parece cocô', 'cons e que n ces', 'louco ou omi', 'meu e obi', 's aging', 'estou envelhecendo',
-                'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,'
-            ]
+        'regras obrigatórias', 'system message', 'mensagem do sistema', 'o gato está sentado',
+        'parece cocô', 'cons e que n ces', 'louco ou omi', 'meu e obi', 's aging', 'estou envelhecendo',
+        'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,'
+    ]
     ct_lower = clean_trans.lower()
     if any(cm in ct_lower for cm in corrupt_markers) or ct_lower in ('auto', '[auto]'):
         return False
@@ -3629,7 +4235,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             xmin, ymin, xmax, ymax = [int(round(float(v))) for v in blk.get("box", [0, 0, 0, 0])]
             is_vertical = blk.get("vertical", True)
             lines = blk.get("lines", [])
-            is_cjk_blk = any(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", l) for l in lines)
+            is_cjk_blk = is_majority_cjk(lines)
             text = smart_join_lines(lines, is_cjk=is_cjk_blk).strip()
             if not text:
                 continue
@@ -3637,6 +4243,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 "box": [xmin, ymin, xmax, ymax],
                 "text": text,
                 "lines": lines,
+                "orig_line_count": max(1, len(lines)),
                 "is_vertical": is_vertical
             })
             
@@ -3647,6 +4254,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             bubbles.append({
                 "box": b["box"],
                 "raw_boxes": b.get("raw_boxes", [b["box"]]),
+                "orig_line_count": b.get("orig_line_count", max(1, len(b.get("lines", [])))),
                 "lines": b["lines"],
                 "combined_text": b["combined_text"],
                 "is_vertical": b["is_vertical"]
@@ -3682,6 +4290,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 v_clean = str(v).strip().lower()
                 if v_clean in ('auto', '[auto]'):
                     continue
+                k_low = str(k).lower()
+                # Purga bug legado onde 'você' virou 'uh' dentro de frases com segunda pessoa real
+                if re.search(r'\buh\b', v_clean) and not re.search(r'\bvoc[êe]\b', v_clean):
+                    if re.search(r'(?:\byou\b|\byour\b|\bt[uú]\b|你|您|あなた|お前|君|너)', k_low) and not re.search(r'\buh+\b|\bu[\s,.;!?~-]+u\b', k_low):
+                        continue
                 if not any(cm in v_clean for cm in corrupt_markers) and is_valid_translation(k, v):
                     cache[k] = v
         except Exception:
@@ -3791,16 +4404,49 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             img_pil.save(out_file, quality=95)
             continue
         
-        # 4.1 Limpar balões com algoritmo seguro (Apenas se foi traduzido com sucesso)
+        # 4.1 Limpar balões com algoritmo cirúrgico (Apenas se foi traduzido com sucesso)
+        img_cv_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
         for b in bubbles:
             trans_txt = b.get("translated_text", "").strip()
             if not trans_txt or not is_valid_translation(b["combined_text"], trans_txt):
                 continue
-            for r_box in b.get("raw_boxes", [b["box"]]):
+            r_boxes = b.get("raw_boxes") or [b["box"]]
+            for r_box in r_boxes:
                 clean_speech_bubble(cleaned, r_box)
-            clean_speech_bubble(cleaned, b["box"])
+            # Evita limpar retângulo de união diagonal em texto solto na arte; só aplica se o interior resultante já for liso/claro
+            if len(r_boxes) > 1:
+                ux0, uy0, ux1, uy1 = [max(0, int(round(v))) for v in b["box"]]
+                ux1, uy1 = min(w_img, ux1), min(h_img, uy1)
+                if ux1 > ux0 + 4 and uy1 > uy0 + 4:
+                    u_gray = cv2.cvtColor(cleaned[uy0:uy1, ux0:ux1], cv2.COLOR_BGR2GRAY)
+                    if float(np.mean(u_gray > 195)) > 0.72:
+                        clean_speech_bubble(cleaned, b["box"])
                 
-        # 4.2 Desenhar texto traduzido
+        # 4.2 Desenhar texto traduzido com geometria anti-extravasamento e escala consistente
+        cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
+        line_heights_all = []
+        for b in bubbles:
+            b_txt = b.get("translated_text", "").strip()
+            if not b_txt or b_txt in ("...", "…") or not is_valid_translation(b["combined_text"], b_txt):
+                continue
+            rbs = b.get("raw_boxes") or [b["box"]]
+            has_cjk_b = bool(re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', b.get("combined_text", "")))
+            if b.get("is_vertical") and has_cjk_b:
+                b_hs = [(rb[2] - rb[0]) for rb in rbs]
+                b_h_med = float(np.median([max(8.0, float(v)) for v in b_hs])) if b_hs else float(b["box"][2] - b["box"][0])
+            else:
+                # RapidOCR/Mokuro frequentemente armazenam múltiplas linhas dentro de um único bbox unido (raw_boxes len == 1)
+                n_lines = max(len(rbs), int(b.get("orig_line_count", 1)), 1)
+                if len(rbs) > 1:
+                    b_hs = [max(8.0, float(rb[3] - rb[1])) for rb in rbs]
+                    b_h_med = float(np.median(b_hs))
+                else:
+                    b_h_med = max(10.0, float(b["box"][3] - b["box"][1]) / float(n_lines))
+            b["_orig_line_h"] = b_h_med
+            if b_h_med < w_img * 0.032:
+                line_heights_all.append(b_h_med)
+        page_med_h = float(np.median(line_heights_all)) if line_heights_all else max(14.0, w_img * 0.017)
+
         img_pil = Image.fromarray(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
         
@@ -3817,7 +4463,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             cx = (xmin + xmax) / 2
             cy = (ymin + ymax) / 2
 
-            # 1. Particionamento espacial inteligente entre balões vizinhos (evita sobreposição)
+            # 1. Particionamento espacial inteligente entre balões vizinhos (Voronoi por eixo principal de separação)
             x_min_limit = 10
             x_max_limit = w_img - 10
             y_min_limit = 10
@@ -3832,18 +4478,26 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 o_xmin, o_ymin, o_xmax, o_ymax = other["box"]
                 o_cx = (o_xmin + o_xmax) / 2
                 o_cy = (o_ymin + o_ymax) / 2
-                
-                # Proximidade vertical: se houver sobreposição vertical ou proximidade < 40px
-                if max(ymin, o_ymin) < min(ymax, o_ymax) + 40:
+
+                v_overlap = min(ymax, o_ymax) - max(ymin, o_ymin)
+                h_overlap = min(xmax, o_xmax) - max(xmin, o_xmin)
+                gap_x = -h_overlap
+                gap_y = -v_overlap
+
+                # Só impõe parede em X quando os balões realmente dividem faixa vertical (ou estão separados principalmente em X)
+                apply_x = (v_overlap > 6) or (gap_x >= 0 and v_overlap > -14 and gap_x >= gap_y)
+                # Só impõe parede em Y quando os balões dividem faixa horizontal (ou estão separados principalmente em Y)
+                apply_y = (h_overlap > 6) or (gap_y >= 0 and h_overlap > -14 and gap_y > gap_x)
+
+                if apply_x and v_overlap > -36:
                     if o_cx < cx:
                         mid = (o_xmax + xmin) / 2
                         x_min_limit = max(x_min_limit, mid + 6)
                     elif o_cx > cx:
                         mid = (xmax + o_xmin) / 2
                         x_max_limit = min(x_max_limit, mid - 6)
-                        
-                # Proximidade horizontal: se houver sobreposição horizontal ou proximidade < 30px
-                if max(xmin, o_xmin) < min(xmax, o_xmax) + 30:
+
+                if apply_y and h_overlap > -28:
                     if o_cy < cy:
                         mid = (o_ymax + ymin) / 2
                         y_min_limit = max(y_min_limit, mid + 6)
@@ -3851,65 +4505,21 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                         mid = (ymax + o_ymin) / 2
                         y_max_limit = min(y_max_limit, mid - 6)
 
-            sub_roi = cleaned[max(0, ymin):min(h_img, ymax), max(0, xmin):min(w_img, xmax)]
-            is_white_bg = True
-            if sub_roi.size > 0:
-                is_white_bg = np.mean(cv2.cvtColor(sub_roi, cv2.COLOR_BGR2GRAY) > 200) > 0.45
+            orig_line_h = b.get("_orig_line_h", page_med_h)
+            limits = (x_min_limit, x_max_limit, y_min_limit, y_max_limit)
+            geom = analyze_safe_balloon(cleaned_gray, img_cv_gray, b["box"], limits)
 
-            safe_cx = cx
-            safe_cy = cy
-            safe_min_x, safe_max_x = xmin, xmax
-            safe_min_y, safe_max_y = ymin, ymax
-            target_w = bw
-            target_h = max(bh * 1.20, 50)
+            is_white_bg = geom["is_white_bg"]
+            render_white_on_dark = geom["render_white_on_dark"]
+            safe_cx = geom["safe_cx"]
+            safe_cy = geom["safe_cy"]
+            safe_min_x = geom["safe_min_x"]
+            safe_max_x = geom["safe_max_x"]
+            safe_min_y = geom["safe_min_y"]
+            safe_max_y = geom["safe_max_y"]
+            target_w = geom["target_w"]
+            target_h = geom["target_h"]
 
-            if is_white_bg:
-                # Detecta limites do balão branco respeitando estritamente a partição dos vizinhos
-                gray_c = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
-                icx, icy = int(np.clip(cx, 0, w_img - 1)), int(np.clip(cy, 0, h_img - 1))
-                
-                # Se o pixel central for escuro por arte ou ruído residual, localiza pixel semente claro
-                if gray_c[icy, icx] <= 185:
-                    y_s0, y_s1 = max(0, int(ymin)), min(h_img, int(ymax))
-                    x_s0, x_s1 = max(0, int(xmin)), min(w_img, int(xmax))
-                    roi_s = gray_c[y_s0:y_s1, x_s0:x_s1]
-                    if roi_s.size > 0:
-                        bright_pts = np.argwhere(roi_s > 200)
-                        if len(bright_pts) > 0:
-                            mid_pt = bright_pts[len(bright_pts) // 2]
-                            icy = y_s0 + mid_pt[0]
-                            icx = x_s0 + mid_pt[1]
-
-                if gray_c[icy, icx] > 185:
-                    b_left = icx
-                    while b_left > x_min_limit and gray_c[icy, b_left] > 185: b_left -= 1
-                    b_right = icx
-                    while b_right < x_max_limit and gray_c[icy, b_right] > 185: b_right += 1
-                    b_top = icy
-                    while b_top > y_min_limit and gray_c[b_top, icx] > 185: b_top -= 1
-                    b_bottom = icy
-                    while b_bottom < y_max_limit and gray_c[b_bottom, icx] > 185: b_bottom += 1
-
-                    safe_min_x = max(b_left + 4, x_min_limit)
-                    safe_max_x = min(b_right - 4, x_max_limit)
-                    safe_min_y = max(b_top + 4, y_min_limit)
-                    safe_max_y = min(b_bottom - 4, y_max_limit)
-
-                    if safe_max_x > safe_min_x + 20 and safe_max_y > safe_min_y + 20:
-                        safe_cx = (safe_min_x + safe_max_x) / 2
-                        safe_cy = (safe_min_y + safe_max_y) / 2
-                        target_w = safe_max_x - safe_min_x
-                        target_h = safe_max_y - safe_min_y
-                    else:
-                        target_w = max(bw * 1.25, 70)
-                        target_h = max(bh * 1.20, 50)
-                else:
-                    target_w = max(bw * 1.25, 70)
-                    target_h = max(bh * 1.20, 50)
-            else:
-                target_w = max(bw * 1.25, 70)
-                target_h = max(bh * 1.20, 50)
-            
             # Margem de segurança na largura considerando os limites da partição e da página
             max_avail_w = min(
                 (safe_cx - x_min_limit) * 2 - 8,
@@ -3918,32 +4528,48 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             )
             if max_avail_w > 30:
                 target_w = min(target_w, max_avail_w)
-            
+
+            is_display = bool(
+                orig_line_h >= (w_img * 0.030)
+                or (len(text.split()) <= 2 and (text.endswith("!!") or text.endswith("!?") or orig_line_h >= w_img * 0.025))
+            )
+
             # Seleciona a melhor fonte tipográfica profissional para a fala
             chosen_font_path = select_font_for_bubble(text)
-            font, lines = fit_text_to_box(draw, text, target_w, target_h, chosen_font_path)
+            stroke_w_hint = 1 if is_white_bg else 2
+            font, lines, used_leading = fit_text_to_box_ex(
+                draw, text, target_w, target_h, chosen_font_path,
+                stroke_width=stroke_w_hint,
+                shape_type=geom["shape_type"],
+                band_profile=geom["band_profile"],
+                page_w=w_img,
+                orig_line_h=orig_line_h,
+                page_med_h=page_med_h,
+                is_display=is_display,
+                pre_padded=geom["is_enclosed"]
+            )
             if not lines:
                 continue
                 
             line_bbox = draw.textbbox((0, 0), "Ag", font=font)
-            line_h = (line_bbox[3] - line_bbox[1]) * 1.15
+            line_h = max(4.0, (line_bbox[3] - line_bbox[1]) * used_leading)
             total_h = len(lines) * line_h
             start_y = safe_cy - (total_h / 2.0) + (line_h / 2.0)
             
-            # Margem de segurança de respiro (breathing room) de 10% no topo e base do balão
-            pad_y_balloon = max(4, int(target_h * 0.10))
+            # Margem de segurança vertical proporcional sem colisão topo/base
+            pad_y_balloon = max(3, int(target_h * (0.04 if geom["is_enclosed"] else 0.08)))
             balloon_top = safe_min_y + pad_y_balloon
-            balloon_bottom = safe_max_y - pad_y_balloon
+            balloon_bottom = max(balloon_top + 4.0, safe_max_y - pad_y_balloon)
             
-            # Garante que a primeira linha nunca ultrapasse o topo do balão
-            first_line_top = start_y - (line_h / 2.0)
-            if first_line_top < balloon_top:
-                start_y += (balloon_top - first_line_top)
-                
-            # Garante que a última linha nunca ultrapasse o fundo do balão
-            last_line_bottom = start_y + (len(lines) - 1) * line_h + (line_h / 2.0)
-            if last_line_bottom > balloon_bottom:
-                start_y -= (last_line_bottom - balloon_bottom)
+            if total_h <= (balloon_bottom - balloon_top):
+                first_line_top = start_y - (line_h / 2.0)
+                if first_line_top < balloon_top:
+                    start_y += (balloon_top - first_line_top)
+                last_line_bottom = start_y + (len(lines) - 1) * line_h + (line_h / 2.0)
+                if last_line_bottom > balloon_bottom:
+                    start_y -= (last_line_bottom - balloon_bottom)
+            else:
+                start_y = (balloon_top + balloon_bottom) / 2.0 - (total_h / 2.0) + (line_h / 2.0)
                 
             # Margem global de proteção para bordas da imagem da página
             if start_y - (line_h / 2.0) < 12:
@@ -3952,11 +4578,18 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 start_y = h_img - 12 - (len(lines) - 1) * line_h - (line_h / 2.0)
                 
             font_size = getattr(font, 'size', 20)
-            stroke_w = 1 if is_white_bg else max(2, int(round(font_size * 0.08)))
+            if render_white_on_dark:
+                text_fill = (255, 255, 255)
+                stroke_fill = (15, 15, 15)
+                stroke_w = max(2, int(round(font_size * 0.09)))
+            else:
+                text_fill = (0, 0, 0)
+                stroke_fill = (255, 255, 255)
+                stroke_w = 1 if is_white_bg else max(2, int(round(font_size * 0.08)))
             
             for line_idx, line in enumerate(lines):
                 ly = start_y + (line_idx * line_h)
-                draw_manga_text_line(draw, (safe_cx, ly), line, font=font, fill=(0, 0, 0), stroke_width=stroke_w, stroke_fill=(255, 255, 255), anchor="mm")
+                draw_manga_text_line(draw, (safe_cx, ly), line, font=font, fill=text_fill, stroke_width=stroke_w, stroke_fill=stroke_fill, anchor="mm")
                 
         out_file = os.path.join(temp_render_dir, os.path.splitext(img_name)[0] + ".jpg")
         img_pil.save(out_file, quality=95)

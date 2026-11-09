@@ -341,6 +341,10 @@ def manifest():
 def service_worker():
     return send_from_directory(os.path.join(app.root_path, "static"), "sw.js", mimetype="application/javascript")
 
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, "static"), "favicon.ico", mimetype="image/x-icon")
+
 def check_single_groq_key(idx, key):
     key = str(key).strip()
     masked = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
@@ -735,8 +739,21 @@ def serve_manga_reader(manga_id, filename="leitor.html"):
         return "Mangá não encontrado na memória do servidor. Por favor, volte à biblioteca e clique em Ler.", 404
         
     leitor_p = os.path.join(folder, "leitor.html")
-    if filename == "leitor.html" and not os.path.exists(leitor_p):
-        auto_translate.create_html_reader(folder, os.path.basename(folder))
+    if filename == "leitor.html":
+        needs_refresh = not os.path.exists(leitor_p)
+        if not needs_refresh:
+            try:
+                with open(leitor_p, "r", encoding="utf-8", errors="ignore") as lf:
+                    head_txt = lf.read(512)
+                if "manga-studio-reader-v2" not in head_txt:
+                    needs_refresh = True
+            except Exception:
+                pass
+        if needs_refresh:
+            try:
+                auto_translate.create_html_reader(folder, os.path.basename(folder))
+            except Exception:
+                pass
         
     return send_from_directory(folder, filename)
 
@@ -988,6 +1005,8 @@ def api_pick_folder():
 @app.route("/api/pick_path", methods=["POST"])
 def api_pick_path():
     """Abre caixa de diálogo do Windows para escolher qualquer pasta de configuração."""
+    if os.name != 'nt':
+        return jsonify({"success": False, "is_headless": True, "error": "Seletor visual disponível apenas no Windows local. No Colab ou celular, digite o caminho da pasta manualmente."})
     data = request.json or {}
     title = data.get("title", "Selecione a Pasta")
     cfg = auto_translate.load_config()

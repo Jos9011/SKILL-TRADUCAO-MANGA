@@ -15,6 +15,8 @@ import os
 import sys
 import json
 import re
+import html
+import urllib.parse
 import argparse
 import subprocess
 import cv2
@@ -209,89 +211,404 @@ def typeset_manga(manga_dir, extracted_json, translations_dict, output_dir):
     print(f"[+] Diagramação completa concluída em: {output_dir}")
     create_html_reader(output_dir)
 
-def create_html_reader(images_dir):
-    """Creates a responsive standalone reader (Single page + Webtoon vertical scroll)."""
+def create_html_reader(images_dir, title=None):
+    """Gera leitor web moderno, imersivo e adaptativo para celular, tablet e desktop."""
+    import urllib.parse
     images = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')) and f != "leitor.html"]
     images.sort(key=natural_sort_key)
-    
+
     if not images:
         print("[!] Nenhuma imagem encontrada para criar o leitor.")
         return
-        
+
+    resolved_title = title or os.path.basename(os.path.abspath(images_dir)).replace(" [PT-BR]", "").replace("[PT-BR]", "").strip() or "Leitor de Mangá Traduzido"
+    safe_title = html.escape(str(resolved_title))
+    images_json = json.dumps(images, ensure_ascii=False).replace("</", "<\\/")
+    first_src = urllib.parse.quote(images[0])
+    scroll_imgs_html = "".join(
+        f'<img src="{urllib.parse.quote(img)}" loading="lazy" decoding="async" alt="Página {i+1}">'
+        for i, img in enumerate(images)
+    )
+    jump_opts_html = "".join(
+        f'<option value="{i}">Pág {i+1} / {len(images)}</option>'
+        for i in range(len(images))
+    )
+
     html_content = f"""<!DOCTYPE html>
+<!-- manga-studio-reader-v2 -->
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Leitor de Mangá Traduzido [PT-BR]</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#121212">
+<title>{safe_title} [PT-BR]</title>
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background-color: #121212; color: #f1f1f1; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }}
-  header {{ position: fixed; top: 0; left: 0; right: 0; background: rgba(18, 18, 18, 0.95); backdrop-filter: blur(8px); border-bottom: 1px solid #2a2a2a; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; z-index: 100; }}
-  h1 {{ font-size: 15px; font-weight: 600; color: #fff; }}
-  .controls {{ display: flex; align-items: center; gap: 12px; }}
-  button, select {{ background: #252525; color: #fff; border: 1px solid #3d3d3d; padding: 6px 14px; border-radius: 6px; font-size: 14px; cursor: pointer; }}
-  button:hover, select:hover {{ background: #333; }}
-  .reader-container {{ margin-top: 60px; margin-bottom: 40px; display: flex; flex-direction: column; align-items: center; max-width: 1000px; width: 100%; padding: 0 10px; }}
-  .page-view {{ display: flex; flex-direction: column; align-items: center; width: 100%; }}
-  .page-view img {{ max-width: 100%; max-height: 90vh; object-fit: contain; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); cursor: pointer; }}
-  .scroll-view {{ display: none; flex-direction: column; align-items: center; gap: 15px; width: 100%; }}
-  .scroll-view img {{ max-width: 100%; border-radius: 4px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); }}
-  .nav-footer {{ margin-top: 15px; display: flex; gap: 15px; align-items: center; }}
+  :root {{
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --accent: #1db954;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }}
+  html, body {{ max-width: 100%; overflow-x: hidden; background-color: #0e0e0e; color: #f1f1f1; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }}
+  button, select {{
+    background: #242424;
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.14);
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    touch-action: manipulation;
+    min-height: 38px;
+  }}
+  button:hover, select:hover {{ background: #303030; }}
+  button:active {{ transform: scale(0.97); }}
+
+  header {{
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: rgba(16, 16, 16, 0.94);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding: calc(8px + var(--safe-top)) 14px 8px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    z-index: 100;
+  }}
+  .header-left {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }}
+  .btn-back {{
+    padding: 6px 10px;
+    min-width: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }}
+  h1 {{
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  .controls {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }}
+
+  .reader-container {{
+    margin-top: calc(58px + var(--safe-top));
+    margin-bottom: calc(68px + var(--safe-bottom));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 960px;
+    width: 100%;
+    padding: 6px 10px;
+    flex: 1;
+  }}
+  .reader-container.scroll-active {{
+    margin-bottom: calc(28px + var(--safe-bottom));
+  }}
+  .page-view {{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    flex: 1;
+  }}
+  .page-stage {{
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+  }}
+  .page-view img {{
+    max-width: 100%;
+    max-height: calc(100dvh - 134px - var(--safe-top) - var(--safe-bottom));
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.65);
+    cursor: pointer;
+    user-select: none;
+  }}
+  .scroll-view {{
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+  }}
+  .scroll-view img {{
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }}
+
+  .bottom-nav {{
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(16, 16, 16, 0.94);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding: 8px 14px calc(8px + var(--safe-bottom)) 14px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    z-index: 100;
+  }}
+  .bottom-nav button {{
+    min-width: 105px;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }}
+  .bottom-nav button.primary {{
+    background: var(--accent);
+    color: #000;
+    border-color: var(--accent);
+    font-weight: 700;
+  }}
+  #pageJumpSelect {{
+    text-align: center;
+    min-width: 104px;
+    max-width: 150px;
+    flex: 0 1 auto;
+  }}
+
+  .btn-scroll-top {{
+    display: none;
+    position: fixed;
+    right: 14px;
+    bottom: calc(16px + var(--safe-bottom));
+    z-index: 99;
+    border-radius: 9999px;
+    padding: 10px 16px;
+    background: rgba(29, 185, 84, 0.92);
+    color: #000;
+    border: none;
+    font-weight: 800;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.55);
+  }}
+
+  @media (max-width: 640px) {{
+    header {{
+      padding: calc(6px + var(--safe-top)) 10px 6px 10px;
+    }}
+    h1 {{
+      font-size: 13.5px;
+    }}
+    select {{
+      font-size: 16px;
+      padding: 6px 8px;
+    }}
+    .reader-container {{
+      padding: 0;
+    }}
+    .reader-container.scroll-active .scroll-view {{
+      gap: 4px;
+    }}
+    .reader-container.scroll-active .scroll-view img {{
+      border-radius: 0;
+    }}
+    .bottom-nav {{
+      justify-content: space-between;
+      padding: 8px 10px calc(8px + var(--safe-bottom)) 10px;
+      gap: 6px;
+    }}
+    .bottom-nav button {{
+      flex: 1;
+      min-width: 0;
+      min-height: 42px;
+      padding: 8px 4px;
+      font-size: 13px;
+    }}
+    #pageJumpSelect {{
+      min-width: 92px;
+      max-width: 132px;
+    }}
+  }}
 </style>
 </head>
 <body>
 <header>
-  <h1>Leitor de Mangá Traduzido</h1>
+  <div class="header-left">
+    <button class="btn-back" onclick="goBack()" title="Voltar" aria-label="Voltar">←</button>
+    <h1 title="{safe_title}">{safe_title}</h1>
+  </div>
   <div class="controls">
-    <select id="modeSelect" onchange="toggleMode()">
-      <option value="single">Página por Página</option>
-      <option value="scroll">Rolar Tudo (Webtoon)</option>
+    <select id="modeSelect" onchange="toggleMode()" aria-label="Modo de Leitura">
+      <option value="single">Página</option>
+      <option value="scroll">Webtoon</option>
     </select>
-    <button onclick="prevPage()">◀ Anterior</button>
-    <span id="pageIndicator">1 / {len(images)}</span>
-    <button onclick="nextPage()">Próxima ▶</button>
   </div>
 </header>
-<div class="reader-container">
+
+<div class="reader-container" id="readerContainer">
   <div id="pageView" class="page-view">
-    <img id="currentImg" src="{images[0]}" alt="Página 1" onclick="nextPage()">
-    <div class="nav-footer">
-      <button onclick="prevPage()">◀ Anterior</button>
-      <button onclick="nextPage()">Próxima ▶</button>
+    <div class="page-stage">
+      <img id="currentImg" src="{first_src}" alt="Página 1" onclick="handleImageClick(event)">
     </div>
   </div>
   <div id="scrollView" class="scroll-view">
-    {"".join(f'<img src="{img}" loading="lazy" alt="Página {i+1}">' for i, img in enumerate(images))}
+    {scroll_imgs_html}
   </div>
 </div>
+
+<div class="bottom-nav" id="bottomNav">
+  <button onclick="prevPage()">◀ Anterior</button>
+  <select id="pageJumpSelect" onchange="jumpToPage(this.value)" aria-label="Selecionar página">
+    {jump_opts_html}
+  </select>
+  <button class="primary" onclick="nextPage()">Próxima ▶</button>
+</div>
+
+<button class="btn-scroll-top" id="btnScrollTop" onclick="window.scrollTo({{top: 0, behavior: 'smooth'}})">↑ Topo</button>
+
 <script>
-  const images = {images};
+  const images = {images_json};
   let currentIndex = 0;
   const currentImg = document.getElementById('currentImg');
-  const pageIndicator = document.getElementById('pageIndicator');
+  const pageJumpSelect = document.getElementById('pageJumpSelect');
   const pageView = document.getElementById('pageView');
   const scrollView = document.getElementById('scrollView');
   const modeSelect = document.getElementById('modeSelect');
+  const bottomNav = document.getElementById('bottomNav');
+  const btnScrollTop = document.getElementById('btnScrollTop');
+  const readerContainer = document.getElementById('readerContainer');
+
+  function imgUrl(name) {{
+    return encodeURIComponent(name);
+  }}
+
+  function goBack() {{
+    if (window.opener && !window.opener.closed) {{
+      window.close();
+      setTimeout(() => {{
+        if (!window.closed) {{
+          if (window.history.length > 1) window.history.back();
+          else window.location.href = '/';
+        }}
+      }}, 180);
+      return;
+    }}
+    if (window.history.length > 1) {{
+      window.history.back();
+    }} else {{
+      window.location.href = '/';
+    }}
+  }}
 
   function updatePage() {{
-    currentImg.src = images[currentIndex];
-    pageIndicator.textContent = (currentIndex + 1) + " / " + images.length;
+    currentImg.src = imgUrl(images[currentIndex]);
+    if (pageJumpSelect) pageJumpSelect.value = String(currentIndex);
     window.scrollTo(0, 0);
+    if (currentIndex + 1 < images.length) {{
+      const preloadNext = new Image();
+      preloadNext.src = imgUrl(images[currentIndex + 1]);
+    }}
   }}
   function prevPage() {{ if (currentIndex > 0) {{ currentIndex--; updatePage(); }} }}
   function nextPage() {{ if (currentIndex < images.length - 1) {{ currentIndex++; updatePage(); }} }}
-  function toggleMode() {{
-    if (modeSelect.value === 'scroll') {{
-      pageView.style.display = 'none'; scrollView.style.display = 'flex';
-    }} else {{
-      scrollView.style.display = 'none'; pageView.style.display = 'flex'; updatePage();
+  function jumpToPage(val) {{
+    const idx = parseInt(val, 10);
+    if (!isNaN(idx) && idx >= 0 && idx < images.length) {{
+      currentIndex = idx;
+      updatePage();
     }}
   }}
+
+  function handleImageClick(e) {{
+    const rect = currentImg.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    if (clickX < rect.width * 0.28) {{
+      prevPage();
+    }} else {{
+      nextPage();
+    }}
+  }}
+
+  function toggleMode() {{
+    if (modeSelect.value === 'scroll') {{
+      pageView.style.display = 'none';
+      scrollView.style.display = 'flex';
+      bottomNav.style.display = 'none';
+      btnScrollTop.style.display = 'inline-block';
+      readerContainer.classList.add('scroll-active');
+    }} else {{
+      scrollView.style.display = 'none';
+      pageView.style.display = 'flex';
+      bottomNav.style.display = 'flex';
+      btnScrollTop.style.display = 'none';
+      readerContainer.classList.remove('scroll-active');
+      updatePage();
+    }}
+  }}
+
+  // Swipe horizontal no celular (ignora quando usuario esta dando zoom)
+  let touchStartX = 0, touchStartY = 0, touchStartTime = 0, multiTouch = false;
+  pageView.addEventListener('touchstart', (e) => {{
+    if (e.touches.length > 1) {{ multiTouch = true; return; }}
+    multiTouch = false;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchStartTime = Date.now();
+  }}, {{ passive: true }});
+
+  pageView.addEventListener('touchend', (e) => {{
+    if (multiTouch || modeSelect.value !== 'single') return;
+    if (window.visualViewport && window.visualViewport.scale > 1.05) return;
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    const dt = Date.now() - touchStartTime;
+    if (dt < 450 && Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.6) {{
+      if (dx < 0) nextPage();
+      else prevPage();
+    }}
+  }}, {{ passive: true }});
+
   document.addEventListener('keydown', (e) => {{
     if (modeSelect.value === 'single') {{
-      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') nextPage();
-      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevPage();
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {{ e.preventDefault(); nextPage(); }}
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {{ e.preventDefault(); prevPage(); }}
     }}
   }});
 </script>
@@ -301,7 +618,7 @@ def create_html_reader(images_dir):
     leitor_file = os.path.join(images_dir, "leitor.html")
     with open(leitor_file, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print(f"[+] Leitor interativo gerado em: {leitor_file}")
+    print(f"[+] Leitor interativo criado: {leitor_file}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline Completo de Tradução e Diagramação de Mangá")

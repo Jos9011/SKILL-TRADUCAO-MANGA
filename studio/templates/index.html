@@ -1157,12 +1157,12 @@
         <!-- DROPZONE -->
         <div class="dropzone-container" id="dropzone">
           <input type="file" id="browser-folder-input" webkitdirectory directory multiple style="display: none;">
-          <input type="file" id="browser-zip-input" accept=".zip,.cbz" style="display: none;">
+          <input type="file" id="browser-zip-input" accept=".zip,.cbz,.pdf" style="display: none;">
           
           <div class="dropzone-icon">
             <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
           </div>
-          <div class="dropzone-title">Arraste e solte a pasta do Mangá ou Manhwa aqui</div>
+          <div class="dropzone-title">Arraste a pasta, PDF, ZIP ou CBZ do Mangá aqui</div>
           <div class="dropzone-subtitle">Ou escolha uma das opções abaixo no seu computador ou celular:</div>
           
           <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 18px;">
@@ -1172,7 +1172,7 @@
             </button>
             <button class="btn-spotify" type="button" style="background-color: var(--surface-subtle); color: white; border: 1px solid var(--border-subtle);" onclick="triggerZipSelect()">
               <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14h-4v-2h4v2zm0-4h-4v-2h4v2zm0-4h-4V7h4v2z"/></svg>
-              Enviar Arquivo ZIP / CBZ
+              Enviar PDF / ZIP / CBZ
             </button>
             <button id="btn-drive-pick" class="btn-spotify" type="button" style="display: none; background: rgba(66, 133, 244, 0.2); color: #4285F4; border: 1px solid rgba(66, 133, 244, 0.4);" onclick="openDrivePicker()">
               <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
@@ -1309,8 +1309,8 @@
 
         <div style="display: flex; justify-content: space-between; align-items: center; margin: 40px 0 16px 0; flex-wrap: wrap; gap: 10px;">
           <h3 style="font-size: 1.25rem; font-weight: 800; margin: 0;">Obras Originais (Prontas para Traduzir)</h3>
-          <button class="btn-secondary" id="btn-extract-all-archives" onclick="extractAllArchives()" style="font-size: 0.82rem; padding: 6px 14px; border-color: rgba(66, 133, 244, 0.4); color: #4285F4; display: inline-flex; align-items: center; gap: 6px;" title="Descompacta todos os arquivos .zip e .cbz encontrados na sua pasta MANGAS">
-            📦 Extrair Todos os ZIPs (.zip / .cbz)
+          <button class="btn-secondary" id="btn-extract-all-archives" onclick="extractAllArchives()" style="font-size: 0.82rem; padding: 6px 14px; border-color: rgba(66, 133, 244, 0.4); color: #4285F4; display: inline-flex; align-items: center; gap: 6px;" title="Extrai todos os arquivos .pdf, .zip e .cbz encontrados na sua pasta MANGAS">
+            📦 Extrair Todos (.pdf / .zip / .cbz)
           </button>
         </div>
         <div class="manga-grid" id="raw-library-grid">
@@ -1723,6 +1723,17 @@
     }
 
     async function inspectFolder(path) {
+      const isArchive = /\.(zip|cbz|pdf)$/i.test(path || '');
+      const pBox = document.getElementById('upload-progress-box');
+      const pText = document.getElementById('upload-status-text');
+      const pFill = document.getElementById('upload-progress-fill');
+      const pPct = document.getElementById('upload-pct-text');
+      if (isArchive && pBox) {
+        pBox.style.display = 'block';
+        if (pText) pText.innerText = 'Extraindo páginas do arquivo... Por favor, aguarde.';
+        if (pFill) pFill.style.width = '100%';
+        if (pPct) pPct.innerText = '⏳';
+      }
       try {
         const res = await fetch('/api/inspect_folder', {
           method: 'POST',
@@ -1730,6 +1741,7 @@
           body: JSON.stringify({ path: path })
         });
         const data = await res.json();
+        if (pBox) pBox.style.display = 'none';
         if (data.valid) {
           currentSelectedManga = data;
           document.getElementById('dropzone').style.display = 'none';
@@ -1750,6 +1762,7 @@
           alert(data.error || "Pasta inválida");
         }
       } catch (e) {
+        if (pBox) pBox.style.display = 'none';
         console.error("Erro ao inspecionar pasta:", e);
       }
     }
@@ -1862,6 +1875,9 @@
             const pct = Math.round((e.loaded / e.total) * 100);
             pFill.style.width = pct + '%';
             pPct.innerText = pct + '%';
+            if (pct >= 100) {
+              pText.innerText = `Extraindo páginas de ${file.name} no servidor...`;
+            }
           }
         };
 
@@ -1942,7 +1958,7 @@
               await traverseFileTree(entry, files);
             } else if (entry.isFile) {
               const f = items[i].getAsFile();
-              if (f && /\.(zip|cbz)$/i.test(f.name)) {
+              if (f && /\.(zip|cbz|pdf)$/i.test(f.name)) {
                 zipFile = f;
                 break;
               } else if (f && /\.(jpg|jpeg|png|webp|bmp)$/i.test(f.name)) {
@@ -1952,7 +1968,7 @@
           } else {
             const f = items[i].getAsFile();
             if (f) {
-              if (/\.(zip|cbz)$/i.test(f.name)) { zipFile = f; break; }
+              if (/\.(zip|cbz|pdf)$/i.test(f.name)) { zipFile = f; break; }
               else if (/\.(jpg|jpeg|png|webp|bmp)$/i.test(f.name)) files.push(f);
             }
           }
@@ -2309,7 +2325,9 @@
           </div>
           <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;">
             ${m.is_drive ? '<span class="badge-drive">☁️ Google Drive</span>' : ''}
-            ${m.is_archive ? `<span class="badge-drive" style="background: rgba(255, 170, 0, 0.2); color: #ffaa00; border-color: rgba(255, 170, 0, 0.4);">📦 ${escapeHtml(m.archive_type || 'ZIP')}</span>` : ''}
+            ${m.is_archive ? (m.archive_type === 'PDF'
+              ? '<span class="badge-drive" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border-color: rgba(239, 68, 68, 0.4);">📄 PDF</span>'
+              : `<span class="badge-drive" style="background: rgba(255, 170, 0, 0.2); color: #ffaa00; border-color: rgba(255, 170, 0, 0.4);">📦 ${escapeHtml(m.archive_type || 'ZIP')}</span>`) : ''}
           </div>
           <div class="card-title" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
           <div class="card-subtitle">${m.pages} páginas • ${m.is_archive ? 'Pronto para descompactar e traduzir' : 'Pronto para traduzir'}</div>

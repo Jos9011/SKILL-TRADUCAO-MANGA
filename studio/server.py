@@ -129,10 +129,108 @@ def is_drive_path(p):
             return True
     return False
 
+def _get_pymupdf():
+    """Importa PyMuPDF de forma segura (suportando import pymupdf ou import fitz legado)."""
+    try:
+        import pymupdf
+        return pymupdf
+    except ImportError:
+        try:
+            import fitz
+            return fitz
+        except ImportError:
+            return None
+
+def extract_manga_pdf(pdf_path, target_dir=None):
+    """
+    Extrai todas as páginas de um mangá/manhwa em PDF para uma pasta de imagens sequenciais (0001.png, 0002.jpg, ...).
+    Usa extração nativa sem perdas quando a página for apenas uma imagem escaneada limpa,
+    e renderiza em alta resolução (~220 DPI RGB) quando houver texto, rotação ou composição.
+    """
+    if not pdf_path or not os.path.exists(pdf_path):
+        return None
+    fitz = _get_pymupdf()
+    if fitz is None:
+        raise RuntimeError("Biblioteca 'pymupdf' não instalada para leitura de PDF. Execute: pip install pymupdf")
+
+    pdf_path = os.path.abspath(pdf_path)
+    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    if not target_dir:
+        target_dir = os.path.join(os.path.dirname(pdf_path), base_name)
+    os.makedirs(target_dir, exist_ok=True)
+
+    doc = fitz.open(pdf_path)
+    try:
+        if doc.is_encrypted:
+            try:
+                doc.authenticate("")
+            except Exception:
+                pass
+            if doc.needs_pass:
+                raise ValueError("Este arquivo PDF está protegido por senha.")
+
+        if len(doc) == 0:
+            return None
+
+        for idx, page in enumerate(doc):
+            out_prefix = f"{idx + 1:04d}"
+            saved = False
+            try:
+                imgs = page.get_images(full=True)
+                text = (page.get_text("text") or "").strip()
+                # Se for página de scan puro (1 única imagem sem máscara alpha, sem texto e sem rotação)
+                if len(imgs) == 1 and imgs[0][1] == 0 and not text and page.rotation == 0:
+                    xref = imgs[0][0]
+                    page_area = max(abs(page.rect.width * page.rect.height), 1.0)
+                    img_rects = page.get_image_rects(xref)
+                    covers_page = any(abs(r.width * r.height) / page_area >= 0.85 for r in img_rects)
+                    if covers_page:
+                        base_img = doc.extract_image(xref)
+                        w = base_img.get("width", 0)
+                        h = base_img.get("height", 0)
+                        ext = (base_img.get("ext") or "").lower()
+                        if ext == "jpeg":
+                            ext = "jpg"
+                        img_bytes = base_img.get("image")
+                        if img_bytes and w >= 500 and h >= 500 and ext in ("jpg", "png", "webp"):
+                            with Image.open(io.BytesIO(img_bytes)) as im:
+                                if im.mode in ("RGB", "L"):
+                                    with open(os.path.join(target_dir, f"{out_prefix}.{ext}"), "wb") as out_f:
+                                        out_f.write(img_bytes)
+                                    saved = True
+                                elif im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                                    bg = Image.new("RGB", im.size, (255, 255, 255))
+                                    rgba = im.convert("RGBA")
+                                    bg.paste(rgba, mask=rgba.split()[3])
+                                    bg.save(os.path.join(target_dir, f"{out_prefix}.png"), "PNG")
+                                    saved = True
+                                else:
+                                    im.convert("RGB").save(os.path.join(target_dir, f"{out_prefix}.png"), "PNG")
+                                    saved = True
+            except Exception:
+                saved = False
+
+            if not saved:
+                rect = page.rect
+                max_dim = max(rect.width, rect.height, 1.0)
+                min_dim = min(rect.width, rect.height, 1.0)
+                zoom = 220.0 / 72.0
+                if min_dim * zoom < 1200:
+                    zoom = 1200.0 / min_dim
+                if max_dim * zoom > 3200:
+                    zoom = 3200.0 / max_dim
+                zoom = max(zoom, 1.0)
+                pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csRGB, alpha=False)
+                pix.save(os.path.join(target_dir, f"{out_prefix}.png"))
+    finally:
+        doc.close()
+
+    return target_dir
+
 def extract_manga_archive(archive_path, target_dir=None):
     """
-    Descompacta um arquivo .zip ou .cbz em target_dir.
-    Se todas as imagens estiverem dentro de uma subpasta única descompactada,
+    Descompacta um arquivo .zip, .cbz ou .pdf em target_dir.
+    Se todas as imagens estiverem dentro de uma subpasta única descompactada (ZIP/CBZ),
     move todas as imagens para a raiz do target_dir.
     Retorna o caminho final da pasta com as imagens.
     """
@@ -140,6 +238,9 @@ def extract_manga_archive(archive_path, target_dir=None):
         return None
         
     archive_path = os.path.abspath(archive_path)
+    if archive_path.lower().endswith('.pdf'):
+        return extract_manga_pdf(archive_path, target_dir)
+
     base_name = os.path.splitext(os.path.basename(archive_path))[0]
     
     if not target_dir:
@@ -443,43 +544,83 @@ def api_library():
                 }
                 entries.append(entry)
 
-            # 2. Arquivos compactados (.zip ou .cbz)
-            elif os.path.isfile(full_p) and item.lower().endswith(('.zip', '.cbz')):
-                # Se já houver uma pasta com o mesmo nome descompactada, evita duplicar
+            # 2. Arquivos compactados ou PDF (.zip, .cbz ou .pdf)
+            elif os.path.isfile(full_p) and item.lower().endswith(('.zip', '.cbz', '.pdf')):
+                # Se já houver uma pasta com o mesmo nome descompactada contendo imagens, evita duplicar
                 unpacked_candidate = os.path.splitext(full_p)[0]
-                if unpacked_candidate in seen_paths or (os.path.exists(unpacked_candidate) and os.path.isdir(unpacked_candidate)):
+                if unpacked_candidate in seen_paths:
                     continue
-                try:
-                    with zipfile.ZipFile(full_p, 'r') as z:
-                        zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
-                        if not zip_imgs:
+                if os.path.exists(unpacked_candidate) and os.path.isdir(unpacked_candidate):
+                    has_imgs = any(f.lower().endswith(('.jpg','.jpeg','.png','.webp')) for f in os.listdir(unpacked_candidate))
+                    if has_imgs:
+                        continue
+
+                if item.lower().endswith('.pdf'):
+                    fitz = _get_pymupdf()
+                    if fitz is None:
+                        continue
+                    try:
+                        doc = fitz.open(full_p)
+                        try:
+                            num_pages = len(doc)
+                        finally:
+                            doc.close()
+                        if num_pages <= 0:
                             continue
-                        zip_imgs.sort()
                         seen_paths.add(full_p)
                         mtime = os.path.getmtime(full_p)
                         m_id = get_manga_hash(full_p)
                         clean_n = os.path.splitext(item)[0]
-                        arc_type = "CBZ" if item.lower().endswith(".cbz") else "ZIP"
-                        entry = {
+                        entries.append({
                             "id": m_id,
                             "name": clean_n,
                             "clean_name": clean_n.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
                             "path": full_p,
-                            "pages": len(zip_imgs),
+                            "pages": num_pages,
                             "has_reader": False,
                             "has_cbz": False,
                             "cbz_path": None,
                             "reader_path": None,
                             "reader_url": None,
                             "mtime": mtime,
-                            "first_img": f"{full_p}::{zip_imgs[0]}",
+                            "first_img": f"{full_p}::page0",
                             "is_drive": is_drive_path(full_p),
                             "is_archive": True,
-                            "archive_type": arc_type
-                        }
-                        entries.append(entry)
-                except Exception:
-                    pass
+                            "archive_type": "PDF"
+                        })
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        with zipfile.ZipFile(full_p, 'r') as z:
+                            zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
+                            if not zip_imgs:
+                                continue
+                            zip_imgs.sort()
+                            seen_paths.add(full_p)
+                            mtime = os.path.getmtime(full_p)
+                            m_id = get_manga_hash(full_p)
+                            clean_n = os.path.splitext(item)[0]
+                            arc_type = "CBZ" if item.lower().endswith(".cbz") else "ZIP"
+                            entries.append({
+                                "id": m_id,
+                                "name": clean_n,
+                                "clean_name": clean_n.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
+                                "path": full_p,
+                                "pages": len(zip_imgs),
+                                "has_reader": False,
+                                "has_cbz": False,
+                                "cbz_path": None,
+                                "reader_path": None,
+                                "reader_url": None,
+                                "mtime": mtime,
+                                "first_img": f"{full_p}::{zip_imgs[0]}",
+                                "is_drive": is_drive_path(full_p),
+                                "is_archive": True,
+                                "archive_type": arc_type
+                            })
+                    except Exception:
+                        pass
 
         return entries
 
@@ -601,7 +742,7 @@ def serve_manga_reader(manga_id, filename="leitor.html"):
 
 @app.route("/api/thumb")
 def api_thumb():
-    """Gera miniatura otimizada da capa do mangá (pasta ou arquivo .zip/.cbz)."""
+    """Gera miniatura otimizada da capa do mangá (pasta ou arquivo .zip/.cbz/.pdf)."""
     img_path = request.args.get("path", "")
     if not img_path:
         return "", 404
@@ -610,18 +751,50 @@ def api_thumb():
         thumb_name = str(abs(hash(img_path))) + ".jpg"
         thumb_dest = os.path.join(THUMB_CACHE_DIR, thumb_name)
         if not os.path.exists(thumb_dest):
-            # Caso 1: Imagem dentro de arquivo ZIP / CBZ (formato: archive_path::inner_img)
+            # Caso 1: Capa de PDF (arquivo.pdf::page0) ou Imagem dentro de ZIP/CBZ (arquivo.zip::inner_img)
             if "::" in img_path:
                 arc_p, inner_f = img_path.split("::", 1)
                 if not os.path.exists(arc_p):
                     return "", 404
-                with zipfile.ZipFile(arc_p, 'r') as z:
-                    with z.open(inner_f) as zf:
-                        with Image.open(io.BytesIO(zf.read())) as im:
+                if arc_p.lower().endswith('.pdf'):
+                    fitz = _get_pymupdf()
+                    if fitz is None:
+                        return "", 404
+                    doc = fitz.open(arc_p)
+                    try:
+                        if len(doc) == 0:
+                            return "", 404
+                        pix = doc[0].get_pixmap(dpi=96, colorspace=fitz.csRGB, alpha=False)
+                        with Image.open(io.BytesIO(pix.tobytes("png"))) as im:
                             im = im.convert("RGB")
                             im.thumbnail((320, 460), Image.Resampling.LANCZOS)
                             im.save(thumb_dest, "JPEG", quality=85)
-            # Caso 2: Caminho direto de arquivo .zip ou .cbz
+                    finally:
+                        doc.close()
+                else:
+                    with zipfile.ZipFile(arc_p, 'r') as z:
+                        with z.open(inner_f) as zf:
+                            with Image.open(io.BytesIO(zf.read())) as im:
+                                im = im.convert("RGB")
+                                im.thumbnail((320, 460), Image.Resampling.LANCZOS)
+                                im.save(thumb_dest, "JPEG", quality=85)
+            # Caso 2: Caminho direto de arquivo .pdf
+            elif os.path.isfile(img_path) and img_path.lower().endswith('.pdf'):
+                fitz = _get_pymupdf()
+                if fitz is None:
+                    return "", 404
+                doc = fitz.open(img_path)
+                try:
+                    if len(doc) == 0:
+                        return "", 404
+                    pix = doc[0].get_pixmap(dpi=96, colorspace=fitz.csRGB, alpha=False)
+                    with Image.open(io.BytesIO(pix.tobytes("png"))) as im:
+                        im = im.convert("RGB")
+                        im.thumbnail((320, 460), Image.Resampling.LANCZOS)
+                        im.save(thumb_dest, "JPEG", quality=85)
+                finally:
+                    doc.close()
+            # Caso 3: Caminho direto de arquivo .zip ou .cbz
             elif os.path.isfile(img_path) and img_path.lower().endswith(('.zip', '.cbz')):
                 with zipfile.ZipFile(img_path, 'r') as z:
                     zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
@@ -633,7 +806,7 @@ def api_thumb():
                             im = im.convert("RGB")
                             im.thumbnail((320, 460), Image.Resampling.LANCZOS)
                             im.save(thumb_dest, "JPEG", quality=85)
-            # Caso 3: Imagem solta no disco
+            # Caso 4: Imagem solta no disco
             elif os.path.exists(img_path):
                 with Image.open(img_path) as im:
                     im = im.convert("RGB")
@@ -672,31 +845,28 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 def api_upload():
     """Recebe arquivos de mangá enviados diretamente pelo navegador (pasta de imagens ou ZIP/CBZ)."""
     try:
-        # 1. Arquivo ZIP / CBZ
+        # 1. Arquivo ZIP / CBZ / PDF
         if 'zip_file' in request.files:
             file = request.files['zip_file']
             filename = file.filename or "manga_upload.zip"
+            ext = os.path.splitext(filename)[1].lower()
             base_name = os.path.splitext(filename)[0]
             base_name = re.sub(r'[\\/*?:"<>|]', "", base_name).strip() or "Manga_Upload"
             target_dir = os.path.join(UPLOAD_DIR, base_name)
             os.makedirs(target_dir, exist_ok=True)
             
-            zip_tmp = os.path.join(UPLOAD_DIR, f"tmp_{filename}")
-            file.save(zip_tmp)
-            with zipfile.ZipFile(zip_tmp, 'r') as z:
-                z.extractall(target_dir)
-            try: os.remove(zip_tmp)
-            except Exception: pass
-            
-            # Se todas as imagens estiverem dentro de uma subpasta única descompactada, traz para a raiz
-            subdirs = [os.path.join(target_dir, d) for d in os.listdir(target_dir) if os.path.isdir(os.path.join(target_dir, d))]
-            root_imgs = [f for f in os.listdir(target_dir) if f.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
-            if len(subdirs) == 1 and not root_imgs:
-                only_sub = subdirs[0]
-                for f in os.listdir(only_sub):
-                    shutil.move(os.path.join(only_sub, f), os.path.join(target_dir, f))
-                try: os.rmdir(only_sub)
-                except Exception: pass
+            arc_tmp = os.path.join(UPLOAD_DIR, f"tmp_{base_name}{ext or '.zip'}")
+            file.save(arc_tmp)
+            try:
+                res_dir = extract_manga_archive(arc_tmp, target_dir)
+                if not res_dir:
+                    return jsonify({"success": False, "error": "Nenhuma página válida encontrada no arquivo enviado."}), 400
+            finally:
+                try:
+                    if os.path.exists(arc_tmp):
+                        os.remove(arc_tmp)
+                except Exception:
+                    pass
                 
             return jsonify({"success": True, "path": target_dir, "name": base_name})
             
@@ -761,6 +931,26 @@ def api_drive_folders():
                             "pages": len(imgs),
                             "is_archive": False
                         })
+                # Se for arquivo .pdf
+                elif os.path.isfile(p) and item.lower().endswith('.pdf'):
+                    fitz = _get_pymupdf()
+                    if fitz is not None:
+                        try:
+                            doc = fitz.open(p)
+                            try:
+                                num_pages = len(doc)
+                            finally:
+                                doc.close()
+                            if num_pages > 0:
+                                seen.add(p)
+                                folders.append({
+                                    "name": f"📄 {item}",
+                                    "path": p,
+                                    "pages": num_pages,
+                                    "is_archive": True
+                                })
+                        except Exception:
+                            pass
                 # Se for arquivo .zip ou .cbz
                 elif os.path.isfile(p) and item.lower().endswith(('.zip', '.cbz')):
                     try:
@@ -817,8 +1007,8 @@ def api_inspect_folder():
     if not p or not os.path.exists(p):
         return jsonify({"valid": False, "error": "Pasta ou arquivo não encontrado"})
         
-    # Se for arquivo compactado .zip ou .cbz, descompacta para pasta correspondente
-    if os.path.isfile(p) and p.lower().endswith(('.zip', '.cbz')):
+    # Se for arquivo .zip, .cbz ou .pdf, descompacta/extrai para pasta correspondente
+    if os.path.isfile(p) and p.lower().endswith(('.zip', '.cbz', '.pdf')):
         target_dir = os.path.splitext(p)[0]
         need_extract = True
         if os.path.exists(target_dir) and os.path.isdir(target_dir):
@@ -827,10 +1017,13 @@ def api_inspect_folder():
                 need_extract = False
                 p = target_dir
         if need_extract:
-            extracted_path = extract_manga_archive(p, target_dir)
-            if not extracted_path:
-                return jsonify({"valid": False, "error": "Falha ao descompactar o arquivo ZIP/CBZ"})
-            p = extracted_path
+            try:
+                extracted_path = extract_manga_archive(p, target_dir)
+                if not extracted_path:
+                    return jsonify({"valid": False, "error": "Falha ao extrair páginas do arquivo (ZIP/CBZ/PDF)"})
+                p = extracted_path
+            except Exception as ex:
+                return jsonify({"valid": False, "error": f"Erro ao processar arquivo: {ex}"})
 
     if not os.path.isdir(p):
         return jsonify({"valid": False, "error": "Caminho inválido"})
@@ -877,9 +1070,9 @@ def api_drive_extract_all():
     if not folder_path or not os.path.exists(folder_path):
         return jsonify({"success": False, "error": "Pasta de mangás não encontrada"}), 404
         
-    archives = [f for f in sorted(os.listdir(folder_path)) if f.lower().endswith(('.zip', '.cbz'))]
+    archives = [f for f in sorted(os.listdir(folder_path)) if f.lower().endswith(('.zip', '.cbz', '.pdf'))]
     if not archives:
-        return jsonify({"success": True, "count": 0, "message": "Nenhum arquivo .zip ou .cbz pendente encontrado na pasta."})
+        return jsonify({"success": True, "count": 0, "message": "Nenhum arquivo .zip, .cbz ou .pdf pendente encontrado na pasta."})
         
     extracted_count = 0
     errors = []
@@ -915,6 +1108,13 @@ def api_start_translation():
     manga_path = data.get("path", "").strip('\"\'')
     if not manga_path or not os.path.exists(manga_path):
         return jsonify({"error": "Caminho do mangá inválido"}), 400
+    if os.path.isfile(manga_path) and manga_path.lower().endswith(('.zip', '.cbz', '.pdf')):
+        try:
+            manga_path = extract_manga_archive(manga_path)
+            if not manga_path or not os.path.isdir(manga_path):
+                return jsonify({"error": "Falha ao extrair páginas do arquivo"}), 400
+        except Exception as ex:
+            return jsonify({"error": f"Erro ao processar arquivo: {ex}"}), 400
 
     first_img = data.get("first_img", "")
     if not first_img and os.path.exists(manga_path):

@@ -14,6 +14,8 @@ import zipfile
 import threading
 import io
 import urllib.request
+import urllib.error
+import urllib.parse
 import webbrowser
 import subprocess
 import traceback
@@ -404,7 +406,18 @@ def api_status():
             "active_model": cfg.get("groq_model", "qwen/qwen3.8-27b")
         },
         "openrouter": {"configured": False, "keys": []},
-        "ollama": {"status": "offline", "models": []}
+        "gemini": {
+            "configured": False,
+            "keys": [],
+            "active_model": cfg.get("gemini_model", "gemini-2.5-flash")
+        },
+        "ollama": {"status": "offline", "models": [], "vision_models": []},
+        "vision": {
+            "provider": cfg.get("vision_provider", "auto"),
+            "gemini_model": cfg.get("gemini_model", "gemini-2.5-flash"),
+            "openrouter_vision_model": cfg.get("openrouter_vision_model", auto_translate.OPENROUTER_DEFAULT_VISION_MODELS[0]),
+            "ollama_vision_model": cfg.get("ollama_vision_model", "")
+        }
     }
     
     # 1. GROQ POOL (MULTI-CHAVES CONCORRENTES)
@@ -455,15 +468,51 @@ def api_status():
                 k_info["credits"] = 0.0
             res["openrouter"]["keys"].append(k_info)
 
-    # 3. OLLAMA
+    # 3. GOOGLE GEMINI VISION
+    gem_keys = [
+        str(k).strip() for k in (cfg.get("gemini_api_keys") or [])
+        if str(k or "").strip() and not str(k).strip().startswith(("gsk_", "sk-or-"))
+    ]
+    if not gem_keys and cfg.get("gemini_api_key"):
+        sk_g = str(cfg.get("gemini_api_key")).strip()
+        if sk_g and not sk_g.startswith(("gsk_", "sk-or-")):
+            gem_keys = [sk_g]
+    if gem_keys:
+        res["gemini"]["configured"] = True
+        for idx, k in enumerate(gem_keys):
+            k_info = {"index": idx + 1, "key": k[:8] + "..." + k[-4:] if len(k) > 12 else "***", "ok": False}
+            try:
+                qs = urllib.parse.urlencode({"key": k})
+                req_gm = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?{qs}")
+                with urllib.request.urlopen(req_gm, timeout=5) as resp:
+                    if resp.status == 200:
+                        gm_data = json.loads(resp.read().decode("utf-8"))
+                        gm_models = [m.get("name", "") for m in gm_data.get("models", [])]
+                        k_info["ok"] = True
+                        k_info["models_count"] = len(gm_models)
+                        k_info["msg"] = f"Ativa ({len(gm_models)} modelos Gemini disponíveis)"
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    k_info["ok"] = True
+                    k_info["rate_limited"] = True
+                    k_info["msg"] = "Válida (em pausa breve RPM)"
+                else:
+                    k_info["msg"] = f"Erro HTTP {e.code}"
+            except Exception as e:
+                k_info["msg"] = str(e)
+            res["gemini"]["keys"].append(k_info)
+
+    # 4. OLLAMA
     ol_host = cfg.get("ollama_host", "http://localhost:11434").rstrip("/")
     try:
         req_ol = urllib.request.Request(f"{ol_host}/api/tags")
         with urllib.request.urlopen(req_ol, timeout=2) as resp:
             if resp.status == 200:
                 odata = json.loads(resp.read().decode("utf-8"))
+                models_list = [m.get("name") for m in odata.get("models", [])]
                 res["ollama"]["status"] = "online"
-                res["ollama"]["models"] = [m.get("name") for m in odata.get("models", [])]
+                res["ollama"]["models"] = models_list
+                res["ollama"]["vision_models"] = [m for m in models_list if auto_translate.is_ollama_vision_model_name(m)]
     except Exception:
         res["ollama"]["status"] = "offline"
 
@@ -480,13 +529,14 @@ def api_version():
         "release": f"Manga Studio {APP_VERSION_NAME}",
         "dual_engine": True,
         "features": [
+            "IA Vision Híbrido (Detector Geométrico Local + Gemini / OpenRouter / Ollama Vision)",
+            "OCR Especializado Coreano PP-OCRv5 & Suporte Nativo a PDF / CBZ / ZIP",
             "Cooperative Dual-Engine (Spatial Cartographer + Narrative Synthesizer)",
             "Delete Manga & Fast Library Management",
             "Persistent User Profile & Auto-Key Sync (Google Drive + Browser)",
             "Automated SemVer Versioning (Grandes, Médios e Pequenos)",
-            "Web Reader & CBZ/ZIP Downloader",
-            "Google Drive Cloud Persistence",
-            "Hybrid Local/Cloud AI (Groq + Ollama GPU)"
+            "Interface Mobile Responsiva (PWA) & Leitor Web Interativo",
+            "Hybrid Local/Cloud AI (Groq + OpenRouter + Ollama GPU)"
         ]
     })
 
@@ -1297,11 +1347,6 @@ def api_open_cbz():
                 pass
         return jsonify({"success": True, "path": path})
     return jsonify({"success": False, "error": "Arquivo CBZ não encontrado"}), 404
-    path = data.get("path", "")
-    if path and os.path.exists(path):
-        os.startfile(path)
-        return jsonify({"success": True})
-    return jsonify({"success": False, "error": "Arquivo CBZ não encontrado"}), 404
 
 @app.route("/api/test_key", methods=["POST"])
 def api_test_key():
@@ -1349,6 +1394,22 @@ def api_test_key():
             return jsonify({"valid": False, "msg": f"Erro HTTP {e.code} no OpenRouter. Chave inválida ou recusada."})
         except Exception as e:
             return jsonify({"valid": False, "msg": f"Erro de conexão: {e}"})
+
+    elif provider == "gemini":
+        qs = urllib.parse.urlencode({"key": key})
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?{qs}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                gm_data = json.loads(resp.read().decode("utf-8"))
+                gm_count = len(gm_data.get("models", []))
+                return jsonify({"valid": True, "msg": f"Chave Google Gemini Válida! ({gm_count} modelos Vision liberados)."})
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                return jsonify({"valid": True, "msg": "Chave Gemini Válida! (Porém em limite temporário no momento)."})
+            return jsonify({"valid": False, "msg": f"Erro HTTP {e.code} no Google Gemini. Verifique a chave (AIza...)."})
+        except Exception as e:
+            return jsonify({"valid": False, "msg": f"Erro de conexão Gemini: {e}"})
 
     return jsonify({"valid": False, "msg": "Provedor desconhecido."})
 

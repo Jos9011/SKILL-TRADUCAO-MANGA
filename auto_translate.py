@@ -18,6 +18,7 @@ import sys
 import re
 import time
 import io
+import base64
 import json
 import cv2
 import shutil
@@ -105,14 +106,21 @@ def load_config(cli_args=None):
     cfg = {
         "provider": "auto",
         "groq_api_key": "",
-        "groq_model": "openai/gpt-oss-120b",
-        "groq_fallback_model": "qwen/qwen3.8-27b",
+        "groq_api_keys": [],
+        "groq_model": "qwen/qwen3.8-27b",
+        "groq_fallback_model": "openai/gpt-oss-120b",
         "openrouter_api_key": "",
         "openrouter_api_keys": [],
         "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
         "openrouter_fallback_model": "google/gemma-4-31b-it:free",
+        "openrouter_vision_model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "gemini_api_key": "",
+        "gemini_api_keys": [],
+        "gemini_model": "gemini-2.5-flash",
         "ollama_host": "http://localhost:11434",
         "ollama_model": "dolphin-llama3:latest",
+        "ollama_vision_model": "",
+        "vision_provider": "auto",
         "temperature": 0.0
     }
     # Restaura perfil salvo no Google Drive se disponível
@@ -135,14 +143,28 @@ def load_config(cli_args=None):
     # Variáveis de ambiente
     if os.environ.get("GROQ_API_KEY"):
         cfg["groq_api_key"] = os.environ.get("GROQ_API_KEY")
+    if os.environ.get("GROQ_API_KEYS"):
+        cfg["groq_api_keys"] = [k.strip() for k in os.environ.get("GROQ_API_KEYS").split(",") if k.strip()]
     if os.environ.get("GROQ_MODEL"):
         cfg["groq_model"] = os.environ.get("GROQ_MODEL")
     if os.environ.get("OPENROUTER_API_KEY"):
         cfg["openrouter_api_key"] = os.environ.get("OPENROUTER_API_KEY")
     if os.environ.get("OPENROUTER_API_KEYS"):
         cfg["openrouter_api_keys"] = [k.strip() for k in os.environ.get("OPENROUTER_API_KEYS").split(",") if k.strip()]
+    if os.environ.get("OPENROUTER_VISION_MODEL"):
+        cfg["openrouter_vision_model"] = os.environ.get("OPENROUTER_VISION_MODEL")
+    if os.environ.get("GEMINI_API_KEY"):
+        cfg["gemini_api_key"] = os.environ.get("GEMINI_API_KEY")
+    if os.environ.get("GEMINI_API_KEYS"):
+        cfg["gemini_api_keys"] = [k.strip() for k in os.environ.get("GEMINI_API_KEYS").split(",") if k.strip()]
+    if os.environ.get("GEMINI_MODEL"):
+        cfg["gemini_model"] = os.environ.get("GEMINI_MODEL")
+    if os.environ.get("VISION_PROVIDER"):
+        cfg["vision_provider"] = os.environ.get("VISION_PROVIDER")
     if os.environ.get("OLLAMA_HOST"):
         cfg["ollama_host"] = os.environ.get("OLLAMA_HOST")
+    if os.environ.get("OLLAMA_VISION_MODEL"):
+        cfg["ollama_vision_model"] = os.environ.get("OLLAMA_VISION_MODEL")
     if os.environ.get("TRANSLATE_PROVIDER"):
         cfg["provider"] = os.environ.get("TRANSLATE_PROVIDER")
     if os.environ.get("MANGA_TRANSLATE_MODEL"):
@@ -161,32 +183,87 @@ def load_config(cli_args=None):
         if cli_args.get("host"):
             cfg["ollama_host"] = cli_args["host"]
         if cli_args.get("key"):
-            cfg["openrouter_api_key"] = cli_args["key"]
-            if str(cli_args["key"]).startswith("gsk_"):
-                cfg["groq_api_key"] = cli_args["key"]
+            k_cli = str(cli_args["key"]).strip()
+            if k_cli.startswith("gsk_"):
+                cfg["groq_api_key"] = k_cli
+            elif k_cli.startswith("AIza"):
+                cfg["gemini_api_key"] = k_cli
+            else:
+                cfg["openrouter_api_key"] = k_cli
         if cli_args.get("groq_key"):
             cfg["groq_api_key"] = cli_args["groq_key"]
 
-    # Consolidação do Pool de Chaves sem duplicatas
+    # Consolidação do Pool de Chaves OpenRouter sem duplicatas (com isolamento de provedores)
     keys_pool = []
     raw_keys = cfg.get("openrouter_api_keys", [])
     if isinstance(raw_keys, list):
         for k in raw_keys:
-            if isinstance(k, str) and k.strip() and k.strip() not in keys_pool:
-                keys_pool.append(k.strip())
+            k_s = str(k).strip() if isinstance(k, str) else ""
+            if k_s and not k_s.startswith(("gsk_", "AIza")) and k_s not in keys_pool:
+                keys_pool.append(k_s)
     elif isinstance(raw_keys, str) and raw_keys.strip():
         for k in raw_keys.split(","):
-            k = k.strip()
-            if k and k not in keys_pool:
-                keys_pool.append(k)
+            k_s = k.strip()
+            if k_s and not k_s.startswith(("gsk_", "AIza")) and k_s not in keys_pool:
+                keys_pool.append(k_s)
 
     single_k = str(cfg.get("openrouter_api_key", "")).strip()
-    if single_k and single_k not in keys_pool:
+    if single_k and not single_k.startswith(("gsk_", "AIza")) and single_k not in keys_pool:
         keys_pool.insert(0, single_k)
 
     cfg["openrouter_api_keys"] = keys_pool
     if keys_pool and not cfg.get("openrouter_api_key"):
         cfg["openrouter_api_key"] = keys_pool[0]
+    elif str(cfg.get("openrouter_api_key", "")).startswith(("gsk_", "AIza")):
+        cfg["openrouter_api_key"] = keys_pool[0] if keys_pool else ""
+
+    # Consolidação do Pool de Chaves Groq sem duplicatas (com isolamento de provedores)
+    groq_pool = []
+    raw_groq_keys = cfg.get("groq_api_keys", [])
+    if isinstance(raw_groq_keys, list):
+        for k in raw_groq_keys:
+            k_s = str(k).strip() if isinstance(k, str) else ""
+            if k_s and not k_s.startswith(("sk-or-", "AIza")) and k_s not in groq_pool:
+                groq_pool.append(k_s)
+    elif isinstance(raw_groq_keys, str) and raw_groq_keys.strip():
+        for k in raw_groq_keys.split(","):
+            k_s = k.strip()
+            if k_s and not k_s.startswith(("sk-or-", "AIza")) and k_s not in groq_pool:
+                groq_pool.append(k_s)
+
+    single_g = str(cfg.get("groq_api_key", "")).strip()
+    if single_g and not single_g.startswith(("sk-or-", "AIza")) and single_g not in groq_pool:
+        groq_pool.insert(0, single_g)
+
+    cfg["groq_api_keys"] = groq_pool
+    if groq_pool and not cfg.get("groq_api_key"):
+        cfg["groq_api_key"] = groq_pool[0]
+    elif str(cfg.get("groq_api_key", "")).startswith(("sk-or-", "AIza")):
+        cfg["groq_api_key"] = groq_pool[0] if groq_pool else ""
+
+    # Consolidação do Pool de Chaves Google Gemini sem duplicatas (com isolamento de provedores)
+    gemini_pool = []
+    raw_gemini_keys = cfg.get("gemini_api_keys", [])
+    if isinstance(raw_gemini_keys, list):
+        for k in raw_gemini_keys:
+            k_s = str(k).strip() if isinstance(k, str) else ""
+            if k_s and not k_s.startswith(("gsk_", "sk-or-")) and k_s not in gemini_pool:
+                gemini_pool.append(k_s)
+    elif isinstance(raw_gemini_keys, str) and raw_gemini_keys.strip():
+        for k in raw_gemini_keys.split(","):
+            k_s = k.strip()
+            if k_s and not k_s.startswith(("gsk_", "sk-or-")) and k_s not in gemini_pool:
+                gemini_pool.append(k_s)
+
+    single_gem = str(cfg.get("gemini_api_key", "")).strip()
+    if single_gem and not single_gem.startswith(("gsk_", "sk-or-")) and single_gem not in gemini_pool:
+        gemini_pool.insert(0, single_gem)
+
+    cfg["gemini_api_keys"] = gemini_pool
+    if gemini_pool and not cfg.get("gemini_api_key"):
+        cfg["gemini_api_key"] = gemini_pool[0]
+    elif str(cfg.get("gemini_api_key", "")).startswith(("gsk_", "sk-or-")):
+        cfg["gemini_api_key"] = gemini_pool[0] if gemini_pool else ""
 
     return cfg
 
@@ -280,9 +357,13 @@ def sanitize_lettering_text(text):
     # 3. Padrões adicionais de pontuação asiática e caracteres gráficos
     trans_punct = {
         '…': '...',
+        '‐': '-',
+        '\u2011': '-',
+        '\u2012': '-',
         '―': '-',
         '—': '-',
         '–': '-',
+        '−': '-',
         '〜': '~',
         '～': '~',
         '〰': '~',
@@ -327,9 +408,11 @@ _FALLBACK_CACHE = {}
 def is_char_supported(char, font, default_font_path=None):
     try:
         fpath = getattr(font, 'path', default_font_path or '')
-        if fpath not in _NOTDEF_CACHE:
-            _NOTDEF_CACHE[fpath] = bytes(font.getmask(chr(0xFFFF)))
-        notdef = _NOTDEF_CACHE[fpath]
+        fsize = int(getattr(font, 'size', 0) or 0)
+        cache_key = (fpath, fsize)
+        if cache_key not in _NOTDEF_CACHE:
+            _NOTDEF_CACHE[cache_key] = bytes(font.getmask(chr(0xFFFF)))
+        notdef = _NOTDEF_CACHE[cache_key]
         m = bytes(font.getmask(char))
         return m != notdef and len(m) > 0
     except Exception:
@@ -487,7 +570,52 @@ def load_project_glossary(manga_dir):
 LEARNED_RULES_TXT = os.path.join(SCRIPT_DIR, "aprendizado.txt")
 GLOBAL_TRANSLATION_MEMORY = os.path.join(SCRIPT_DIR, "memoria_traducoes.json")
 
-def load_learning_rules():
+def _filter_learning_rules_for_lang(lines, src_lang="auto"):
+    """Filtra regras de aprendizado específicas de outros idiomas/obras para economizar tokens em cotas TPM sem perder regras gerais."""
+    if not src_lang or src_lang == "auto":
+        return lines
+
+    is_asian_ko = (src_lang == "ko-KR")
+    is_asian_zh_ja = src_lang in ("zh-CN", "ja-JP")
+    is_latin = src_lang in ("en-US", "es-ES")
+
+    filtered = []
+    skip_work_block = False
+    for line in lines:
+        s = line.strip()
+        if "DIRETRIZES ESPECÍFICAS DE OBRAS" in s or "DIRETRIZES ESPECIFICAS DE OBRAS" in s:
+            skip_work_block = True
+            continue
+        if skip_work_block:
+            if not s.startswith("*") and not s.startswith("- "):
+                skip_work_block = False
+            elif s.startswith("- ") and not any(k in s for k in ("Boku no", "Slave Is", "奴隶", "Yu-kun")):
+                skip_work_block = False
+            else:
+                if is_latin and ("Boku no Toshiue" in s or "Yu-kun" in s):
+                    pass
+                elif is_asian_zh_ja and ("Slave Is" in s or "奴隶" in s):
+                    pass
+                else:
+                    continue
+
+        if is_asian_ko:
+            if re.search(r'[\u4e00-\u9fff]', s) and not re.search(r'[\uac00-\ud7af]', s):
+                continue
+            if re.match(r'^[*•-]\s*[a-zA-Z0-9\s\'/\-~!?,]+->', s) and not re.search(r'[\uac00-\ud7af]', s):
+                continue
+            if any(marker in s for marker in ("Boku no Toshiue", "Slave Is", "Come hang out:", "It's hard (", "Fr I END (", "MARCAS D'ÁGUA DE SCANS CHINESES")):
+                continue
+        elif is_latin:
+            if re.search(r'[\u4e00-\u9fff\uac00-\ud7af\u3040-\u30ff]', s) and "-> " in s:
+                continue
+            if any(marker in s for marker in ("Slave Is", "MARCAS D'ÁGUA DE SCANS CHINESES", "888 / 8888888")):
+                continue
+
+        filtered.append(line)
+    return filtered
+
+def load_learning_rules(src_lang="auto"):
     """Lê as diretrizes de aprendizado humano de aprendizado.txt para injetar nos prompts da IA."""
     if not os.path.exists(LEARNED_RULES_TXT):
         initial_content = """# =====================================================================
@@ -540,17 +668,28 @@ def load_learning_rules():
                         donts.append(line_str)
         except Exception:
             pass
-            
+
+    if src_lang and src_lang != "auto":
+        dos = _filter_learning_rules_for_lang(dos, src_lang=src_lang)
+        donts = _filter_learning_rules_for_lang(donts, src_lang=src_lang)
+
     return dos, donts
 
 def lookup_translation_memory(orig_text):
     """Consulta a memória global de tradução para reutilizar frases aprendidas perfeitamente."""
     if not os.path.exists(GLOBAL_TRANSLATION_MEMORY):
         return None
+    clean_key = str(orig_text or "").strip()
+    # Palavras curtas em Hangul/CJK dependem 100% do contexto da cena e não devem pular o tradutor contextual
+    if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', clean_key) and len(clean_key) <= 6:
+        return None
     try:
         with open(GLOBAL_TRANSLATION_MEMORY, "r", encoding="utf-8") as f:
             mem = json.load(f)
-        return mem.get(orig_text.strip())
+        hit = mem.get(clean_key)
+        if hit and ("<x " in str(hit) or "MYMEMORY" in str(hit).upper()):
+            return None
+        return hit
     except Exception:
         return None
 
@@ -566,8 +705,13 @@ def update_global_translation_memory(new_translations):
         except Exception:
             mem = {}
     for orig, trans in new_translations.items():
-        if trans and orig != trans and len(orig) >= 2:
-            mem[orig.strip()] = trans.strip()
+        o_s = str(orig or "").strip()
+        t_s = str(trans or "").strip()
+        if not t_s or o_s == t_s or len(o_s) < 4:
+            continue
+        if "<x " in t_s or "MYMEMORY" in t_s.upper() or re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', t_s):
+            continue
+        mem[o_s] = t_s
     try:
         with open(GLOBAL_TRANSLATION_MEMORY, "w", encoding="utf-8") as f:
             json.dump(mem, f, ensure_ascii=False, indent=2)
@@ -636,7 +780,7 @@ def detect_language_from_samples(texts):
         return "en-US"
         
     # 2. Avalia qual idioma asiático é o principal
-    if ko_chars > 10 and ko_chars > jp_kana:
+    if ko_chars >= 4 and ko_chars > jp_kana and ko_chars >= cjk_ideographs:
         return "ko-KR"
     if jp_kana > 10 or (cjk_ideographs > 20 and jp_kana > 0):
         return "ja-JP"
@@ -920,17 +1064,17 @@ def repair_glued_text(text, src_lang="en-US"):
         
     return ' '.join(fixed_tokens)
 
-def smart_join_lines(lines, is_cjk=False):
+def smart_join_lines(lines, is_cjk=False, preserve_spaces=False):
     """Junta linhas de um mesmo balão com inteligência morfológica:
-    - Para texto asiático (CJK), junta sem espaços.
-    - Para texto latino, reconecta hífens de quebra de linha preservando honoríficos (-san, -sama, etc.)."""
+    - Para texto japonês/chinês (CJK sem espaços), junta sem espaços.
+    - Para Coreano (Hangul) ou texto latino, preserva espaços entre linhas."""
     if not lines:
         return ""
     cleaned_lines = [str(l).strip() for l in lines if l and str(l).strip()]
     if not cleaned_lines:
         return ""
     if is_cjk:
-        return "".join(cleaned_lines)
+        return " ".join(cleaned_lines) if preserve_spaces else "".join(cleaned_lines)
     
     honorifics = {'san', 'sama', 'kun', 'chan', 'dono', 'senpai', 'sensei', 'tan'}
     text = cleaned_lines[0]
@@ -1023,6 +1167,17 @@ def is_majority_cjk(lines_text):
         return False
     return True
 
+def is_majority_hangul(lines_text):
+    """Retorna True se o bloco contiver predominância de Hangul coreano (cujas linhas quebradas devem manter espaço entre palavras)."""
+    if not lines_text:
+        return False
+    joined = " ".join(str(lt) for lt in lines_text if lt)
+    ko_cnt = len(re.findall(r"[\uac00-\ud7af]", joined))
+    if ko_cnt == 0:
+        return False
+    zh_ja_cnt = len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff]", joined))
+    return ko_cnt >= zh_ja_cnt
+
 def smart_group_bubbles(blocks):
     """Agrupa linhas de texto próximas usando conectividade de grafos, suportando leitura oriental e ocidental."""
     n = len(blocks)
@@ -1075,9 +1230,16 @@ def smart_group_bubbles(blocks):
         
         lines_text = [b["text"].strip() for b in comp_blocks]
         is_cjk_bubble = is_majority_cjk(lines_text)
-        full_text = smart_join_lines(lines_text, is_cjk=is_cjk_bubble)
-        full_text = repair_glued_text(full_text)
-        raw_boxes = [b["box"] for b in comp_blocks]
+        is_ko_bubble = is_majority_hangul(lines_text)
+        full_text = smart_join_lines(lines_text, is_cjk=is_cjk_bubble, preserve_spaces=is_ko_bubble)
+        if not is_cjk_bubble:
+            full_text = repair_glued_text(full_text)
+        raw_boxes = []
+        for b in comp_blocks:
+            if b.get("raw_boxes"):
+                raw_boxes.extend(b["raw_boxes"])
+            else:
+                raw_boxes.append(b["box"])
         orig_line_count = sum(max(1, int(b.get("orig_line_count", len(b.get("lines", [])) or 1))) for b in comp_blocks)
         
         bubbles.append({
@@ -1865,7 +2027,25 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path, stroke_width=1, shape_t
     )
     return font, lines
 
-def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
+class GroqRateLimitError(RuntimeError):
+    """Exceção dedicada para diferenciar limite transitório de TPM/RPM vs esgotamento diário (TPD) no Groq."""
+    def __init__(self, message, is_tpm=False, is_daily=False, is_auth=False, retry_after=0.0):
+        super().__init__(message)
+        self.is_tpm = is_tpm
+        self.is_daily = is_daily
+        self.is_auth = is_auth
+        self.retry_after = retry_after
+
+def _strip_think_tags(text):
+    """Remove blocos <think>...</think> de modelos de raciocínio para não vazar na tradução ou quebrar JSON."""
+    if not text:
+        return ""
+    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', str(text), flags=re.IGNORECASE).strip()
+    if '<think>' in cleaned.lower():
+        cleaned = re.sub(r'<think>[\s\S]*$', '', cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
+
+def check_groq_available(api_key, model_name="qwen/qwen3.8-27b"):
     """Verifica se a chave da API do Groq é válida e se o modelo responde."""
     if not api_key or not str(api_key).strip():
         return False, "Chave vazia"
@@ -1876,6 +2056,8 @@ def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
         "messages": [{"role": "user", "content": "ping"}],
         "max_tokens": 5
     }
+    if "qwen3" in (model_name or "").lower():
+        payload["reasoning_effort"] = "none"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode('utf-8'),
@@ -1890,52 +2072,95 @@ def check_groq_available(api_key, model_name="openai/gpt-oss-120b"):
             if resp.status == 200:
                 return True, "Chave válida e pronta"
     except urllib.error.HTTPError as e:
-        if e.code == 404 and model_name != "qwen/qwen3.8-27b":
-            return check_groq_available(api_key, model_name="qwen/qwen3.8-27b")
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="ignore").lower()
+        except Exception:
+            pass
+        if e.code == 404:
+            for alt_m in ("qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"):
+                if alt_m != model_name:
+                    ok_alt, msg_alt = check_groq_available(api_key, model_name=alt_m)
+                    if ok_alt:
+                        return True, msg_alt
+        if e.code == 429 and not any(t in err_body for t in ("tokens per day", "requests per day", "tpd", "rpd")):
+            return True, "Chave válida (em pausa breve TPM)"
         return False, f"Erro HTTP {e.code}"
     except Exception as e:
         return False, f"Erro de conexão: {e}"
     return False, "Sem resposta"
 
-def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=600, timeout=45, fallback_model="qwen/qwen3.8-27b", max_retries=2, engine_opts=None):
-    """Executa requisição à API ultra-rápida do Groq Cloud com resiliência a picos de tokens (TPM) e fallback automático entre modelos."""
+def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=600, timeout=45, fallback_model="openai/gpt-oss-120b", max_retries=2, engine_opts=None, allow_tpm_wait=True):
+    """Executa requisição à API ultra-rápida do Groq Cloud com resiliência a picos de tokens (TPM) e rotação inteligente de modelos."""
     url = "https://api.groq.com/openai/v1/chat/completions"
-    exhausted_groq = engine_opts.setdefault("exhausted_groq_models", set()) if engine_opts is not None else set()
+    api_key_clean = str(api_key or "").strip()
+    if not api_key_clean:
+        raise GroqRateLimitError("Chave Groq vazia.", is_auth=True)
+    key_sig = api_key_clean[:12]
 
-    # Se o modelo ativo já foi alterado pelo fallback, usa o ativo
+    exhausted_groq = engine_opts.setdefault("exhausted_groq_models", set()) if engine_opts is not None else set()
+    cooldown_map = engine_opts.setdefault("groq_model_cooldowns", {}) if engine_opts is not None else {}
+
+    # Se o modelo ativo já foi alterado pelo fallback, prioriza o ativo (se não estiver em cooldown ou esgotado)
     if engine_opts and engine_opts.get("active_model") and engine_opts["active_model"] not in exhausted_groq:
-        model_name = engine_opts["active_model"]
+        act_m = engine_opts["active_model"]
+        if cooldown_map.get(f"{key_sig}:{act_m}", 0) <= time.time():
+            model_name = act_m
 
     target_models = []
     cand_list = [
         model_name,
         fallback_model,
+        "qwen/qwen3.8-27b",
         "openai/gpt-oss-120b",
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "qwen/qwen3.8-27b"
+        "openai/gpt-oss-20b"
     ]
     for cand in cand_list:
         if cand and cand not in target_models and cand not in exhausted_groq:
             target_models.append(cand)
 
     if not target_models:
-        raise RuntimeError("Todos os modelos Groq para esta chave atingiram a cota temporária.")
+        raise GroqRateLimitError("Todos os modelos Groq para esta chave atingiram a cota diária.", is_daily=True)
+
+    now = time.time()
+    ready_models = [m for m in target_models if cooldown_map.get(f"{key_sig}:{m}", 0) <= now]
+    if not ready_models:
+        # Todos os modelos estão apenas em janela curta de TPM (não esgotados definitivamente)
+        soonest_m = min(target_models, key=lambda m: cooldown_map.get(f"{key_sig}:{m}", 0))
+        rem_wait = max(0.5, cooldown_map.get(f"{key_sig}:{soonest_m}", now) - now)
+        if not allow_tpm_wait or rem_wait > 40.0:
+            raise GroqRateLimitError(
+                f"Modelos Groq em pausa TPM ({rem_wait:.1f}s).",
+                is_tpm=True,
+                retry_after=rem_wait
+            )
+        print(f"\n[*] Groq TPM: aguardando {rem_wait:.1f}s para liberar janela de '{soonest_m}'...")
+        time.sleep(min(rem_wait + 0.3, 40.0))
+        cooldown_map.pop(f"{key_sig}:{soonest_m}", None)
+        ready_models = [soonest_m] + [m for m in target_models if m != soonest_m]
 
     last_err = None
-    for m in target_models:
+    saw_tpm_wait = None
+    for m in ready_models:
+        m_low = m.lower()
+        eff_max_tokens = max(int(max_tokens or 600), 1100) if "gpt-oss" in m_low else max(int(max_tokens or 600), 650)
         payload = {
             "model": m,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens
+            "max_tokens": eff_max_tokens
         }
+        if "qwen3" in m_low:
+            payload["reasoning_effort"] = "none"
+        elif "gpt-oss" in m_low:
+            payload["reasoning_effort"] = "low"
+
         for attempt in range(max_retries):
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode('utf-8'),
                 headers={
-                    "Authorization": f"Bearer {api_key.strip()}",
+                    "Authorization": f"Bearer {api_key_clean}",
                     "Content-Type": "application/json",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 }
@@ -1945,30 +2170,65 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     res = json.loads(resp.read().decode('utf-8'))
                     if engine_opts is not None:
                         engine_opts["active_model"] = m
-                    return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                        cooldown_map.pop(f"{key_sig}:{m}", None)
+                    raw_out = res.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                    return _strip_think_tags(raw_out)
             except urllib.error.HTTPError as e:
                 last_err = e
+                err_body = ""
+                try:
+                    err_body = e.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+                err_low = err_body.lower()
+
                 if e.code == 429:
-                    wait_sec = 2.5
+                    wait_sec = 4.0
                     try:
                         retry_h = e.headers.get("retry-after")
                         if retry_h:
                             wait_sec = float(retry_h) + 0.5
+                        else:
+                            m_retry = re.search(r'try again in\s*(?:(\d+)m)?([\d.]+)s', err_low)
+                            if m_retry:
+                                mins = float(m_retry.group(1) or 0)
+                                secs = float(m_retry.group(2) or 0)
+                                wait_sec = mins * 60.0 + secs + 0.5
                     except Exception:
                         pass
 
-                    # Groq TPM: espera inteligente se for rápida (<= 8s), caso contrário pula para o próximo modelo
-                    if wait_sec <= 8.0 and attempt < max_retries - 1:
-                        print(f"\n[*] Groq em pausa de cota ({wait_sec:.1f}s)... Aguardando liberação de tokens...")
+                    is_daily = any(tok in err_low for tok in ("tokens per day", "requests per day", " tpd", " rpd"))
+                    if is_daily:
+                        print(f"\n[!] Modelo '{m}' atingiu cota diária (TPD/RPD) no Groq. Alternando modelo...")
+                        exhausted_groq.add(m)
+                        break
+
+                    # Limite transitório TPM/RPM: se rápido, espera e retenta; caso contrário põe cooldown curto e alterna sem banir o modelo
+                    if wait_sec <= 9.0 and attempt < max_retries - 1:
+                        print(f"\n[*] Groq em pausa breve TPM ({wait_sec:.1f}s) no modelo '{m}'...")
                         time.sleep(wait_sec)
                         continue
                     else:
-                        print(f"\n[!] Modelo '{m}' com cota saturada no Groq. Alternando para o próximo modelo...")
-                        exhausted_groq.add(m)
+                        cd_sec = min(max(wait_sec, 6.0), 65.0)
+                        cooldown_map[f"{key_sig}:{m}"] = time.time() + cd_sec
+                        if saw_tpm_wait is None or cd_sec < saw_tpm_wait:
+                            saw_tpm_wait = cd_sec
+                        print(f"\n[*] Pico TPM em '{m}' (~{cd_sec:.0f}s). Alternando para próximo modelo Groq...")
                         break
-                elif e.code in (400, 404, 500, 502, 503, 504):
+                elif e.code in (401, 403):
+                    raise GroqRateLimitError(f"Chave Groq não autorizada (HTTP {e.code}).", is_auth=True)
+                elif e.code in (400, 404):
+                    if "reasoning_effort" in err_low and "reasoning_effort" in payload:
+                        payload.pop("reasoning_effort", None)
+                        continue
                     print(f"\n[!] Modelo '{m}' indisponível no Groq (HTTP {e.code}). Alternando...")
                     exhausted_groq.add(m)
+                    break
+                elif e.code in (500, 502, 503, 504):
+                    if attempt < max_retries - 1:
+                        time.sleep(1.5)
+                        continue
+                    cooldown_map[f"{key_sig}:{m}"] = time.time() + 15.0
                     break
                 else:
                     exhausted_groq.add(m)
@@ -1979,8 +2239,23 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     time.sleep(1.5)
                     continue
                 else:
-                    exhausted_groq.add(m)
+                    cooldown_map[f"{key_sig}:{m}"] = time.time() + 12.0
                     break
+
+    # Se todos os modelos só bateram TPM momentâneo na única chave, faz 1 espera breve se permitido
+    if saw_tpm_wait is not None and len(exhausted_groq) < len(target_models):
+        rem_cd = max(1.0, min(cooldown_map.get(f"{key_sig}:{m}", time.time()) - time.time() for m in target_models if m not in exhausted_groq))
+        if allow_tpm_wait and rem_cd <= 35.0:
+            soonest_m = min([m for m in target_models if m not in exhausted_groq], key=lambda m: cooldown_map.get(f"{key_sig}:{m}", 0))
+            print(f"\n[*] Pausando {rem_cd:.1f}s para liberar tokens TPM no Groq ({soonest_m})...")
+            time.sleep(rem_cd + 0.3)
+            cooldown_map.pop(f"{key_sig}:{soonest_m}", None)
+            return query_groq_chat(
+                messages, soonest_m, api_key_clean, temperature=temperature, max_tokens=max_tokens,
+                timeout=timeout, fallback_model=fallback_model, max_retries=1,
+                engine_opts=engine_opts, allow_tpm_wait=False
+            )
+        raise GroqRateLimitError(f"Pico TPM temporário em todos os modelos Groq ({rem_cd:.1f}s).", is_tpm=True, retry_after=rem_cd)
 
     if last_err:
         raise last_err
@@ -2060,28 +2335,38 @@ def check_openrouter_available(api_key, model_name):
     ok, rem, _ = check_openrouter_key_status(api_key, model_name)
     return ok
 
-def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, max_tokens=1024, timeout=75, engine_opts=None):
+def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, max_tokens=1024, timeout=75, engine_opts=None, api_keys=None):
     """
     Executa requisição à API do OpenRouter com suporte a Pool de Chaves e Auto-Failover/Rotação imediata.
     Se a chave atual atingir o limite (HTTP 429 / 50 reqs/dia), rotaciona automaticamente para a próxima chave
     cadastrada em 'openrouter_api_keys' no config.json sem interromper a tradução do mangá.
     """
     engine_opts = engine_opts if engine_opts is not None else {}
-    key_pool = engine_opts.get("api_keys", [])
+    cfg_or_keys = (engine_opts.get("cfg") or {}).get("openrouter_api_keys", [])
+    raw_pool = api_keys or engine_opts.get("openrouter_api_keys") or cfg_or_keys or (
+        engine_opts.get("api_keys") if engine_opts.get("active_engine") == "openrouter" else []
+    )
+    # Isolamento estrito de provedores: jamais enviar chaves Groq (gsk_) para OpenRouter
+    key_pool = [
+        str(k).strip() for k in (raw_pool or [])
+        if str(k or "").strip() and not str(k).strip().startswith("gsk_")
+    ]
     if not key_pool:
-        k = api_key or engine_opts.get("api_key", "")
-        if k:
+        k = str(api_key or engine_opts.get("openrouter_api_key") or (
+            engine_opts.get("api_key", "") if engine_opts.get("active_engine") == "openrouter" else ""
+        )).strip()
+        if k and not k.startswith("gsk_"):
             key_pool = [k]
 
     if not key_pool:
-        raise ValueError("Nenhuma chave OpenRouter fornecida.")
+        raise ValueError("Nenhuma chave OpenRouter válida fornecida.")
 
     total_keys = len(key_pool)
-    curr_idx = engine_opts.get("current_key_idx", 0)
+    curr_idx = engine_opts.get("openrouter_current_key_idx", engine_opts.get("current_key_idx", 0))
     if curr_idx >= total_keys:
         curr_idx = 0
 
-    exhausted = engine_opts.setdefault("exhausted_keys", set())
+    exhausted = engine_opts.setdefault("openrouter_exhausted_keys", set())
     if len(exhausted) >= total_keys:
         engine_opts.setdefault("exhausted_engines", set()).add("openrouter")
         raise RuntimeError("Todas as chaves OpenRouter cadastradas atingiram o limite diário.")
@@ -2127,9 +2412,13 @@ def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, m
                         pass
 
                 res = json.loads(resp.read().decode('utf-8'))
-                engine_opts["current_key_idx"] = curr_idx
-                engine_opts["api_key"] = active_key
-                return res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                engine_opts["openrouter_current_key_idx"] = curr_idx
+                engine_opts["openrouter_api_key"] = active_key
+                if engine_opts.get("active_engine") == "openrouter":
+                    engine_opts["current_key_idx"] = curr_idx
+                    engine_opts["api_key"] = active_key
+                raw_out = res.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                return _strip_think_tags(raw_out)
 
         except urllib.error.HTTPError as e:
             err_body = ""
@@ -2156,11 +2445,11 @@ def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, m
 
                 if next_idx is not None:
                     next_masked = key_pool[next_idx][:8] + "..." + key_pool[next_idx][-4:] if len(key_pool[next_idx]) > 12 else "***"
-                    print(f"\n[!] Chave #{curr_idx + 1} ({masked}): {motivo}.")
+                    print(f"\n[!] Chave OpenRouter #{curr_idx + 1} ({masked}): {motivo}.")
                     print(f"[+] ROTACIONANDO CHAVE AUTOMATICAMENTE -> Ativando Chave Reserva #{next_idx + 1} ({next_masked})...")
                     curr_idx = next_idx
-                    engine_opts["current_key_idx"] = curr_idx
-                    engine_opts["api_key"] = key_pool[curr_idx]
+                    engine_opts["openrouter_current_key_idx"] = curr_idx
+                    engine_opts["openrouter_api_key"] = key_pool[curr_idx]
                     time.sleep(1.0)
                     continue
                 else:
@@ -2168,10 +2457,14 @@ def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, m
                     print(f"\n[!] TODAS as {total_keys} chaves OpenRouter cadastradas atingiram o limite diário.")
                     raise e
             else:
-                # Se for indisponibilidade temporária de modelo (404, 500, 502, 503), tenta o modelo fallback
-                fallback_m = engine_opts.get("fallback_model")
+                # Se for indisponibilidade temporária de modelo (404, 500, 502, 503), tenta o modelo fallback específico do OpenRouter
+                fallback_m = (
+                    engine_opts.get("openrouter_fallback_model")
+                    or (engine_opts.get("cfg") or {}).get("openrouter_fallback_model")
+                    or (engine_opts.get("fallback_model") if engine_opts.get("active_engine") == "openrouter" else None)
+                )
                 if fallback_m and fallback_m != model_name and e.code in (404, 500, 502, 503):
-                    print(f"\n[*] Modelo '{model_name}' instável (HTTP {e.code}). Tentando modelo fallback: '{fallback_m}'...")
+                    print(f"\n[*] Modelo OpenRouter '{model_name}' instável (HTTP {e.code}). Tentando fallback: '{fallback_m}'...")
                     model_name = fallback_m
                     time.sleep(1.0)
                     continue
@@ -2304,34 +2597,44 @@ def init_ai_translation_engine(cfg, is_adult=True):
     fallback_model = cfg.get("openrouter_fallback_model", "google/gemma-4-31b-it:free")
 
     # 1. Groq Cloud (Ultra-Rápido, 100% Nuvem, Zero Censura)
-    groq_keys = cfg.get("groq_api_keys", [])
-    groq_key = cfg.get("groq_api_key", "").strip()
-    if not groq_key and groq_keys:
-        groq_key = str(groq_keys[0]).strip()
+    groq_keys = list(cfg.get("groq_api_keys", []) or [])
+    groq_key = str(cfg.get("groq_api_key", "") or "").strip()
+    if groq_key and groq_key not in groq_keys:
+        groq_keys.insert(0, groq_key)
     groq_model = cfg.get("groq_model", "qwen/qwen3.8-27b")
     groq_fallback = cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
 
-    if provider in ("groq", "fast") or (provider == "auto" and groq_key):
-        if groq_key:
-            print(f"[*] Verificando conexão com Groq Cloud (Modelo: {groq_model})...")
-            g_ok, g_msg = check_groq_available(groq_key, groq_model)
-            if g_ok:
-                masked_g = groq_key[:8] + "..." + groq_key[-4:] if len(groq_key) > 12 else "***"
+    if provider in ("groq", "fast") or (provider == "auto" and groq_keys):
+        if groq_keys:
+            active_groq_key = None
+            last_g_msg = ""
+            print(f"[*] Verificando conexão com Groq Cloud ({len(groq_keys)} chave(s) | Modelo: {groq_model})...")
+            for gk in groq_keys:
+                g_ok, g_msg = check_groq_available(gk, groq_model)
+                last_g_msg = g_msg
+                if g_ok:
+                    active_groq_key = gk
+                    break
+            if active_groq_key:
+                masked_g = active_groq_key[:8] + "..." + active_groq_key[-4:] if len(active_groq_key) > 12 else "***"
                 print(f"[+] Motor Groq Cloud Ativo com Chave ({masked_g}) | Modelo: '{groq_model}' (Zero Censura | Nuvem)")
                 engine_opts = {
-                    "api_key": groq_key,
-                    "api_keys": groq_keys,
+                    "api_key": active_groq_key,
+                    "groq_api_keys": groq_keys,
+                    "openrouter_api_keys": keys,
+                    "openrouter_fallback_model": fallback_model,
                     "fallback_model": groq_fallback,
                     "temperature": cfg.get("temperature", 0.0),
                     "cfg": cfg,
                     "active_model": groq_model,
                     "active_engine": "groq",
                     "exhausted_engines": set(),
-                    "exhausted_groq_models": set()
+                    "exhausted_groq_models": set(),
+                    "groq_model_cooldowns": {}
                 }
                 return "groq", groq_model, engine_opts
             else:
-                print(f"[!] Groq Cloud indisponível [{g_msg}]. Tentando próximo motor...")
+                print(f"[!] Groq Cloud indisponível [{last_g_msg}]. Tentando próximo motor...")
         elif provider in ("groq", "fast"):
             print(f"[!] Erro: Provedor configurado como 'groq', mas 'groq_api_key' está vazia em config.json.")
 
@@ -2361,9 +2664,15 @@ def init_ai_translation_engine(cfg, is_adult=True):
                 engine_opts = {
                     "api_key": active_key,
                     "api_keys": keys,
+                    "openrouter_api_keys": keys,
+                    "openrouter_api_key": active_key,
                     "current_key_idx": active_idx,
+                    "openrouter_current_key_idx": active_idx,
                     "exhausted_keys": exhausted_keys,
+                    "openrouter_exhausted_keys": exhausted_keys,
+                    "active_engine": "openrouter",
                     "fallback_model": fallback_model,
+                    "openrouter_fallback_model": fallback_model,
                     "temperature": cfg.get("temperature", 0.0),
                     "cfg": cfg
                 }
@@ -2379,24 +2688,41 @@ def init_ai_translation_engine(cfg, is_adult=True):
     print(f"[*] Verificando conexão com Ollama em '{host}'...")
     ollama_ok, selected_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=model_pref)
     if ollama_ok:
-        return "ollama", selected_model, {"host": host, "temperature": cfg.get("temperature", 0.0), "cfg": cfg, "active_engine": "ollama"}
+        return "ollama", selected_model, {
+            "host": host,
+            "temperature": cfg.get("temperature", 0.0),
+            "cfg": cfg,
+            "active_engine": "ollama",
+            "groq_api_keys": groq_keys,
+            "openrouter_api_keys": keys,
+            "openrouter_fallback_model": fallback_model
+        }
     else:
         print(f"[!] Aviso: Ollama não disponível no host '{host}' (ambiente sem GPU ou servidor offline).")
         # Fallback de alta fidelidade para Groq Cloud se disponível
-        if groq_key:
-            g_ok, g_msg = check_groq_available(groq_key, groq_model)
-            if g_ok:
-                masked_g = groq_key[:8] + "..." + groq_key[-4:] if len(groq_key) > 12 else "***"
+        if groq_keys:
+            active_groq_key = None
+            for gk in groq_keys:
+                g_ok, _ = check_groq_available(gk, groq_model)
+                if g_ok:
+                    active_groq_key = gk
+                    break
+            if active_groq_key:
+                masked_g = active_groq_key[:8] + "..." + active_groq_key[-4:] if len(active_groq_key) > 12 else "***"
                 print(f"[+] Fallback Inteligente: Ativando Groq Cloud com Chave ({masked_g}) | Modelo: '{groq_model}'")
                 return "groq", groq_model, {
-                    "api_key": groq_key,
+                    "api_key": active_groq_key,
+                    "groq_api_keys": groq_keys,
+                    "openrouter_api_keys": keys,
+                    "openrouter_fallback_model": fallback_model,
                     "fallback_model": groq_fallback,
                     "temperature": cfg.get("temperature", 0.0),
                     "cfg": cfg,
                     "active_model": groq_model,
                     "active_engine": "groq",
                     "exhausted_engines": {"ollama"},
-                    "exhausted_groq_models": set()
+                    "exhausted_groq_models": set(),
+                    "groq_model_cooldowns": {}
                 }
 
     return None, None, {"cfg": cfg}
@@ -2554,7 +2880,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     if not text:
         return original_text.strip()
         
-    cleaned = sanitize_lettering_text(text).strip()
+    cleaned = sanitize_lettering_text(_strip_think_tags(text)).strip()
     
     # 0. Detectar e ignorar mensagens de recusa de IA ou vazamentos de prompt
     # 0.1 Eliminar estritamente vazamentos de instruções do sistema (Prompt Leaks)
@@ -2882,6 +3208,14 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             cleaned = re.sub(r'(?i)\bbuceta\b', 'joalheria', cleaned)
 
     # TRADUÇÃO DE ESPANHOL RESIDUAL -> PORTUGUÊS DO BRASIL:
+    cleaned = _preserve_case(r'\bescribiendo\b', 'escrevendo', cleaned)
+    cleaned = _preserve_case(r'\bescribendo\b', 'escrevendo', cleaned)
+    if re.search(r'[\uac00-\ud7af]', original_text or ""):
+        if re.search(r'자지', original_text or "") and re.search(r'쓰[고는거기]', original_text or ""):
+            cleaned = _preserve_case(r'\bescrevendo\b', 'usando', cleaned)
+            cleaned = _preserve_case(r'\bescrever\b', 'usar', cleaned)
+        if '바둑이' in (original_text or "") and cleaned.strip().lower() in ('go', 'go!', 'ir!', 'vai!'):
+            cleaned = 'Baduki'
     cleaned = _preserve_case(r'\bml\s*chas\s+gracias\b', 'muito obrigado', cleaned)
     cleaned = _preserve_case(r'\bmuchas\s+gracias\b', 'muito obrigado', cleaned)
     cleaned = _preserve_case(r'\bpelo\s+visit\s*a\b', 'pela visita', cleaned)
@@ -2986,9 +3320,50 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
     return cleaned if cleaned else ""
 
-def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None, is_dolphin=True, is_qwen=False):
+def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None, is_dolphin=True, is_qwen=False, src_lang="auto"):
     """Gera prompt de sistema otimizado para scanlation de alta precisão (estilo MangaPlus / Crunchyroll),
-    com adaptação concisa para balões de mangá e suporte especializado a Qwen 2.5 e Dolphin 2.9."""
+    com adaptação concisa para balões de mangá e suporte especializado a Qwen, GPT-OSS e Dolphin."""
+    is_asian = str(src_lang or "").lower() in ("ko-kr", "ko", "ja-jp", "ja", "zh-cn", "zh-tw", "zh")
+    if is_asian:
+        glossary_rules = ""
+        if glossary:
+            chars = glossary.get("characters", {})
+            terms = glossary.get("terms", {})
+            if chars or terms:
+                glossary_rules = "\nGLOSSÁRIO DA OBRA:\n"
+                for k, v in chars.items():
+                    glossary_rules += f"- '{k}' -> '{v}'\n"
+                for k, v in terms.items():
+                    glossary_rules += f"- '{k}' -> '{v}'\n"
+
+        dos, donts = load_learning_rules(src_lang=src_lang)
+        learned_rules_text = ""
+        if dos or donts:
+            learned_rules_text = "\nREGRAS APRENDIDAS:\n"
+            for d in dos[:18]:
+                learned_rules_text += f"- {d.lstrip('-*• ')}\n"
+            for d in donts[:12]:
+                learned_rules_text += f"- PROIBIDO: {d.lstrip('-*• ')}\n"
+
+        adult_short = ""
+        if is_adult:
+            adult_short = (
+                "\nTOM ADULTO (+18, SEM CENSURA):\n"
+                "- Use vocabulário explícito e coloquial brasileiro ('buceta', 'pau', 'pinto', 'gozar', 'gozando', 'calcinha', 'tesão').\n"
+                "- Coreano (+18): 자지='pau/pinto', 보지='buceta', 쓰고='usando/metendo' (NUNCA 'escrever/escrevendo'), 딸치다/딸치지='bater uma / usar para se masturbar' (NUNCA apenas 'bater em'), 갈 것 같다/싸다='vou gozar/gozar', 야옹/냥='miau', 바둑이='Baduki' (nome próprio, NUNCA 'Go'), -님='-sama/senhor(a)' (NUNCA '-sen'), 수인='bestiais/homens-fera'.\n"
+            )
+
+        out_rule = (
+            'Responda APENAS JSON válido com as mesmas chaves numéricas: {"1": "..."}. NUNCA use espanhol ou texto asiático residual.'
+            if is_batch else
+            'Responda APENAS a tradução final em PT-BR coloquial e concisa (para caber no balão), sem notas nem espanhol.'
+        )
+        return (
+            f"Tradutor profissional de scanlation (Manhwa/Mangá -> Português do Brasil coloquial).\n"
+            f"Adapte falas curtas, naturais e expressivas mantendo pontuação (!, ?, ..., ~)."
+            f"{adult_short}{glossary_rules}{learned_rules_text}\n{out_rule}"
+        )
+
     persona_intro = ""
     if is_dolphin:
         persona_intro = (
@@ -3021,7 +3396,7 @@ def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None
         "- Mantenha a pontuação expressiva de mangá (!, ?, ..., ~)."
     )
 
-    dos, donts = load_learning_rules()
+    dos, donts = load_learning_rules(src_lang=src_lang)
     learned_rules_text = ""
     if dos or donts:
         learned_rules_text = "\nMEMÓRIA E APRENDIZADO CONTÍNUO DO USUÁRIO:\n"
@@ -3099,23 +3474,36 @@ def google_translate_free(text, source_lang="auto", target_lang="pt"):
         return ""
     clean = str(text).strip()
 
+    raw_sl = str(source_lang or "auto").strip()
+    sl_map = {
+        "ko-kr": "ko", "ko": "ko",
+        "ja-jp": "ja", "ja": "ja",
+        "zh-cn": "zh-CN", "zh-tw": "zh-TW", "zh": "zh-CN",
+        "en-us": "en", "en-gb": "en", "en": "en",
+        "es-es": "es", "es": "es",
+        "fr-fr": "fr", "fr": "fr",
+        "de-de": "de", "de": "de",
+        "it-it": "it", "it": "it",
+        "ru-ru": "ru", "ru": "ru",
+    }
+    sl = sl_map.get(raw_sl.lower(), raw_sl)
+
     # Se source_lang for 'auto', detecta pelo conteúdo para evitar erros de APIs secundárias (ex: MyMemory)
-    sl = source_lang
     if sl == "auto":
-        if re.search(r'[\u4e00-\u9fff]', clean) and not re.search(r'[\u3040-\u30ff]', clean):
-            sl = "zh-CN"
+        if re.search(r'[\uac00-\ud7af]', clean):
+            sl = "ko"
         elif re.search(r'[\u3040-\u30ff]', clean):
             sl = "ja"
-        elif re.search(r'[\uac00-\ud7af]', clean):
-            sl = "ko"
+        elif re.search(r'[\u4e00-\u9fff]', clean):
+            sl = "zh-CN"
         elif re.search(r'\b(el|la|los|las|de|en|un|una|por|con|para|del|al|que|es|como|mas|pero)\b', clean, re.IGNORECASE):
             sl = "es"
         else:
             sl = "en"
 
-    # Tentativa 1: Endpoint GTX do Google
+    # Tentativa 1: Endpoint GTX do Google usando código de idioma normalizado (`sl`)
     try:
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source_lang}&tl={target_lang}&dt=t&q=" + urllib.parse.quote(clean)
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={urllib.parse.quote(sl)}&tl={urllib.parse.quote(target_lang)}&dt=t&q=" + urllib.parse.quote(clean)
         req = urllib.request.Request(
             url,
             headers={
@@ -3126,32 +3514,32 @@ def google_translate_free(text, source_lang="auto", target_lang="pt"):
             data = json.loads(r.read().decode("utf-8"))
             if data and data[0]:
                 res_txt = "".join(seg[0] for seg in data[0] if seg and seg[0])
-                if res_txt and res_txt.strip():
+                if res_txt and res_txt.strip() and "<x " not in res_txt:
                     return res_txt.strip()
     except Exception:
         pass
 
-    # Tentativa 2: deep_translator MyMemory com código de idioma explícito (NUNCA passa 'auto')
+    # Tentativa 2: deep_translator MyMemory com código BCP-47 explícito (NUNCA passa 'auto' nem aceita tags <x />)
     try:
         from deep_translator import MyMemoryTranslator
-        mymem_sl = sl if sl != "auto" else "zh-CN"
-        if mymem_sl in ("zh", "chinese"): mymem_sl = "zh-CN"
+        mymem_map = {"ko": "ko-KR", "ja": "ja-JP", "zh": "zh-CN", "en": "en-US", "es": "es-ES", "fr": "fr-FR", "de": "de-DE", "it": "it-IT", "ru": "ru-RU"}
+        mymem_sl = mymem_map.get(sl.lower(), sl if sl != "auto" else "zh-CN")
         res = MyMemoryTranslator(source=mymem_sl, target='pt-BR').translate(clean)
-        if res and "INVALID SOURCE LANGUAGE" not in res and "MYMEMORY WARNING" not in res:
+        if res and "<x " not in res and "INVALID SOURCE LANGUAGE" not in res and "MYMEMORY WARNING" not in res:
             return res.strip()
     except Exception:
         pass
 
     return clean
 
-def execute_translation_request(messages, engine_opts=None, is_adult=True, max_tokens=1024, is_batch=False, dialogue_map=None):
+def execute_translation_request(messages, engine_opts=None, is_adult=True, max_tokens=1024, is_batch=False, dialogue_map=None, src_lang="auto"):
     """
     Roteador Inteligente e Resiliente de IAs.
-    Tenta o motor ativo e, se este esgotar cotas (TPM/TPD/HTTP 429) ou falhar por ausência de GPU,
-    promove o próximo motor DEFINITIVAMENTE (Ollama/Groq -> OpenRouter -> Google Cloud),
-    sem loops infinitos nem pausas travadas.
+    Tenta o motor ativo mantendo isolamento estrito de chaves por provedor (Groq vs OpenRouter),
+    distinguindo pausas curtas de TPM vs esgotamento diário (TPD) e acionando fallback limpo sem poluir memória global.
     """
     engine_opts = engine_opts if engine_opts is not None else {}
+    engine_opts["_last_used_fallback"] = False
     exhausted = engine_opts.setdefault("exhausted_engines", set())
     cfg = engine_opts.get("cfg", {})
     temp = engine_opts.get("temperature", 0.0)
@@ -3174,51 +3562,103 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
             exhausted.add("ollama")
             print(f"\n[!] Servidor Ollama offline ou sem GPU. Ativando fallback para Groq Cloud Nuvem...")
 
-    # 1. TENTA GROQ SE AINDA NÃO ESGOTADO (COM ROTAÇÃO AUTOMÁTICA DE MÚLTIPLAS CHAVES)
+    # 1. TENTA GROQ SE AINDA NÃO ESGOTADO (COM ROTAÇÃO ENTRE CHAVES E RESILIÊNCIA A TPM)
     if "groq" not in exhausted:
-        all_groq_keys = cfg.get("groq_api_keys", [])
+        all_groq_keys = list(engine_opts.get("groq_api_keys") or cfg.get("groq_api_keys") or [])
         if not all_groq_keys and cfg.get("groq_api_key"):
             all_groq_keys = [cfg.get("groq_api_key")]
-        elif engine_opts.get("api_key") and engine_opts.get("api_key") not in all_groq_keys:
-            all_groq_keys.insert(0, engine_opts.get("api_key"))
+        eng_k = str(engine_opts.get("api_key", "") or "").strip()
+        if eng_k and (active_engine == "groq" or eng_k.startswith("gsk_")) and eng_k not in all_groq_keys:
+            all_groq_keys.insert(0, eng_k)
 
         exhausted_keys = engine_opts.setdefault("exhausted_groq_keys", set())
         avail_keys = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
 
         if avail_keys:
-            groq_k = avail_keys[0]
-            model_name = engine_opts.get("active_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
-            fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
-            try:
-                resp = query_groq_chat(
-                    messages,
-                    model_name,
-                    groq_k,
-                    temperature=temp,
-                    max_tokens=max_tokens,
-                    fallback_model=fb_model,
-                    engine_opts=engine_opts
-                )
-                if resp:
-                    return resp
-            except Exception as g_err:
-                exhausted_keys.add(groq_k)
-                masked_k = groq_k[:8] + "..." + groq_k[-4:] if len(groq_k) > 12 else "***"
-                remaining = [k for k in all_groq_keys if k.strip() not in exhausted_keys]
-                if remaining:
+            tried_tpm_keys = []
+            for idx_k, groq_k in enumerate(avail_keys):
+                model_name = engine_opts.get("active_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
+                fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+                try:
+                    resp = query_groq_chat(
+                        messages,
+                        model_name,
+                        groq_k,
+                        temperature=temp,
+                        max_tokens=max_tokens,
+                        fallback_model=fb_model,
+                        engine_opts=engine_opts,
+                        allow_tpm_wait=(len(avail_keys) == 1)
+                    )
+                    if resp:
+                        return resp
+                except GroqRateLimitError as g_err:
+                    masked_k = groq_k[:8] + "..." + groq_k[-4:] if len(groq_k) > 12 else "***"
+                    if g_err.is_tpm and not g_err.is_daily and not g_err.is_auth:
+                        tried_tpm_keys.append((groq_k, g_err.retry_after or 12.0))
+                        if idx_k + 1 < len(avail_keys):
+                            print(f"\n[*] Chave Groq ({masked_k}) em pausa momentânea de TPM. Tentando próxima chave Groq...")
+                        continue
+                    exhausted_keys.add(groq_k)
                     engine_opts["exhausted_groq_models"] = set()
-                    print(f"\n[!] Chave Groq ({masked_k}) com cota saturada. Rotacionando para próxima chave Groq ({len(remaining)} restante(s))...")
-                    return execute_translation_request(messages, engine_opts=engine_opts, is_adult=is_adult, max_tokens=max_tokens, is_batch=is_batch, dialogue_map=dialogue_map)
-                else:
+                    print(f"\n[!] Chave Groq ({masked_k}) esgotada/indisponível ({g_err}).")
+                except Exception as g_err:
+                    exhausted_keys.add(groq_k)
+                    engine_opts["exhausted_groq_models"] = set()
+                    masked_k = groq_k[:8] + "..." + groq_k[-4:] if len(groq_k) > 12 else "***"
+                    print(f"\n[!] Chave Groq ({masked_k}) falhou ({g_err}).")
+
+            if tried_tpm_keys:
+                best_k, wait_s = min(tried_tpm_keys, key=lambda it: it[1])
+                sleep_s = min(max(wait_s + 0.5, 2.0), 38.0)
+                print(f"\n[*] Todas as chaves Groq atingiram pico breve de TPM. Aguardando {sleep_s:.1f}s para liberar tokens...")
+                time.sleep(sleep_s)
+                cd_map = engine_opts.get("groq_model_cooldowns", {})
+                key_sig = best_k[:12]
+                now_t = time.time()
+                for ck in list(cd_map.keys()):
+                    if ck.startswith(key_sig + ":") and cd_map[ck] <= now_t + 1.0:
+                        cd_map.pop(ck, None)
+                try:
+                    model_name = engine_opts.get("active_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
+                    fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+                    resp = query_groq_chat(
+                        messages,
+                        model_name,
+                        best_k,
+                        temperature=temp,
+                        max_tokens=max_tokens,
+                        fallback_model=fb_model,
+                        engine_opts=engine_opts,
+                        allow_tpm_wait=False
+                    )
+                    if resp:
+                        return resp
+                except GroqRateLimitError as g2:
+                    if g2.is_daily or g2.is_auth:
+                        exhausted_keys.add(best_k)
+                except Exception:
+                    pass
+            else:
+                rem_after = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
+                if not rem_after:
                     exhausted.add("groq")
-                    print(f"\n[!] Todas as {len(all_groq_keys)} chaves cadastradas do Groq Cloud atingiram as cotas.")
+                    print(f"\n[!] Todas as {len(all_groq_keys)} chaves cadastradas do Groq Cloud atingiram as cotas diárias.")
                     print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando OpenRouter...")
         else:
             exhausted.add("groq")
 
-    # 2. TENTA OPENROUTER SE AINDA NÃO ESGOTADO
+    # 2. TENTA OPENROUTER SE AINDA NÃO ESGOTADO (COM ISOLAMENTO ESTRITO DE CHAVES)
     if "openrouter" not in exhausted:
-        or_keys = cfg.get("openrouter_api_keys", []) or ([cfg.get("openrouter_api_key")] if cfg.get("openrouter_api_key") else [])
+        raw_or_pool = (
+            engine_opts.get("openrouter_api_keys")
+            or cfg.get("openrouter_api_keys", [])
+            or ([cfg.get("openrouter_api_key")] if cfg.get("openrouter_api_key") else [])
+        )
+        or_keys = [
+            str(k).strip() for k in raw_or_pool
+            if str(k or "").strip() and not str(k).strip().startswith("gsk_")
+        ]
         if or_keys:
             or_model = cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free")
             try:
@@ -3226,6 +3666,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                     messages,
                     or_model,
                     api_key=or_keys[0],
+                    api_keys=or_keys,
                     temperature=temp,
                     max_tokens=max_tokens,
                     engine_opts=engine_opts
@@ -3254,16 +3695,19 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
         else:
             exhausted.add("ollama")
 
-    # 4. FALLBACK FINAL AUTOMÁTICO: GOOGLE TRANSLATOR
+    # 4. FALLBACK FINAL AUTOMÁTICO: GOOGLE TRANSLATOR (não grava em memoria_traducoes.json)
+    engine_opts["_last_used_fallback"] = True
     if not engine_opts.get("_google_announced"):
         print("\n[+] MOTOR DE EMERGÊNCIA ATIVADO: Traduzindo via Google Translator Direto (Alta velocidade, sem bloqueios)...")
         engine_opts["_google_announced"] = True
 
     if is_batch and dialogue_map:
         batch_out = {}
+        fb_set = engine_opts.setdefault("_fallback_originals", set())
         for k, orig in dialogue_map.items():
+            fb_set.add(orig)
             try:
-                t = google_translate_free(orig)
+                t = google_translate_free(orig, source_lang=src_lang)
                 batch_out[k] = clean_ai_translation(t, original_text=orig, is_adult=is_adult)
             except Exception:
                 batch_out[k] = orig
@@ -3275,12 +3719,13 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                 user_content = m.get("content", "")
                 break
         clean_target = user_content.replace("Traduza fielmente para PT-BR:\n\n", "").strip()
+        engine_opts.setdefault("_fallback_originals", set()).add(clean_target)
         try:
-            return google_translate_free(clean_target)
+            return google_translate_free(clean_target, source_lang=src_lang)
         except Exception:
             return clean_target
 
-def translate_single_dialogue(text, engine_type=None, model_name=None, engine_opts=None, is_adult=True):
+def translate_single_dialogue(text, engine_type=None, model_name=None, engine_opts=None, is_adult=True, src_lang="auto"):
     """Traduz uma única fala com roteamento resiliente e fallback instantâneo."""
     clean_t = clean_ocr_scan_noise(text.strip())
     if is_scan_watermark(clean_t):
@@ -3289,32 +3734,37 @@ def translate_single_dialogue(text, engine_type=None, model_name=None, engine_op
     if sfx_res:
         return sfx_res
 
-    engine_opts = engine_opts or {}
+    engine_opts = engine_opts if engine_opts is not None else {}
 
     # 1. Tenta prompt adulto
     if is_adult:
-        sys_prompt = build_translation_system_prompt(is_adult=True, is_batch=False)
+        sys_prompt = build_translation_system_prompt(is_adult=True, is_batch=False, src_lang=src_lang)
         messages = [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
         ]
-        res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=True, max_tokens=350, is_batch=False)
+        res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=True, max_tokens=350, is_batch=False, src_lang=src_lang)
         cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=True)
         if cleaned and is_valid_translation(clean_t, cleaned):
+            if engine_opts.get("_last_used_fallback"):
+                engine_opts.setdefault("_fallback_originals", set()).add(text.strip())
             return cleaned
 
-    # 2. Fallback neutro
-    sys_prompt = build_translation_system_prompt(is_adult=False, is_batch=False)
+    # 2. Fallback neutro (apenas se o motor anterior não caiu direto para o Google ou se o resultado adulto foi rejeitado)
+    sys_prompt = build_translation_system_prompt(is_adult=False, is_batch=False, src_lang=src_lang)
     messages = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
     ]
-    res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=False, max_tokens=350, is_batch=False)
+    res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=False, max_tokens=350, is_batch=False, src_lang=src_lang)
     cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=False)
     if cleaned and is_valid_translation(clean_t, cleaned):
+        if engine_opts.get("_last_used_fallback"):
+            engine_opts.setdefault("_fallback_originals", set()).add(text.strip())
         return cleaned
 
-    return google_translate_free(clean_t)
+    engine_opts.setdefault("_fallback_originals", set()).add(text.strip())
+    return google_translate_free(clean_t, source_lang=src_lang)
 
 def build_page_spatial_dossier(bubbles_to_trans, page_w=1200, page_h=1800, src_lang="auto"):
     """
@@ -3360,16 +3810,26 @@ def build_page_spatial_dossier(bubbles_to_trans, page_w=1200, page_h=1800, src_l
         else:
             b_format = "balão oval / circular de diálogo"
             
-        # Orçamento de caracteres recomendados (evita estouro de balão)
+        # Orçamento de caracteres recomendados (considera expansão CJK/Hangul -> PT-BR para não podar falas asiáticas)
         raw_char_len = len(orig_text)
+        is_asian_src = str(src_lang or "").lower() in ("ko-kr", "ko", "ja-jp", "ja", "zh-cn", "zh-tw", "zh") or bool(
+            re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', orig_text)
+        )
+        char_mult = 2.4 if is_asian_src else 1.35
         if area < 16000:
-            char_budget = max(20, min(50, int(raw_char_len * 1.35)))
+            floor_c = 28 if is_asian_src else 20
+            ceil_c = 70 if is_asian_src else 50
+            char_budget = max(floor_c, min(ceil_c, int(raw_char_len * char_mult)))
             cap_desc = f"pequeno (máx recomendável: {char_budget} carac.)"
         elif area < 50000:
-            char_budget = max(40, min(100, int(raw_char_len * 1.35)))
+            floor_c = 45 if is_asian_src else 40
+            ceil_c = 130 if is_asian_src else 100
+            char_budget = max(floor_c, min(ceil_c, int(raw_char_len * char_mult)))
             cap_desc = f"médio (máx recomendável: {char_budget} carac.)"
         else:
-            char_budget = max(80, min(240, int(raw_char_len * 1.35)))
+            floor_c = 80
+            ceil_c = 260 if is_asian_src else 240
+            char_budget = max(floor_c, min(ceil_c, int(raw_char_len * char_mult)))
             cap_desc = f"amplo (máx recomendável: {char_budget} carac.)"
             
         cleaned_t = clean_ocr_scan_noise(orig_text)
@@ -3406,13 +3866,9 @@ def build_page_spatial_dossier(bubbles_to_trans, page_w=1200, page_h=1800, src_l
         "baloes": ordered_bubbles
     }, dialogue_map
 
-def build_dual_engine_system_prompt(is_adult=True, glossary=None):
-    """Gera o prompt do Agente 2 (Tradutor Literário & Contextualizador de Cena)."""
-    persona_intro = (
-        "Você é o Agente 2: Tradutor Literário e Contextualizador Narrativo de elite da nossa equipe de scanlation.\n"
-        "O Agente 1 (Mapeador Espacial) analisou visualmente a página original e gerou o DOSSIÊ ESTRUTURAL com posições, ordem de leitura oriental e limites físicos de cada balão.\n\n"
-    )
-
+def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto"):
+    """Gera o prompt do Agente 2 (Tradutor Literário & Contextualizador de Cena),
+    compactando automaticamente para obras asiáticas (Coreano/Japonês/Chinês) para respeitar limites TPM."""
     glossary_rules = ""
     if glossary:
         chars = glossary.get("characters", {})
@@ -3424,7 +3880,7 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None):
             for k, v in terms.items():
                 glossary_rules += f"- Termo '{k}': traduzir/adaptar como '{v}'\n"
 
-    dos, donts = load_learning_rules()
+    dos, donts = load_learning_rules(src_lang=src_lang)
     learned_rules_text = ""
     if dos or donts:
         learned_rules_text = "\nMEMÓRIA E APRENDIZADO CONTÍNUO DO USUÁRIO:\n"
@@ -3432,6 +3888,49 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None):
             learned_rules_text += "[O QUE VOCÊ DEVE FAZER E PRIORIZAR]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in dos) + "\n"
         if donts:
             learned_rules_text += "[O QUE VOCÊ NUNCA DEVE FAZER / PROIBIÇÕES]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in donts) + "\n"
+
+    is_asian = str(src_lang or "").lower() in ("ko-kr", "ko", "ja-jp", "ja", "zh-cn", "zh-tw", "zh")
+    if is_asian:
+        lang_tag = "COREANO (Hangul / Manhwa)" if "ko" in str(src_lang).lower() else (
+            "CHINÊS (Hanzi / Manhua)" if "zh" in str(src_lang).lower() else "JAPONÊS (Mangá)"
+        )
+        ko_hints = ""
+        if "ko" in str(src_lang).lower():
+            ko_hints = (
+                "- COREANO (+18 & GÍRIAS): '자지/고추' -> 'pau/pinto'; '보지' -> 'buceta'; '유두/젖꼭지' -> 'mamilo/biquinho'; '딸치다/딸치지' -> 'bater uma / se masturbar usando' (NUNCA apenas 'bater em'); '자위펫' -> 'pet de masturbação / brinquedo'.\n"
+                "- DESAMBIGUAÇÃO COREANA: '쓰고' com sexual/ferramenta é 'usar/usando/metendo' (NUNCA 'escrever/escrevendo/Escribendo'); '바둑이' é o nome próprio 'Baduki' (NUNCA traduza como 'Go'); '-님' após nome é '-sama' ou 'senhor(a)' (NUNCA '-sen'); '수인' é 'bestiais / homens-fera' (não deixe 'Suin'); '야옹/냥' -> 'miau'; '갈 것 같다/싸다/가버렷' -> 'vou gozar/gozei'; '따라 해봐' -> 'tenta repetir comigo/faz igual'.\n"
+            )
+        adult_compact = ""
+        if is_adult:
+            adult_compact = (
+                "\nLOCALIZAÇÃO ADULTA (+18 - ZERO CENSURA):\n"
+                "- Use PT-BR coloquial explícito de scanlation brasileiro: 'buceta', 'xoxota', 'pau', 'pinto', 'gozar', 'gozando', 'calcinha', 'tesão'.\n"
+                f"{ko_hints}"
+                "- Correspondência de gênero: concorde sempre pronomes/adjetivos com quem fala e com a cena.\n"
+            )
+        learned_compact = ""
+        if dos or donts:
+            learned_compact = "\nREGRAS DO USUÁRIO:\n"
+            for d in dos[:18]:
+                learned_compact += f"- {d.lstrip('-*• ')}\n"
+            for d in donts[:12]:
+                learned_compact += f"- PROIBIDO: {d.lstrip('-*• ')}\n"
+        return f"""Você é o Agente 2: Tradutor Literário de scanlation ({lang_tag} -> Português do Brasil).
+O Agente 1 enviou os balões da página em ordem de leitura com limite recomendado de caracteres ('max_chars').
+
+REGRAS ESSENCIAIS:
+1. Estude a cena completa da página para manter continuidade, pronomes e gênero corretos entre personagens.
+2. Adapte para PT-BR coloquial, ágil e conciso para caber elegante em cada balão (respeite 'max_chars').
+3. ZERO palavras em espanhol/portunhol ou texto asiático residual; mantenha pontuação (!, ?, ..., ~, ♡).
+4. NUNCA imprima explicações ou notas de tradutor.{adult_compact}{glossary_rules}{learned_compact}
+FORMATO EXCLUSIVO DE RESPOSTA:
+Responda EXCLUSIVAMENTE um objeto JSON válido com os IDs numéricos:
+{{"1": "Tradução 1", "2": "Tradução 2"}}"""
+
+    persona_intro = (
+        "Você é o Agente 2: Tradutor Literário e Contextualizador Narrativo de elite da nossa equipe de scanlation.\n"
+        "O Agente 1 (Mapeador Espacial) analisou visualmente a página original e gerou o DOSSIÊ ESTRUTURAL com posições, ordem de leitura oriental e limites físicos de cada balão.\n\n"
+    )
 
     multilang_clause = (
         "DIRETRIZES DE TRADUÇÃO MULTI-IDIOMA (ESPANHOL / INGLÊS / JAPONÊS / COREANO -> PT-BR):\n"
@@ -3522,7 +4021,7 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
     if not bubbles_to_trans:
         return {}
 
-    engine_opts = engine_opts or {}
+    engine_opts = engine_opts if engine_opts is not None else {}
     results = {}
 
     # 1. Agente 1 constrói o dossiê estrutural e espacial
@@ -3562,14 +4061,14 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
 
     print(f"[*] [Agente 1: Cartógrafo] Mapeou {len(needed_bubbles)} balões na pág {page_num} (Leitura RTL • Typesetting sob medida)")
 
-    sys_prompt = build_dual_engine_system_prompt(is_adult=is_adult, glossary=glossary)
+    sys_prompt = build_dual_engine_system_prompt(is_adult=is_adult, glossary=glossary, src_lang=src_lang)
     messages = [
         {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, indent=2)}
+        {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, separators=(",", ":"))}
     ]
 
     has_long_text = any(len(b["texto_original"]) > 60 for b in needed_bubbles)
-    batch_max_tokens = 950 if has_long_text else 650
+    batch_max_tokens = 1150 if has_long_text else 850
 
     resp_content = execute_translation_request(
         messages,
@@ -3577,10 +4076,13 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
         is_adult=is_adult,
         max_tokens=batch_max_tokens,
         is_batch=True,
-        dialogue_map={b["id"]: b["orig_raw"] for b in needed_bubbles}
+        dialogue_map={b["id"]: b["orig_raw"] for b in needed_bubbles},
+        src_lang=src_lang
     )
 
-    json_match = re.search(r'\{.*\}', resp_content, flags=re.DOTALL)
+    used_fb_batch = bool(engine_opts.get("_last_used_fallback"))
+    resp_clean = _strip_think_tags(resp_content)
+    json_match = re.search(r'\{.*\}', resp_clean, flags=re.DOTALL)
     if json_match:
         try:
             parsed = json.loads(json_match.group(0))
@@ -3590,6 +4092,8 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
                     cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
                     if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
                         results[orig] = cleaned_trans
+                        if used_fb_batch:
+                            engine_opts.setdefault("_fallback_originals", set()).add(orig)
             print(f"[+] [Agente 2: Contextualizador] Cena da pág {page_num} contextualizada e traduzida com sucesso.")
         except Exception:
             pass
@@ -3598,11 +4102,12 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
     for b in needed_bubbles:
         orig = b["orig_raw"]
         if orig not in results or not is_valid_translation(orig, results[orig]):
-            single_res = translate_single_dialogue(orig, engine_opts=engine_opts, is_adult=is_adult)
+            single_res = translate_single_dialogue(orig, engine_opts=engine_opts, is_adult=is_adult, src_lang=src_lang)
             if single_res and is_valid_translation(orig, single_res):
                 results[orig] = single_res
             else:
-                results[orig] = google_translate_free(orig)
+                engine_opts.setdefault("_fallback_originals", set()).add(orig)
+                results[orig] = google_translate_free(orig, source_lang=src_lang)
 
     return results
 
@@ -3619,7 +4124,7 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True, engine_type
     if not text_list:
         return []
 
-    engine_opts = engine_opts or {}
+    engine_opts = engine_opts if engine_opts is not None else {}
     results = []
 
     for i, t in enumerate(text_list):
@@ -3633,9 +4138,10 @@ def translate_batch_texts(text_list, src_lang="auto", is_adult=True, engine_type
             results.append(sfx_res)
             continue
 
-        res = translate_single_dialogue(clean_t, engine_opts=engine_opts, is_adult=is_adult)
+        res = translate_single_dialogue(clean_t, engine_opts=engine_opts, is_adult=is_adult, src_lang=src_lang)
         if not res or not is_valid_translation(clean_t, res):
-            res = google_translate_free(clean_t)
+            engine_opts.setdefault("_fallback_originals", set()).add(clean_t)
+            res = google_translate_free(clean_t, source_lang=src_lang)
 
         results.append(res)
 
@@ -4049,40 +4555,169 @@ def create_html_reader(images_dir, title):
     print(f"[+] Leitor interativo criado: {leitor_file}")
 
 KOREAN_MODEL_DIR = os.path.join(SCRIPT_DIR, "models", "korean")
-KOREAN_REC_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_mobile_v2.0_rec_infer.onnx")
-KOREAN_DICT_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_dict.txt")
+KOREAN_REC_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_PP-OCRv5_rec_infer.onnx")
+KOREAN_DICT_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_v5_dict.txt")
+
+def _onnx_ensure_character_metadata(onnx_path, dict_path):
+    """Embute a propriedade protobuf 'character' no ONNX se ausente (exigido pelo RapidOCR 1.2.x que ignora rec_keys_path)."""
+    if not (os.path.exists(onnx_path) and os.path.exists(dict_path)):
+        return False
+    try:
+        import struct
+        with open(onnx_path, "rb") as f:
+            data = f.read()
+
+        def _read_varint(buf, pos):
+            res = 0
+            shift = 0
+            while pos < len(buf):
+                b = buf[pos]
+                pos += 1
+                res |= (b & 0x7F) << shift
+                if not (b & 0x80):
+                    return res, pos
+                shift += 7
+            raise ValueError("EOF")
+
+        def _encode_varint(val):
+            out = bytearray()
+            while val > 0x7F:
+                out.append((val & 0x7F) | 0x80)
+                val >>= 7
+            out.append(val)
+            return bytes(out)
+
+        pos = 0
+        has_char = False
+        while pos < len(data):
+            tag, pos = _read_varint(data, pos)
+            fn, wt = tag >> 3, tag & 7
+            if wt == 0:
+                _, pos = _read_varint(data, pos)
+            elif wt == 1:
+                pos += 8
+            elif wt == 2:
+                length, pos = _read_varint(data, pos)
+                val = data[pos:pos + length]
+                pos += length
+                if fn == 14:
+                    p2 = 0
+                    k_str = ""
+                    while p2 < len(val):
+                        t2, p2 = _read_varint(val, p2)
+                        fn2, wt2 = t2 >> 3, t2 & 7
+                        if wt2 == 2:
+                            l2, p2 = _read_varint(val, p2)
+                            v2 = val[p2:p2 + l2]
+                            p2 += l2
+                            if fn2 == 1:
+                                k_str = v2.decode("utf-8", errors="ignore")
+                        elif wt2 == 0:
+                            _, p2 = _read_varint(val, p2)
+                    if k_str == "character":
+                        has_char = True
+                        break
+            elif wt == 5:
+                pos += 4
+            else:
+                break
+
+        if has_char:
+            return True
+
+        with open(dict_path, "r", encoding="utf-8") as df:
+            chars_val = "\n".join(line.rstrip("\r\n") for line in df)
+        k_bytes = b"character"
+        v_bytes = chars_val.encode("utf-8")
+        entry = (
+            b"\x0a" + _encode_varint(len(k_bytes)) + k_bytes +
+            b"\x12" + _encode_varint(len(v_bytes)) + v_bytes
+        )
+        prop_field = b"\x72" + _encode_varint(len(entry)) + entry
+        with open(onnx_path, "wb") as f:
+            f.write(data + prop_field)
+        return True
+    except Exception as e:
+        print(f"[!] Aviso ao verificar metadados ONNX do modelo coreano: {e}")
+        return os.path.exists(onnx_path)
 
 def ensure_korean_ocr_model():
-    """Garante que os arquivos do modelo de OCR Coreano (ONNX + dict) estejam baixados."""
+    """Garante que os arquivos do modelo de OCR Coreano (PP-OCRv5 ONNX + dict com metadados) estejam prontos."""
     os.makedirs(KOREAN_MODEL_DIR, exist_ok=True)
     if not os.path.exists(KOREAN_REC_PATH):
         try:
-            print("[*] Baixando modelo de OCR Coreano (korean_mobile_v2.0_rec_infer.onnx)...")
-            url_m = "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv1/korean_mobile_v2.0_rec_infer.onnx"
+            print("[*] Baixando modelo de OCR Coreano PP-OCRv5 (korean_PP-OCRv5_rec_infer.onnx)...")
+            url_m = "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/korean/rec.onnx"
             req = urllib.request.Request(url_m, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=30) as resp, open(KOREAN_REC_PATH, 'wb') as f:
+            with urllib.request.urlopen(req, timeout=60) as resp, open(KOREAN_REC_PATH, 'wb') as f:
                 f.write(resp.read())
         except Exception as e:
-            print(f"[!] Erro ao baixar modelo coreano: {e}")
+            print(f"[!] Erro ao baixar modelo coreano PP-OCRv5: {e}")
     if not os.path.exists(KOREAN_DICT_PATH):
         try:
-            print("[*] Baixando dicionário de Hangul Coreano...")
-            url_d = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/dict/korean_dict.txt"
+            print("[*] Baixando dicionário PP-OCRv5 de Hangul Coreano...")
+            url_d = "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/korean/dict.txt"
             req = urllib.request.Request(url_d, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=15) as resp, open(KOREAN_DICT_PATH, 'wb') as f:
+            with urllib.request.urlopen(req, timeout=30) as resp, open(KOREAN_DICT_PATH, 'wb') as f:
                 f.write(resp.read())
         except Exception as e:
-            print(f"[!] Erro ao baixar dicionário coreano: {e}")
-    return os.path.exists(KOREAN_REC_PATH) and os.path.exists(KOREAN_DICT_PATH)
+            print(f"[!] Erro ao baixar dicionário coreano PP-OCRv5: {e}")
+    if os.path.exists(KOREAN_REC_PATH) and os.path.exists(KOREAN_DICT_PATH):
+        _onnx_ensure_character_metadata(KOREAN_REC_PATH, KOREAN_DICT_PATH)
+        return True
+    return False
+
+def _detect_rapidocr_api_style():
+    """Detecta se RapidOCR instalado usa API 1.4.x (use_cls) ou 1.2.x/1.3.x (use_angle_cls)."""
+    try:
+        import rapidocr_onnxruntime
+        cfg_path = os.path.join(os.path.dirname(rapidocr_onnxruntime.__file__), "config.yaml")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as cf:
+                txt = cf.read()
+            if "use_cls:" in txt:
+                return "1.4"
+            if "use_angle_cls:" in txt:
+                return "1.2"
+    except Exception:
+        pass
+    return "1.2"
 
 def get_rapidocr_engine(is_korean=False):
-    """Instancia o RapidOCR com suporte a Coreano ou padrão universal."""
+    """Instancia o RapidOCR Coreano (PP-OCRv5 sem rotação de ângulo que inverte Hangul) ou o padrão universal."""
     if is_korean:
-        if ensure_korean_ocr_model():
-            try:
-                return RapidOCR(rec_model_path=KOREAN_REC_PATH, rec_keys_path=KOREAN_DICT_PATH)
-            except Exception as e:
-                print(f"[!] Aviso ao iniciar RapidOCR Coreano: {e}")
+        if not ensure_korean_ocr_model():
+            raise RuntimeError("Modelo de OCR Coreano (PP-OCRv5) indisponível em models/korean/.")
+        api_style = _detect_rapidocr_api_style()
+        try:
+            if api_style == "1.4":
+                return RapidOCR(
+                    use_cls=False,
+                    det_model_path=None,
+                    det_box_thresh=0.45,
+                    text_score=0.35,
+                    width_height_ratio=16,
+                    min_height=15,
+                    rec_model_path=KOREAN_REC_PATH,
+                    rec_keys_path=KOREAN_DICT_PATH,
+                    rec_img_shape=[3, 48, 320],
+                )
+            return RapidOCR(
+                use_angle_cls=False,
+                det_model_path=None,
+                det_box_thresh=0.35,
+                det_thresh=0.24,
+                det_unclip_ratio=1.72,
+                text_score=0.35,
+                width_height_ratio=16,
+                min_height=15,
+                rec_model_path=KOREAN_REC_PATH,
+                rec_img_shape=[3, 48, 320],
+            )
+        except Exception as e:
+            print(f"[!] Aviso ao iniciar RapidOCR Coreano com parâmetros customizados ({e}); tentando modo seguro sem angle_cls...")
+            safe_kw = {"use_cls": False, "rec_model_path": KOREAN_REC_PATH, "rec_keys_path": KOREAN_DICT_PATH} if api_style == "1.4" else {"use_angle_cls": False, "rec_model_path": KOREAN_REC_PATH}
+            return RapidOCR(**safe_kw)
     return RapidOCR()
 
 def is_mokuro_available():
@@ -4102,12 +4737,11 @@ def detect_manga_language_and_engine(manga_dir):
     Detecta automaticamente o idioma da obra e seleciona o motor ideal:
     - 'korean': Manhwa / Coreano (Hangul) -> Usa RapidOCR Coreano (NUNCA usa Mokuro)
     - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (manga-ocr) se disponível
-    - 'rapidocr': Ocidental / Inglês / Espanhol -> Usa RapidOCR padrão
+    - 'rapidocr': Ocidental / Inglês / Espanhol / Chinês -> Usa RapidOCR padrão
     """
     folder_name = os.path.basename(manga_dir)
     folder_lower = folder_name.lower()
 
-    # 1. Se o título já especificar idioma latino / ocidental explícito em tags [English], [Spanish], etc.
     latin_tags = [
         r'\[(english|ingl[êe]s|ingles|en)\]', r'\((english|ingl[êe]s|ingles|en)\)',
         r'\[(spanish|espa[ñn]ol|espanhol|es)\]', r'\((spanish|espa[ñn]ol|espanhol|es)\)',
@@ -4117,51 +4751,76 @@ def detect_manga_language_and_engine(manga_dir):
         r'\[(italian|italiano|it)\]', r'\((italian|italiano|it)\)',
         r'\[(russian|russo|ru)\]', r'\((russian|russo|ru)\)',
     ]
-    for tag_pattern in latin_tags:
-        if re.search(tag_pattern, folder_name, re.IGNORECASE):
-            print(f"[+] Idioma identificado pela tag no título: OCIDENTAL/LATINO ({folder_name}) -> Usando RapidOCR Universal.")
-            return "rapidocr"
+    has_latin_tag = any(re.search(tag_pattern, folder_name, re.IGNORECASE) for tag_pattern in latin_tags)
+    has_hangul_in_title = bool(re.search(r'[\uac00-\ud7af]', folder_name))
+    has_korean_tag = bool(
+        re.search(r'\[(korean|coreano|kr|ko)\]', folder_name, re.IGNORECASE)
+        or re.search(r'\((korean|coreano|kr|ko)\)', folder_name, re.IGNORECASE)
+        or "manhwa" in folder_lower
+        or "webtoon" in folder_lower
+    )
+    has_jp_in_title = bool(
+        re.search(r'[\u3040-\u30ff]', folder_name)
+        or re.search(r'\[(japanese|japon[êe]s|japones|raw|jp)\]', folder_name, re.IGNORECASE)
+    )
 
-    # 2. Se o nome da pasta contiver Hangul coreano (ex: 두근두근 공부 시간) ou tags coreanas
-    if re.search(r'[\uac00-\ud7af]', folder_name) or "manhwa" in folder_lower or "webtoon" in folder_lower or re.search(r'\[(korean|coreano|kr|ko)\]', folder_name, re.IGNORECASE):
+    has_title_conflict = has_latin_tag and (has_hangul_in_title or has_korean_tag)
+
+    # 1. Título puramente ocidental sem Hangul/Coreano/Japonês conflitante
+    if has_latin_tag and not has_title_conflict and not has_jp_in_title:
+        print(f"[+] Idioma identificado pela tag no título: OCIDENTAL/LATINO ({folder_name}) -> Usando RapidOCR Universal.")
+        return "rapidocr"
+
+    # 2. Título Coreano explícito sem tag ocidental conflitante
+    if (has_hangul_in_title or has_korean_tag) and not has_title_conflict:
         print("[+] Idioma detectado pelo título: COREANO (Hangul) -> Usando RapidOCR Coreano.")
         return "korean"
 
-    # 3. Se o próprio nome contiver Kana japonês ou tag japonesa
-    if re.search(r'[\u3040-\u30ff]', folder_name) or re.search(r'\[(japanese|japon[êe]s|japones|raw|jp)\]', folder_name, re.IGNORECASE):
+    # 3. Título explicitamente Japonês
+    if has_jp_in_title and not has_latin_tag and not has_hangul_in_title:
         if is_mokuro_available():
             return "mokuro"
-        else:
-            print("[i] Mangá com caracteres japoneses no título, mas Mokuro não está disponível. Usando RapidOCR Universal.")
-            return "rapidocr"
+        print("[i] Mangá com caracteres japoneses no título, mas Mokuro não está disponível. Usando RapidOCR Universal.")
+        return "rapidocr"
 
-    # 4. Analisa amostras de imagens (amostra até 3 páginas distribuídas para maior precisão)
+    # 4. Amostra páginas internas para decidir sem margem de erro (inclusive em títulos com múltiplos idiomas)
     try:
         img_files = get_image_files(manga_dir)
         if not img_files:
+            if has_hangul_in_title or has_korean_tag:
+                return "korean"
             return "mokuro" if is_mokuro_available() else "rapidocr"
 
-        sample_indices = []
         if len(img_files) <= 3:
             sample_indices = list(range(len(img_files)))
         else:
-            sample_indices = [
-                min(len(img_files) // 4, len(img_files) - 1),
+            sample_indices = list(dict.fromkeys([
+                min(max(1, len(img_files) // 5), len(img_files) - 1),
                 min(len(img_files) // 2, len(img_files) - 1),
                 min((3 * len(img_files)) // 4, len(img_files) - 1)
-            ]
+            ]))
 
         engine = RapidOCR()
         combined_texts = []
+        sample_imgs = []
+        zh_high_chars = 0
         for s_idx in sample_indices:
             src_path = img_files[s_idx]
             try:
                 with open(src_path, "rb") as f:
                     img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
                     img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if img_cv is None:
+                    continue
+                sample_imgs.append(img_cv)
                 res, _ = engine(img_cv)
                 if res:
                     combined_texts.append(" ".join([box[1] for box in res]))
+                    for zd in res:
+                        txt_z = str(zd[1] or "").strip()
+                        sc_z = float(zd[2]) if len(zd) > 2 else 1.0
+                        if sc_z >= 0.72:
+                            zh_high_chars += len(re.findall(r'[\u4e00-\u9fff]', txt_z))
             except Exception:
                 continue
 
@@ -4170,6 +4829,41 @@ def detect_manga_language_and_engine(manga_dir):
         japanese_count = len(re.findall(r'[\u3040-\u30ff]', full_sample_text))
         chinese_count = len(re.findall(r'[\u4e00-\u9fff]', full_sample_text))
         latin_count = len(re.findall(r'[a-zA-Z]', full_sample_text))
+
+        # Checa texto latino claro primeiro (exceto quando não houve latim substancial ou há Hangul no título pedindo confirmação)
+        if latin_count > 25 and latin_count > (japanese_count * 3) and chinese_count <= 2 and korean_count == 0 and not has_hangul_in_title:
+            spanish_matches = len(re.findall(r'\b(el|la|los|las|de|en|un|una|por|con|para|del|al|que|es|como|mas|pero|cuando|muchas|gracias|joyas?|tiendas?)\b', full_sample_text, re.IGNORECASE))
+            if spanish_matches >= 3 or any(w in folder_lower for w in ["vengan", "espanol", "español", "spanish", "capitulo"]):
+                print("[+] Obra identificada com texto em ESPANHOL -> Ativando tradução especializada Espanhol -> PT-BR.")
+            else:
+                print("[+] Obra identificada com alfabeto LATINO (Inglês/Ocidental) -> Usando RapidOCR.")
+            return "rapidocr"
+
+        # Sonda com motor Coreano PP-OCRv5 para distinguir Manhwa (Hangul) vs Manhua (Chinês) mesmo sem tag ou com título conflitante
+        if japanese_count <= 2 and sample_imgs and ensure_korean_ocr_model():
+            try:
+                ko_engine = get_rapidocr_engine(is_korean=True)
+                ko_high_chars = 0
+                ko_all_chars = 0
+                for img_cv in sample_imgs:
+                    k_res, _ = ko_engine(img_cv)
+                    if k_res:
+                        for kd in k_res:
+                            txt_k = str(kd[1] or "").strip()
+                            sc_k = float(kd[2]) if len(kd) > 2 else 1.0
+                            h_n = len(re.findall(r'[\uac00-\ud7af]', txt_k))
+                            ko_all_chars += h_n
+                            if sc_k >= 0.65:
+                                ko_high_chars += h_n
+
+                if ko_high_chars >= 6 and (ko_high_chars > zh_high_chars or has_hangul_in_title or has_korean_tag):
+                    print(f"[+] Obra identificada pelas páginas como COREANO (Hangul alta conf.: {ko_high_chars} vs Hanzi alta conf.: {zh_high_chars}) -> Usando RapidOCR Coreano.")
+                    return "korean"
+                if ko_all_chars >= 12 and zh_high_chars < 6 and latin_count < 15:
+                    print(f"[+] Obra identificada pelas páginas como COREANO (Hangul: {ko_all_chars}) -> Usando RapidOCR Coreano.")
+                    return "korean"
+            except Exception:
+                pass
 
         if korean_count > 0:
             return "korean"
@@ -4184,13 +4878,13 @@ def detect_manga_language_and_engine(manga_dir):
                 print("[+] Obra identificada com alfabeto LATINO (Inglês/Ocidental) -> Usando RapidOCR.")
             return "rapidocr"
 
-        # Se detectou japonês ou se foi inconclusivo:
         if is_mokuro_available():
             return "mokuro"
-        else:
-            print("[i] Amostra sem Mokuro instalado no ambiente. Usando RapidOCR Universal com suporte multilíngue.")
-            return "rapidocr"
+        print("[i] Amostra sem Mokuro instalado no ambiente. Usando RapidOCR Universal com suporte multilíngue.")
+        return "rapidocr"
     except Exception:
+        if has_hangul_in_title or has_korean_tag:
+            return "korean"
         return "mokuro" if is_mokuro_available() else "rapidocr"
 
 def check_needs_rapidocr(manga_dir):
@@ -4198,8 +4892,8 @@ def check_needs_rapidocr(manga_dir):
     engine = detect_manga_language_and_engine(manga_dir)
     return engine != "mokuro"
 
-def is_ocr_noise(text, score):
-    """Filtra ruídos de OCR para não apagar detalhes de arte ou fundos."""
+def is_ocr_noise(text, score, is_korean=False):
+    """Filtra ruídos de OCR para não apagar detalhes de arte ou fundos (com preservação para Hangul de 1 caractere)."""
     t = text.strip()
     if not t:
         return True
@@ -4207,19 +4901,28 @@ def is_ocr_noise(text, score):
         sc = float(score)
     except Exception:
         sc = 1.0
-    if sc < 0.42:
+    if sc < (0.40 if is_korean else 0.42):
         return True
     has_letters = bool(re.search(r'[a-zA-Z\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', t))
-    if not has_letters and sc < 0.75:
+    if not has_letters and sc < (0.85 if is_korean else 0.75):
         return True
-    if len(t) <= 1 and sc < 0.60:
-        return True
+    if is_korean:
+        has_ko_cjk = bool(re.search(r'[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', t))
+        if has_ko_cjk:
+            if len(t) <= 1 and sc < 0.42:
+                return True
+        else:
+            if len(t) <= 2 and t.upper() not in {"OK", "TV", "NO", "HI", "SO", "OH", "AH"} and sc < 0.78:
+                return True
+    else:
+        if len(t) <= 1 and sc < 0.60:
+            return True
     if len(set(t)) <= 2 and len(t) >= 4 and sc < 0.75:
         return True
     return False
 
 def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progress_cb=None):
-    """Extrai textos usando RapidOCR (com suporte a Hangul Coreano e detecção de textos coloridos)."""
+    """Extrai textos usando RapidOCR (PP-OCRv5 Coreano em Hangul ou Universal com detecção de textos coloridos)."""
     img_files = get_image_files(manga_dir)
     if not img_files:
         print(f"[!] Erro crítico: Nenhuma imagem válida encontrada em '{manga_dir}'.")
@@ -4228,7 +4931,7 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progres
     engine = get_rapidocr_engine(is_korean=is_korean)
     pages = []
     
-    desc_msg = "OCR Coreano (Hangul)" if is_korean else "OCR Universal (RapidOCR)"
+    desc_msg = "OCR Coreano PP-OCRv5 (Hangul)" if is_korean else "OCR Universal (RapidOCR)"
     print(f"[*] Extraindo textos usando {desc_msg}...")
     for idx, img_path in enumerate(tqdm(img_files, desc="OCR Pages")):
         if progress_cb:
@@ -4265,7 +4968,7 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progres
                 text = box_data[1]
                 score = float(box_data[2]) if len(box_data) > 2 else 1.0
                 
-                if is_ocr_noise(text, score):
+                if is_ocr_noise(text, score, is_korean=is_korean):
                     continue
                     
                 xs = [p[0] for p in coords]
@@ -4291,9 +4994,824 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progres
             "blocks": final_blocks
         })
         
-    mokuro_data = {"version": "rapidocr_korean" if is_korean else "rapidocr", "pages": pages}
+    mokuro_data = {
+        "version": "rapidocr_korean" if is_korean else "rapidocr",
+        "ocr_model": "ppocr_v5_korean" if is_korean else "rapidocr_default",
+        "pages": pages
+    }
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
+
+OPENROUTER_DEFAULT_VISION_MODELS = [
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "dots-studio/dots-3-note-preview:free",
+]
+
+GEMINI_DEFAULT_VISION_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
+
+def is_ollama_vision_model_name(name):
+    """Retorna True se o nome do modelo Ollama indica suporte multimodal/visão."""
+    n = str(name or "").strip().lower()
+    if not n:
+        return False
+    if n.startswith("gemma3:1b") or ":1b" in n and "gemma3" in n:
+        return False
+    explicit_tokens = (
+        "qwen3-vl", "qwen2.5vl", "qwen2.5-vl", "qwen2-vl",
+        "llama3.2-vision", "minicpm-v", "internvl", "llava",
+        "moondream", "pixtral", "bakllava", "gemma3"
+    )
+    if any(tok in n for tok in explicit_tokens):
+        return True
+    if "vision" in n or re.search(r'(?:^|[-_/:])vl(?:$|[-_/:])', n):
+        return True
+    return False
+
+def _box_iou_xyxy(b1, b2):
+    ix0 = max(b1[0], b2[0])
+    iy0 = max(b1[1], b2[1])
+    ix1 = min(b1[2], b2[2])
+    iy1 = min(b1[3], b2[3])
+    iw = max(0.0, ix1 - ix0)
+    ih = max(0.0, iy1 - iy0)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    a1 = max(1.0, (b1[2] - b1[0]) * (b1[3] - b1[1]))
+    a2 = max(1.0, (b2[2] - b2[0]) * (b2[3] - b2[1]))
+    return inter / max(1.0, a1 + a2 - inter)
+
+def _run_text_detector_only(det_engine, img_arr):
+    """Executa apenas a camada de detecção geométrica (DBNet) sobre img_arr, retornando lista de boxes."""
+    det_fn = getattr(det_engine, "text_detector", None) or getattr(det_engine, "text_det", None)
+    if callable(det_fn):
+        try:
+            det_out = det_fn(img_arr)
+            if isinstance(det_out, tuple):
+                dt_boxes = det_out[0]
+            elif hasattr(det_out, "boxes"):
+                dt_boxes = det_out.boxes
+            else:
+                dt_boxes = det_out
+            return list(dt_boxes) if dt_boxes is not None else []
+        except Exception:
+            pass
+    try:
+        res, _ = det_engine(img_arr)
+        return [item[0] for item in res if item and len(item) >= 1] if res else []
+    except Exception:
+        return []
+
+def _detect_text_boxes_for_vision(det_engine, img_cv):
+    """Localiza e agrupa balões de diálogo geometricamente usando DBNet local (inclui textos coloridos)."""
+    if img_cv is None:
+        return []
+
+    raw_quads = _run_text_detector_only(det_engine, img_cv)
+    boxes_xyxy = []
+    for quad in raw_quads:
+        try:
+            xs = [float(p[0]) for p in quad]
+            ys = [float(p[1]) for p in quad]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+            if (x1 - x0) >= 5.0 and (y1 - y0) >= 5.0 and ((x1 - x0) * (y1 - y0)) >= 48.0:
+                boxes_xyxy.append([x0, y0, x1, y1])
+        except Exception:
+            continue
+
+    if len(boxes_xyxy) < 2:
+        try:
+            min_ch = img_cv.min(axis=2)
+            min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
+            alt_quads = _run_text_detector_only(det_engine, min_bgr)
+            for quad in alt_quads:
+                try:
+                    xs = [float(p[0]) for p in quad]
+                    ys = [float(p[1]) for p in quad]
+                    ab = [min(xs), min(ys), max(xs), max(ys)]
+                    if (ab[2] - ab[0]) < 5.0 or (ab[3] - ab[1]) < 5.0 or ((ab[2] - ab[0]) * (ab[3] - ab[1])) < 48.0:
+                        continue
+                    if not any(_box_iou_xyxy(ab, eb) >= 0.45 for eb in boxes_xyxy):
+                        boxes_xyxy.append(ab)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    if not boxes_xyxy:
+        return []
+
+    blocks_for_grouping = [{"box": b, "text": "T"} for b in boxes_xyxy]
+    grouped = smart_group_bubbles(blocks_for_grouping)
+    grouped.sort(key=lambda b: (int(b["box"][1] // 100), b["box"][0]))
+    return grouped
+
+def _render_vision_annotated_image(img_cv, grouped_subset, max_side=1600):
+    """Desenha caixas numeradas [id] sem cobrir o texto interno e codifica em JPEG base64."""
+    canvas = img_cv.copy()
+    ih, iw = canvas.shape[:2]
+    palette_bgr = [
+        (36, 28, 237),   # Vermelho vivo
+        (235, 110, 20),  # Azul forte
+        (60, 155, 10),   # Verde escuro
+        (205, 45, 165),  # Roxo
+        (0, 125, 230),   # Laranja
+    ]
+    border_th = max(2, int(round(max(iw, ih) / 520.0)))
+    font_scale = max(0.55, min(0.95, max(iw, ih) / 1450.0))
+    font_th = max(1, int(round(font_scale * 2.2)))
+
+    for idx, item in enumerate(grouped_subset):
+        box_id = item["vision_id"]
+        box = item["box"]
+        col = palette_bgr[idx % len(palette_bgr)]
+        x0 = max(0, min(iw - 1, int(round(box[0]))))
+        y0 = max(0, min(ih - 1, int(round(box[1]))))
+        x1 = max(x0 + 1, min(iw - 1, int(round(box[2]))))
+        y1 = max(y0 + 1, min(ih - 1, int(round(box[3]))))
+
+        # Expande levemente a borda do retângulo para não pisar nos caracteres das extremidades
+        rx0 = max(0, x0 - 2)
+        ry0 = max(0, y0 - 2)
+        rx1 = min(iw - 1, x1 + 2)
+        ry1 = min(ih - 1, y1 + 2)
+        cv2.rectangle(canvas, (rx0, ry0), (rx1, ry1), col, border_th)
+
+        label = f"[{box_id}]"
+        (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_th)
+        pad_px = 4
+        pill_w = tw + pad_px * 2
+        pill_h = th + baseline + pad_px
+
+        # Prefere posicionar a etiqueta fora do retângulo (acima do canto superior esquerdo)
+        if ry0 >= pill_h + 2:
+            px0 = rx0
+            py0 = ry0 - pill_h
+        elif ry1 + pill_h + 2 < ih:
+            px0 = rx0
+            py0 = ry1 + 2
+        else:
+            px0 = rx0
+            py0 = max(0, ry0)
+
+        px0 = max(0, min(iw - pill_w - 1, px0))
+        px1 = min(iw - 1, px0 + pill_w)
+        py1 = min(ih - 1, py0 + pill_h)
+        cv2.rectangle(canvas, (px0, py0), (px1, py1), col, -1)
+        cv2.putText(
+            canvas,
+            label,
+            (px0 + pad_px, py1 - baseline - 1),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (255, 255, 255),
+            font_th,
+            cv2.LINE_AA
+        )
+
+    cur_max = max(iw, ih)
+    if cur_max > max_side and max_side > 0:
+        scale = float(max_side) / float(cur_max)
+        new_w = max(1, int(round(iw * scale)))
+        new_h = max(1, int(round(ih * scale)))
+        canvas = cv2.resize(canvas, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    ok, buf = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    if not ok:
+        raise RuntimeError("Falha ao codificar imagem anotada para IA Vision.")
+    return base64.b64encode(buf.tobytes()).decode("ascii")
+
+def _parse_vision_ocr_json(raw_text, expected_ids):
+    """Extrai e limpa dicionário {"id": "texto original"} da resposta de um VLM."""
+    cleaned = _strip_think_tags(raw_text or "")
+    cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s*```$', '', cleaned.strip())
+
+    parsed = {}
+    if cleaned:
+        try:
+            obj = json.loads(cleaned)
+            if isinstance(obj, dict):
+                parsed = obj
+        except Exception:
+            m_obj = re.search(r'\{[\s\S]*\}', cleaned)
+            if m_obj:
+                try:
+                    obj = json.loads(m_obj.group(0))
+                    if isinstance(obj, dict):
+                        parsed = obj
+                except Exception:
+                    pass
+            if not parsed:
+                for m_kv in re.finditer(r'"(\d+)"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned):
+                    k_s, v_raw = m_kv.group(1), m_kv.group(2)
+                    try:
+                        parsed[k_s] = json.loads(f'"{v_raw}"')
+                    except Exception:
+                        parsed[k_s] = v_raw.replace('\\"', '"').replace("\\n", " ")
+
+    out = {}
+    for eid in expected_ids:
+        k_str = str(eid)
+        val = parsed.get(k_str, parsed.get(int(eid) if str(eid).isdigit() else eid, ""))
+        txt = str(val if val is not None else "").strip()
+        txt = re.sub(rf'^\[{re.escape(k_str)}\]\s*', '', txt)
+        if re.search(r'[\u4e00-\u9fff\u3040-\u30ff]', txt) and not re.search(r'[\uac00-\ud7af]', txt):
+            txt = re.sub(r'\s*\n+\s*', '', txt)
+        else:
+            txt = re.sub(r'\s*\n+\s*', ' ', txt)
+        out[k_str] = txt.strip()
+    return out
+
+class VisionSafetyBlockedError(RuntimeError):
+    """Indica recusa por filtro de conteúdo sensível no provedor Vision."""
+
+def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
+    """Executa OCR via Google Gemini Vision REST API com rotação de chaves e segurança ajustada."""
+    engine_opts = engine_opts if engine_opts is not None else {}
+    raw_keys = list(cfg.get("gemini_api_keys") or [])
+    if cfg.get("gemini_api_key") and cfg.get("gemini_api_key") not in raw_keys:
+        raw_keys.insert(0, cfg.get("gemini_api_key"))
+    key_pool = [
+        str(k).strip() for k in raw_keys
+        if str(k or "").strip() and not str(k).strip().startswith(("gsk_", "sk-or-"))
+    ]
+    if not key_pool:
+        raise ValueError("Nenhuma chave Google Gemini cadastrada.")
+
+    exhausted_gem_keys = engine_opts.setdefault("gemini_exhausted_keys", set())
+    exhausted_gem_models = engine_opts.setdefault("gemini_exhausted_models", set())
+
+    cand_models = []
+    for m in [cfg.get("gemini_model")] + GEMINI_DEFAULT_VISION_MODELS:
+        m_s = str(m or "").strip()
+        if m_s and m_s not in cand_models and m_s not in exhausted_gem_models:
+            cand_models.append(m_s)
+    if not cand_models:
+        raise RuntimeError("Todos os modelos Google Gemini configurados falharam.")
+
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+    ]
+
+    last_err = None
+    for idx_k, api_key in enumerate(key_pool):
+        if idx_k in exhausted_gem_keys:
+            continue
+        for m_name in cand_models:
+            if m_name in exhausted_gem_models:
+                continue
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key}"
+            use_json_mime = True
+            active_safety = list(safety_settings)
+            for _sub in range(2):
+                gen_cfg = {"temperature": 0.0, "maxOutputTokens": 2048}
+                if use_json_mime:
+                    gen_cfg["responseMimeType"] = "application/json"
+                payload = {
+                    "contents": [{
+                        "parts": [
+                            {"text": prompt},
+                            {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}}
+                        ]
+                    }],
+                    "safetySettings": active_safety,
+                    "generationConfig": gen_cfg
+                }
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    pfb = data.get("promptFeedback") or {}
+                    if pfb.get("blockReason"):
+                        raise VisionSafetyBlockedError(f"Gemini bloqueou a página ({pfb.get('blockReason')}).")
+                    cands = data.get("candidates") or []
+                    if not cands:
+                        raise VisionSafetyBlockedError("Gemini não retornou candidatos para esta página.")
+                    fin_reason = str(cands[0].get("finishReason", "")).upper()
+                    if fin_reason in ("SAFETY", "PROHIBITED_CONTENT", "IMAGE_SAFETY", "RECITATION"):
+                        raise VisionSafetyBlockedError(f"Gemini bloqueou resposta ({fin_reason}).")
+                    parts = (cands[0].get("content") or {}).get("parts") or []
+                    txt_out = "".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
+                    if txt_out:
+                        return txt_out
+                    raise RuntimeError("Gemini retornou resposta vazia.")
+                except VisionSafetyBlockedError:
+                    raise
+                except urllib.error.HTTPError as e:
+                    err_body = ""
+                    try:
+                        err_body = e.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                    err_low = err_body.lower()
+                    last_err = e
+                    if e.code in (401, 403):
+                        exhausted_gem_keys.add(idx_k)
+                        break
+                    if e.code == 429:
+                        if any(tok in err_low for tok in ("quota", "exceeded", "daily", "limit")):
+                            break
+                        time.sleep(1.5)
+                        continue
+                    if e.code == 400 and (use_json_mime or len(active_safety) == 5):
+                        if "responsemimetype" in err_low or "json" in err_low:
+                            use_json_mime = False
+                        if "civic_integrity" in err_low:
+                            active_safety = [s for s in active_safety if s["category"] != "HARM_CATEGORY_CIVIC_INTEGRITY"]
+                        if not use_json_mime or len(active_safety) < 5:
+                            continue
+                    if e.code == 404:
+                        exhausted_gem_models.add(m_name)
+                        break
+                    break
+                except Exception as e:
+                    last_err = e
+                    break
+            if idx_k in exhausted_gem_keys:
+                break
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Falha ao consultar Google Gemini Vision.")
+
+def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
+    """Executa OCR via OpenRouter Vision com cascata de modelos :free e rotação de chaves (sem gsk_)."""
+    engine_opts = engine_opts if engine_opts is not None else {}
+    raw_pool = list(cfg.get("openrouter_api_keys") or [])
+    if cfg.get("openrouter_api_key") and cfg.get("openrouter_api_key") not in raw_pool:
+        raw_pool.insert(0, cfg.get("openrouter_api_key"))
+    key_pool = [
+        str(k).strip() for k in raw_pool
+        if str(k or "").strip() and not str(k).strip().startswith("gsk_")
+    ]
+    if not key_pool:
+        raise ValueError("Nenhuma chave OpenRouter válida para Vision.")
+
+    exhausted_or_keys = engine_opts.setdefault("openrouter_vision_exhausted_keys", set())
+    exhausted_or_models = engine_opts.setdefault("openrouter_vision_exhausted_models", set())
+
+    vision_models = []
+    for m in [cfg.get("openrouter_vision_model")] + OPENROUTER_DEFAULT_VISION_MODELS:
+        m_s = str(m or "").strip()
+        if m_s and m_s not in vision_models and m_s not in exhausted_or_models:
+            vision_models.append(m_s)
+    if not vision_models:
+        raise RuntimeError("Todos os modelos Vision do OpenRouter estão temporariamente indisponíveis.")
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    last_err = None
+    for idx_k, api_key in enumerate(key_pool):
+        if idx_k in exhausted_or_keys:
+            continue
+        for m_name in vision_models:
+            if m_name in exhausted_or_models:
+                continue
+            m_low = m_name.lower()
+            use_reasoning_param = any(tok in m_low for tok in ("reasoning", "super-vl", "3-note"))
+            for _sub in range(2):
+                payload = {
+                    "model": m_name,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                        ]
+                    }],
+                    "temperature": 0.0,
+                    "max_tokens": 3500
+                }
+                if use_reasoning_param:
+                    payload["reasoning"] = {"effort": "low"}
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+                        "X-Title": "Manga Translator PT-BR"
+                    }
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        res = json.loads(resp.read().decode("utf-8"))
+                    choices = res.get("choices") or []
+                    msg = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+                    raw_out = _strip_think_tags(msg.get("content") or "")
+                    if raw_out.strip():
+                        return raw_out.strip()
+                    last_err = RuntimeError(f"OpenRouter Vision '{m_name}' retornou conteúdo vazio.")
+                    break
+                except urllib.error.HTTPError as e:
+                    err_body = ""
+                    try:
+                        err_body = e.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                    err_low = err_body.lower()
+                    last_err = e
+                    if e.code in (401, 403) or "free-models-per-day" in err_low:
+                        exhausted_or_keys.add(idx_k)
+                        break
+                    if e.code == 400 and use_reasoning_param and "reasoning" in err_low:
+                        use_reasoning_param = False
+                        continue
+                    if e.code == 404:
+                        exhausted_or_models.add(m_name)
+                        break
+                    if e.code == 429:
+                        # Upstream model rate-limit: tenta próximo modelo na mesma chave antes de descartar a chave
+                        if any(tok in err_low for tok in ("upstream", "temporarily rate-limited", "provider")):
+                            break
+                        exhausted_or_keys.add(idx_k)
+                        break
+                    break
+                except Exception as e:
+                    last_err = e
+                    break
+            if idx_k in exhausted_or_keys:
+                break
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Falha ao consultar OpenRouter Vision.")
+
+def check_ollama_vision_available(host="http://localhost:11434", custom_model=None):
+    """Detecta modelo de visão instalado no Ollama sem disparar download nem aquecimento pesado."""
+    host = str(host or "http://localhost:11434").rstrip("/")
+    try:
+        req = urllib.request.Request(f"{host}/api/tags")
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            if resp.status != 200:
+                return False, None
+            data = json.loads(resp.read().decode("utf-8"))
+        models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+        if not models:
+            return False, None
+        c_m = str(custom_model or "").strip().lower()
+        if c_m:
+            for m in models:
+                if c_m in m.lower():
+                    return True, m
+        priority = (
+            "qwen3-vl", "qwen2.5vl", "qwen2.5-vl", "qwen2-vl",
+            "gemma3", "llama3.2-vision", "minicpm-v", "internvl", "llava", "pixtral", "moondream"
+        )
+        for pref in priority:
+            for m in models:
+                if pref in m.lower() and is_ollama_vision_model_name(m):
+                    return True, m
+        for m in models:
+            if is_ollama_vision_model_name(m):
+                return True, m
+        return False, None
+    except Exception:
+        return False, None
+
+def query_ollama_vision(b64_img, prompt, cfg, engine_opts=None, timeout=90):
+    """Executa OCR via servidor Ollama com modelo multimodal (ex: Qwen2.5-VL / Gemma3 / LLaVA)."""
+    engine_opts = engine_opts if engine_opts is not None else {}
+    if engine_opts.get("ollama_vision_offline"):
+        raise RuntimeError("Ollama Vision indisponível.")
+    host = str(cfg.get("ollama_host", "http://localhost:11434")).rstrip("/")
+    v_model = engine_opts.get("ollama_vision_model_resolved")
+    if not v_model:
+        ok_ov, v_model = check_ollama_vision_available(host=host, custom_model=cfg.get("ollama_vision_model"))
+        if not ok_ov or not v_model:
+            engine_opts["ollama_vision_offline"] = True
+            raise RuntimeError("Nenhum modelo Ollama Vision encontrado.")
+        engine_opts["ollama_vision_model_resolved"] = v_model
+
+    payload = {
+        "model": v_model,
+        "messages": [{"role": "user", "content": prompt, "images": [b64_img]}],
+        "stream": False,
+        "keep_alive": "60m",
+        "options": {"temperature": 0.0, "num_predict": 1500}
+    }
+    req = urllib.request.Request(
+        f"{host}/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        res = json.loads(resp.read().decode("utf-8"))
+    out = _strip_think_tags(res.get("message", {}).get("content", "") or "")
+    if not out.strip():
+        raise RuntimeError(f"Ollama Vision '{v_model}' retornou resposta vazia.")
+    return out.strip()
+
+def _classic_fallback_page_blocks(img_cv, is_korean=False, engine_opts=None):
+    """Fallback cirúrgico por página para OCR clássico caso Vision falhe ou bloqueie página +18."""
+    engine_opts = engine_opts if engine_opts is not None else {}
+    cache_key = f"_fallback_rec_engine_{bool(is_korean)}"
+    rec_engine = engine_opts.get(cache_key)
+    if rec_engine is None:
+        rec_engine = get_rapidocr_engine(is_korean=bool(is_korean))
+        engine_opts[cache_key] = rec_engine
+
+    min_ch = img_cv.min(axis=2)
+    min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
+    res, _ = rec_engine(img_cv)
+    if not res or len(res) < 2:
+        res_alt, _ = rec_engine(min_bgr)
+        if res_alt and len(res_alt) > (len(res) if res else 0):
+            res = res_alt
+
+    blocks_for_grouping = []
+    if res:
+        for box_data in res:
+            coords = box_data[0]
+            text = box_data[1]
+            score = float(box_data[2]) if len(box_data) > 2 else 1.0
+            if is_ocr_noise(text, score, is_korean=is_korean):
+                continue
+            xs = [p[0] for p in coords]
+            ys = [p[1] for p in coords]
+            blocks_for_grouping.append({
+                "box": [min(xs), min(ys), max(xs), max(ys)],
+                "text": str(text).strip()
+            })
+
+    grouped = smart_group_bubbles(blocks_for_grouping)
+    final_blocks = []
+    for b in grouped:
+        final_blocks.append({
+            "box": [int(round(float(v))) for v in b["box"]],
+            "raw_boxes": [[int(round(float(v))) for v in rb] for rb in b.get("raw_boxes", [b["box"]])],
+            "orig_line_count": int(b.get("orig_line_count", max(1, len(b.get("lines", []))))),
+            "vertical": bool(b["is_vertical"]),
+            "lines": b["lines"]
+        })
+    return final_blocks
+
+def _build_vision_prompt_for_ids(box_ids):
+    id_min, id_max = box_ids[0], box_ids[-1]
+    id_list_str = ", ".join(f'"{i}"' for i in box_ids)
+    return (
+        f"Look at this manga/comic page. Specific text regions are marked with colored rectangles labeled [{id_min}] through [{id_max}].\n"
+        f"Extract the EXACT original text inside each numbered rectangle in its ORIGINAL source language (Japanese, Korean, Chinese, English, Spanish, etc.).\n"
+        f"CRITICAL RULES:\n"
+        f"- DO NOT translate the text. Copy the exact original words/characters visible inside each box.\n"
+        f"- Preserve punctuation (!, ?, ..., ~) and heart symbols (♡).\n"
+        f"- Join lines inside the same box cleanly in natural reading order with spaces (or without spaces for Japanese/Chinese).\n"
+        f"- If a numbered box contains only artwork, shading or no readable text, set its value to \"\".\n"
+        f"Respond ONLY with a valid JSON object containing keys {id_list_str}. Example:\n"
+        f"{{\"{id_min}\": \"original text\"}}"
+    )
+
+def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opts=None, fallback_is_korean=False):
+    """
+    Pipeline Híbrido para uma página:
+    1. Detector geométrico local encontra balões/linhas e preserva coordenadas exatas (raw_boxes).
+    2. IA Vision lê o texto difícil/estilizado das caixas numeradas [1]..[N] na língua original.
+    3. Fallback automático por página para OCR clássico (PP-OCRv5 / RapidOCR) se Vision falhar ou recusar +18.
+    Retorna: (final_blocks, mode_used)
+    """
+    engine_opts = engine_opts if engine_opts is not None else {}
+    if det_engine is None:
+        det_engine = engine_opts.get("_det_engine")
+        if det_engine is None:
+            det_engine = get_rapidocr_engine(is_korean=False)
+            engine_opts["_det_engine"] = det_engine
+
+    grouped = _detect_text_boxes_for_vision(det_engine, img_cv)
+    if not grouped:
+        return [], "empty"
+
+    vis_pref = str(cfg.get("vision_provider", "auto") or "auto").lower()
+    raw_gem_keys = list(cfg.get("gemini_api_keys") or [])
+    if cfg.get("gemini_api_key") and cfg.get("gemini_api_key") not in raw_gem_keys:
+        raw_gem_keys.insert(0, cfg.get("gemini_api_key"))
+    raw_or_keys = list(cfg.get("openrouter_api_keys") or [])
+    if cfg.get("openrouter_api_key") and cfg.get("openrouter_api_key") not in raw_or_keys:
+        raw_or_keys.insert(0, cfg.get("openrouter_api_key"))
+    has_gemini = bool([k for k in raw_gem_keys if str(k).strip() and not str(k).strip().startswith(("gsk_", "sk-or-"))])
+    has_openrouter = bool([k for k in raw_or_keys if str(k).strip() and not str(k).strip().startswith("gsk_")])
+
+    if vis_pref == "gemini":
+        chain = ["gemini", "openrouter", "ollama"]
+    elif vis_pref == "openrouter":
+        chain = ["openrouter", "gemini", "ollama"]
+    elif vis_pref == "ollama":
+        chain = ["ollama", "gemini", "openrouter"]
+    elif str(cfg.get("provider", "auto")).lower() == "ollama":
+        chain = ["ollama", "gemini", "openrouter"]
+    else:
+        chain = ["gemini", "openrouter", "ollama"]
+
+    # Remove provedores claramente não configurados na ordem rápida
+    ordered_chain = []
+    for p_name in chain:
+        if p_name == "gemini" and not has_gemini:
+            continue
+        if p_name == "openrouter" and not has_openrouter:
+            continue
+        if p_name == "ollama" and engine_opts.get("ollama_vision_offline"):
+            continue
+        ordered_chain.append(p_name)
+
+    if not ordered_chain:
+        return _classic_fallback_page_blocks(img_cv, is_korean=fallback_is_korean, engine_opts=engine_opts), "classic_fallback"
+
+    for idx, b in enumerate(grouped):
+        b["vision_id"] = idx + 1
+
+    extracted_map = {}
+    batch_size = 12
+    used_backend = None
+    vision_failed_all = False
+
+    for b_start in range(0, len(grouped), batch_size):
+        subset = grouped[b_start:b_start + batch_size]
+        box_ids = [item["vision_id"] for item in subset]
+        b64_img = _render_vision_annotated_image(img_cv, subset)
+        prompt = _build_vision_prompt_for_ids(box_ids)
+
+        chunk_parsed = None
+        for backend in ordered_chain:
+            try:
+                if backend == "gemini":
+                    raw_resp = query_gemini_vision(b64_img, prompt, cfg, engine_opts=engine_opts)
+                elif backend == "openrouter":
+                    raw_resp = query_openrouter_vision(b64_img, prompt, cfg, engine_opts=engine_opts)
+                elif backend == "ollama":
+                    raw_resp = query_ollama_vision(b64_img, prompt, cfg, engine_opts=engine_opts)
+                else:
+                    continue
+
+                parsed = _parse_vision_ocr_json(raw_resp, box_ids)
+                if any(v for v in parsed.values()) or len(box_ids) <= 1:
+                    chunk_parsed = parsed
+                    used_backend = backend
+                    break
+            except VisionSafetyBlockedError as sb_err:
+                print(f"[*] {backend.upper()} Vision recusou página sensível ({sb_err}). Tentando próximo motor Vision/OCR...")
+                continue
+            except Exception as v_err:
+                print(f"[!] Aviso {backend.upper()} Vision falhou no lote: {v_err}")
+                continue
+
+        if chunk_parsed is None:
+            vision_failed_all = True
+            break
+        extracted_map.update(chunk_parsed)
+
+    # Checa se houve falha total ou recusa silenciosa em páginas densas
+    substantive_boxes = [
+        item for item in grouped
+        if (item["box"][2] - item["box"][0]) >= 22 and (item["box"][3] - item["box"][1]) >= 22
+    ]
+    non_empty_count = sum(1 for item in grouped if extracted_map.get(str(item["vision_id"]), "").strip())
+    if vision_failed_all or (len(substantive_boxes) >= 2 and non_empty_count == 0):
+        print("[*] Vision AI sem extração válida nesta página -> Acionando fallback OCR clássico...")
+        return _classic_fallback_page_blocks(img_cv, is_korean=fallback_is_korean, engine_opts=engine_opts), "classic_fallback"
+
+    final_blocks = []
+    for item in grouped:
+        txt = extracted_map.get(str(item["vision_id"]), "").strip()
+        if not txt:
+            continue
+        raw_bxs = item.get("raw_boxes") or [item["box"]]
+        orig_lc = max(1, int(item.get("orig_line_count", len(raw_bxs))))
+        final_blocks.append({
+            "box": [int(round(float(v))) for v in item["box"]],
+            "raw_boxes": [[int(round(float(v))) for v in rb] for rb in raw_bxs],
+            "orig_line_count": orig_lc,
+            "vertical": bool(item["is_vertical"]),
+            "lines": [txt]
+        })
+
+    return final_blocks, (used_backend or "vision")
+
+def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=None):
+    """Executa OCR Híbrido (Detector Geométrico Local + IA Vision) gerando .mokuro compatível."""
+    img_files = get_image_files(manga_dir)
+    if not img_files:
+        print(f"[!] Erro crítico: Nenhuma imagem válida encontrada em '{manga_dir}'.")
+        return False
+
+    if cfg is None:
+        cfg = load_config()
+
+    det_engine = get_rapidocr_engine(is_korean=False)
+    engine_opts = {"_det_engine": det_engine}
+
+    folder_name = os.path.basename(manga_dir)
+    fallback_is_korean = bool(
+        re.search(r'[\uac00-\ud7af]', folder_name)
+        or re.search(r'\[(korean|coreano|kr|ko)\]', folder_name, re.IGNORECASE)
+        or "manhwa" in folder_name.lower()
+        or "webtoon" in folder_name.lower()
+    )
+    korean_checked = fallback_is_korean
+
+    raw_gem_keys = list(cfg.get("gemini_api_keys") or [])
+    if cfg.get("gemini_api_key") and cfg.get("gemini_api_key") not in raw_gem_keys:
+        raw_gem_keys.insert(0, cfg.get("gemini_api_key"))
+    raw_or_keys = list(cfg.get("openrouter_api_keys") or [])
+    if cfg.get("openrouter_api_key") and cfg.get("openrouter_api_key") not in raw_or_keys:
+        raw_or_keys.insert(0, cfg.get("openrouter_api_key"))
+    has_gemini = bool([k for k in raw_gem_keys if str(k).strip() and not str(k).strip().startswith(("gsk_", "sk-or-"))])
+    has_or = bool([k for k in raw_or_keys if str(k).strip() and not str(k).strip().startswith("gsk_")])
+    ok_ov, ov_model = check_ollama_vision_available(
+        host=cfg.get("ollama_host", "http://localhost:11434"),
+        custom_model=cfg.get("ollama_vision_model")
+    )
+    if ok_ov and ov_model:
+        engine_opts["ollama_vision_model_resolved"] = ov_model
+    else:
+        engine_opts["ollama_vision_offline"] = True
+
+    active_backends = []
+    if has_gemini:
+        active_backends.append(f"Gemini Vision ({cfg.get('gemini_model', 'gemini-2.5-flash')})")
+    if has_or:
+        active_backends.append(f"OpenRouter Vision ({cfg.get('openrouter_vision_model', OPENROUTER_DEFAULT_VISION_MODELS[0])})")
+    if ok_ov and ov_model:
+        active_backends.append(f"Ollama Vision ({ov_model})")
+    if not active_backends:
+        print("[!] Aviso: Nenhum provedor IA Vision configurado/online (Gemini, OpenRouter ou Ollama Vision). Usando OCR clássico automático por página.")
+    else:
+        print(f"[*] Extraindo textos com IA Vision Híbrido -> Motores prontos: {' | '.join(active_backends)}")
+
+    pages = []
+    for idx, img_path in enumerate(tqdm(img_files, desc="IA Vision OCR")):
+        if progress_cb:
+            try:
+                progress_cb("ocr", idx + 1, len(img_files), f"IA Vision (OCR Híbrido): Lendo página {idx + 1} de {len(img_files)}")
+            except Exception:
+                pass
+        img_name = os.path.basename(img_path)
+        try:
+            with open(img_path, "rb") as f:
+                img_array = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        except Exception:
+            img_cv = None
+
+        if img_cv is None:
+            continue
+
+        # Se precisar de fallback clássico numa obra sem título óbvio, detecta idioma real 1 única vez
+        if not korean_checked and (
+            (not active_backends)
+            or engine_opts.get("_need_lang_check")
+        ):
+            try:
+                fallback_is_korean = (detect_manga_language_and_engine(manga_dir) == "korean")
+            except Exception:
+                fallback_is_korean = False
+            korean_checked = True
+
+        blocks, mode_used = extract_page_bubbles_with_ai_vision(
+            img_cv,
+            cfg,
+            det_engine=det_engine,
+            engine_opts=engine_opts,
+            fallback_is_korean=fallback_is_korean
+        )
+        if mode_used == "classic_fallback" and not korean_checked:
+            try:
+                if detect_manga_language_and_engine(manga_dir) == "korean":
+                    fallback_is_korean = True
+                    blocks = _classic_fallback_page_blocks(img_cv, is_korean=True, engine_opts=engine_opts)
+            except Exception:
+                pass
+            korean_checked = True
+
+        pages.append({
+            "img_path": img_name,
+            "img_width": int(img_cv.shape[1]),
+            "img_height": int(img_cv.shape[0]),
+            "blocks": blocks
+        })
+
+    mokuro_data = {
+        "version": "ai_vision",
+        "ocr_model": "ai_vision_hybrid",
+        "pages": pages
+    }
+    with open(output_json_path, "w", encoding="utf-8") as f:
+        json.dump(mokuro_data, f, ensure_ascii=False)
+    return True
 
 def is_scan_watermark(text):
     """Detecta marcas d'água puras de grupos scanlators chineses/ocidentais para não poluir balões."""
@@ -4357,7 +5875,8 @@ def is_valid_translation(orig_text, trans_text):
         'como uma inteligência artificial', 'como uma ia', 'traduza o texto original',
         'regras obrigatórias', 'system message', 'mensagem do sistema', 'o gato está sentado',
         'parece cocô', 'cons e que n ces', 'louco ou omi', 'meu e obi', 's aging', 'estou envelhecendo',
-        'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,'
+        'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,',
+        '<x ', '</x>'
     ]
     ct_lower = clean_trans.lower()
     if any(cm in ct_lower for cm in corrupt_markers) or ct_lower in ('auto', '[auto]'):
@@ -4452,11 +5971,14 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             except Exception: pass
 
     print(f"[*] Modo OCR selecionado: {ocr_mode.upper()}")
-    if ocr_mode in ("korean", "manhwa"):
+    ocr_mode_low = str(ocr_mode or "auto").lower().strip()
+    if ocr_mode_low in ("ai_vision", "vision", "ia_vision", "ia", "ai"):
+        expected_engine = "ai_vision"
+    elif ocr_mode_low in ("korean", "manhwa"):
         expected_engine = "rapidocr_korean"
-    elif ocr_mode == "rapidocr":
+    elif ocr_mode_low == "rapidocr":
         expected_engine = "rapidocr"
-    elif ocr_mode == "mokuro":
+    elif ocr_mode_low == "mokuro":
         expected_engine = "mokuro"
     else:
         print("[*] Analisando nome da obra e imagens para escolher o motor OCR ideal...")
@@ -4476,24 +5998,30 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     print(f"[+] Motor OCR definido: {expected_engine.upper()}")
 
     needs_new_ocr = True
+    ocr_model_upgraded = False
     if not force_ocr and os.path.exists(mokuro_path):
         try:
             with open(mokuro_path, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
             file_version = str(existing_data.get("version", ""))
+            file_ocr_model = str(existing_data.get("ocr_model", ""))
             pages = existing_data.get("pages", [])
             total_blocks = sum(len(p.get("blocks", [])) for p in pages)
             
             engine_matches = (
-                (expected_engine == "rapidocr_korean" and file_version == "rapidocr_korean") or
+                (expected_engine == "ai_vision" and file_version == "ai_vision" and file_ocr_model == "ai_vision_hybrid") or
+                (expected_engine == "rapidocr_korean" and file_version == "rapidocr_korean" and file_ocr_model == "ppocr_v5_korean") or
                 (expected_engine == "rapidocr" and file_version == "rapidocr") or
-                (expected_engine == "mokuro" and file_version not in ("rapidocr", "rapidocr_korean"))
+                (expected_engine == "mokuro" and file_version not in ("rapidocr", "rapidocr_korean", "ai_vision"))
             )
             
             if len(pages) > 0 and total_blocks > 0 and engine_matches:
                 print(f"[+] Cache OCR ({expected_engine.upper()}) encontrado ({total_blocks} balões em {len(pages)} páginas). Reutilizando...")
                 needs_new_ocr = False
             else:
+                if expected_engine == "rapidocr_korean" and file_ocr_model != "ppocr_v5_korean":
+                    print("[*] Modelo OCR Coreano atualizado (PP-OCRv5). Regerando OCR e traduções antigas automaticamente...")
+                    ocr_model_upgraded = True
                 try: os.remove(mokuro_path)
                 except Exception: pass
                 needs_new_ocr = True
@@ -4501,7 +6029,10 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             needs_new_ocr = True
 
     if needs_new_ocr:
-        if expected_engine == "rapidocr_korean":
+        if expected_engine == "ai_vision":
+            print("[+] Executando IA Vision Híbrido (Detector Geométrico Local + IA Vision)...")
+            generate_ai_vision_json(manga_dir, mokuro_path, cfg=config, progress_cb=progress_cb)
+        elif expected_engine == "rapidocr_korean":
             print("[+] Executando RapidOCR Coreano (Hangul)...")
             generate_rapidocr_json(manga_dir, mokuro_path, is_korean=True, progress_cb=progress_cb)
         elif expected_engine == "rapidocr":
@@ -4550,16 +6081,20 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             is_vertical = blk.get("vertical", True)
             lines = blk.get("lines", [])
             is_cjk_blk = is_majority_cjk(lines)
-            text = smart_join_lines(lines, is_cjk=is_cjk_blk).strip()
+            is_ko_blk = is_majority_hangul(lines)
+            text = smart_join_lines(lines, is_cjk=is_cjk_blk, preserve_spaces=is_ko_blk).strip()
             if not text:
                 continue
-            blocks_for_grouping.append({
+            blk_entry = {
                 "box": [xmin, ymin, xmax, ymax],
                 "text": text,
                 "lines": lines,
-                "orig_line_count": max(1, len(lines)),
+                "orig_line_count": max(1, int(blk.get("orig_line_count") or len(lines) or 1)),
                 "is_vertical": is_vertical
-            })
+            }
+            if blk.get("raw_boxes"):
+                blk_entry["raw_boxes"] = blk.get("raw_boxes")
+            blocks_for_grouping.append(blk_entry)
             
         grouped = smart_group_bubbles(blocks_for_grouping)
         bubbles = []
@@ -4587,6 +6122,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     print(f"[+] Idioma predominante detectado: '{src_lang.upper()}'")
     
     cache = {}
+    if ocr_model_upgraded and os.path.exists(cache_file):
+        try: os.remove(cache_file)
+        except Exception: pass
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as cf:
@@ -4598,7 +6136,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 'traduza o texto original', 'como uma inteligência artificial', 'regras obrigatórias',
                 'system message', 'mensagem do sistema', 'invalid source language', 'mymemory warning',
                 'parece cocô', 'cons e que n ces', 'louco ou omi', 'meu e obi', 's aging', 'estou envelhecendo',
-                'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,'
+                'a s ihl', 'uh está bem', 'salário desta mulher é uma ganha', 'poo 6', 'fury a sama', 'fury a,',
+                '<x ', '</x>'
             ]
             for k, v in raw_cache.items():
                 v_clean = str(v).strip().lower()
@@ -4671,8 +6210,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         with open(cache_file, "w", encoding="utf-8") as cf:
             json.dump(cache, cf, ensure_ascii=False, indent=2)
-        # Salva novas traduções aprovadas na memória global de aprendizado
-        update_global_translation_memory(cache)
+        # Salva novas traduções aprovadas pela IA na memória global (nunca grava fallback de emergência)
+        if engine_type is not None:
+            fb_originals = (engine_opts or {}).get("_fallback_originals", set())
+            ai_approved_cache = {k: v for k, v in cache.items() if k not in fb_originals}
+            update_global_translation_memory(ai_approved_cache)
     except Exception as e:
         print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
 
@@ -5408,10 +6950,30 @@ def show_credits_dashboard(cfg=None):
             if resp.status == 200:
                 odata = json.loads(resp.read().decode("utf-8"))
                 models = [m.get("name") for m in odata.get("models", [])]
+                v_models = [m for m in models if is_ollama_vision_model_name(m)]
                 print(f"    - Status: ONLINE (100% Operacional)")
                 print(f"    - Modelos instalados: {', '.join(models) if models else 'Nenhum'}")
+                print(f"    - Modelos Vision:     {', '.join(v_models) if v_models else 'Nenhum detectado'}")
     except Exception:
         print(f"    - Status: OFFLINE (Nenhum servidor Ollama rodando nesta porta)")
+
+    # 4. GOOGLE GEMINI VISION (Opcional para OCR IA Vision Híbrido)
+    gem_keys = cfg.get("gemini_api_keys", [])
+    print(f"\n[4] GOOGLE GEMINI VISION (Opcional para OCR IA Vision Hibrido)")
+    if gem_keys:
+        for idx, k in enumerate(gem_keys):
+            masked_gem = k[:8] + "..." + k[-4:] if len(k) > 12 else "***"
+            try:
+                req_gm = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?key={k}")
+                with urllib.request.urlopen(req_gm, timeout=5) as resp:
+                    if resp.status == 200:
+                        print(f"    Chave #{idx+1}: {masked_gem} -> ATIVA (Modelo: {cfg.get('gemini_model', 'gemini-2.5-flash')})")
+            except urllib.error.HTTPError as e:
+                print(f"    Chave #{idx+1}: {masked_gem} -> HTTP {e.code}")
+            except Exception as e:
+                print(f"    Chave #{idx+1}: {masked_gem} -> Erro ({e})")
+    else:
+        print("    [i] Nenhuma chave Google Gemini cadastrada (OpenRouter/Ollama Vision funcionam mesmo assim).")
 
     print("\n" + "=" * 68)
 
@@ -5431,7 +6993,12 @@ if __name__ == "__main__":
             show_credits_dashboard()
             sys.exit(0)
             
-        if "--korean" in args or "--manhwa" in args:
+        if "--vision" in args or "--ai-vision" in args or "--ia-vision" in args:
+            chosen_mode = "ai_vision"
+            if "--vision" in args: args.remove("--vision")
+            if "--ai-vision" in args: args.remove("--ai-vision")
+            if "--ia-vision" in args: args.remove("--ia-vision")
+        elif "--korean" in args or "--manhwa" in args:
             chosen_mode = "korean"
             if "--korean" in args: args.remove("--korean")
             if "--manhwa" in args: args.remove("--manhwa")

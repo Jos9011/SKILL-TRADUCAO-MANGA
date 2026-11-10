@@ -2006,6 +2006,7 @@
                   <div class="pill-btn" onclick="setOption('ocr', 'rapidocr')">Universal</div>
                   <div class="pill-btn" onclick="setOption('ocr', 'mokuro')">Japonês</div>
                   <div class="pill-btn" onclick="setOption('ocr', 'korean')">Coreano</div>
+                  <div class="pill-btn" onclick="setOption('ocr', 'ai_vision')" title="Usa Detector Local de Balões + IA Vision (Gemini, OpenRouter ou Ollama Vision)">IA Vision</div>
                 </div>
               </div>
 
@@ -2169,7 +2170,7 @@
             </button>
           </div>
           <p style="font-size: 0.85rem; color: var(--text-subdued); margin-bottom: 16px; line-height: 1.5;">
-            Suas chaves de IA (Groq e OpenRouter) são sincronizadas com seu <strong>Google Drive</strong> (pasta <code>.manga_studio</code>) e salvas no armazenamento permanente deste navegador. Você <strong>nunca mais precisará pegar nova chave na Groq</strong> toda vez que abrir o site ou o Colab!
+            Suas chaves de IA (Groq, OpenRouter e Gemini) são sincronizadas com seu <strong>Google Drive</strong> (pasta <code>.manga_studio</code>) e salvas no armazenamento permanente deste navegador. Você <strong>nunca mais precisará reconfigurar suas chaves</strong> toda vez que abrir o site ou o Colab!
           </p>
 
           <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
@@ -2287,22 +2288,80 @@
           </div>
         </div>
 
-        <!-- CARD 3: OLLAMA E GERAL -->
-        <div class="quota-card" style="max-width: 600px; width: 100%;">
-          <div class="quota-card-header">
-            <h3>🦙 Servidor Ollama (Local ou Google Colab)</h3>
+        <div class="settings-providers-grid" style="margin-bottom: 24px;">
+          <!-- CARD 3: IA VISION HÍBRIDO & GOOGLE GEMINI -->
+          <div class="quota-card">
+            <div class="quota-card-header">
+              <h3>👁️ IA Vision (OCR Híbrido)</h3>
+              <span class="meta-badge highlight">Gemini • OpenRouter • Ollama</span>
+            </div>
+            <p style="font-size: 0.84rem; color: var(--text-subdued); margin-bottom: 14px; line-height: 1.45;">
+              Extrai texto estilizado ou difícil direto da imagem com detector local de balões. Se alguma página +18 for bloqueada na nuvem, aciona fallback OCR automático.
+            </p>
+
+            <div style="margin-bottom: 16px;">
+              <label class="option-label">Prioridade do Motor Vision</label>
+              <select id="cfg-vision-provider" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-size: 0.88rem;">
+                <option value="auto">Automático (Gemini → OpenRouter → Ollama Vision)</option>
+                <option value="gemini">Google Gemini Vision (Requer chave AIza...)</option>
+                <option value="openrouter">OpenRouter Vision (Usa suas chaves OpenRouter)</option>
+                <option value="ollama">Ollama Vision (Local / GPU Colab)</option>
+              </select>
+            </div>
+
+            <span class="option-label">Chaves Google Gemini AI Studio (Opcional)</span>
+            <div class="key-list" id="gemini-key-list">
+              <!-- Renderizado via JS -->
+            </div>
+
+            <div class="add-key-form">
+              <input type="text" id="new-gemini-key" placeholder="Cole chave Gemini (AIza...)">
+              <button class="btn-secondary" onclick="addGeminiKey()">+ Adicionar</button>
+            </div>
+
+            <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-subtle); display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 12px;">
+              <div>
+                <label class="option-label">Modelo Gemini Vision</label>
+                <select id="cfg-gemini-model" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 9px 12px; border-radius: 8px; color: white; outline: none; font-size: 0.85rem;">
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recomendado)</option>
+                  <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (Ultra-Rápido)</option>
+                  <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                </select>
+              </div>
+              <div>
+                <label class="option-label">Modelo OpenRouter Vision</label>
+                <select id="cfg-openrouter-vision-model" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 9px 12px; border-radius: 8px; color: white; outline: none; font-size: 0.85rem;">
+                  <option value="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free">Nemotron 3 Nano Omni 30B (Free)</option>
+                  <option value="google/gemma-4-31b-it:free">Gemma 4 31B Vision (Free)</option>
+                  <option value="dots-studio/dots-3-note-preview:free">Dots-3 Vision Preview (Free)</option>
+                  <option value="google/gemma-4-26b-a4b-it:free">Gemma 4 26B A4B Vision (Free)</option>
+                  <option value="nvidia/nemotron-3.5-super-vl:free">Nemotron 3.5 Super VL (Free)</option>
+                </select>
+              </div>
+            </div>
           </div>
-          <div style="margin-bottom: 16px;">
-            <label class="option-label">Endereço do Host Ollama</label>
-            <input type="text" id="cfg-ollama-host" value="http://localhost:11434" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-family: 'JetBrains Mono', monospace; font-size: 0.88rem;">
-          </div>
-          <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-            <button class="btn-secondary" onclick="testOllamaHost()">Testar Conexão Ollama</button>
-            <span id="ollama-test-result" style="font-size: 0.84rem; color: var(--text-subdued);"></span>
+
+          <!-- CARD 4: OLLAMA E GERAL -->
+          <div class="quota-card">
+            <div class="quota-card-header">
+              <h3>🦙 Servidor Ollama (Local ou Google Colab)</h3>
+            </div>
+            <div style="margin-bottom: 16px;">
+              <label class="option-label">Endereço do Host Ollama</label>
+              <input type="text" id="cfg-ollama-host" value="http://localhost:11434" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-family: 'JetBrains Mono', monospace; font-size: 0.88rem;">
+            </div>
+            <div style="margin-bottom: 16px;">
+              <label class="option-label">Modelo Ollama Vision (Opcional)</label>
+              <input type="text" id="cfg-ollama-vision-model" placeholder="Automático (ex: qwen2.5vl:7b, gemma3:12b, llava)" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
+            </div>
+            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+              <button class="btn-secondary" onclick="testOllamaHost()">Testar Conexão Ollama</button>
+              <span id="ollama-test-result" style="font-size: 0.84rem; color: var(--text-subdued);"></span>
+            </div>
           </div>
         </div>
 
-        <!-- CARD 4: SOBRE O MANGA STUDIO -->
+        <!-- CARD 5: SOBRE O MANGA STUDIO -->
         <div class="quota-card" style="margin-top: 24px; border: 1px solid rgba(29, 185, 84, 0.25); background: linear-gradient(180deg, #181818 0%, #121212 100%);">
           <div class="quota-card-header">
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
@@ -2312,7 +2371,7 @@
             <span class="meta-badge highlight">Release Oficial</span>
           </div>
           <p style="font-size: 0.88rem; color: var(--text-subdued); margin-bottom: 16px; line-height: 1.6;">
-            <strong>Manga Studio {{ app_version | default('v0.2.0 Beta') }}</strong> é uma plataforma moderna e completa de tradução de mangás e quadrinhos em alta fidelidade com <strong>Arquitetura Cooperativa de Duas IAs</strong> (Mapeamento Espacial de Balões + Sintetizador Narrativo & Dialetal).
+            <strong>Manga Studio {{ app_version | default('v0.2.0 Beta') }}</strong> é uma plataforma moderna e completa de tradução de mangás, manhwas e PDFs em alta fidelidade com <strong>Arquitetura Cooperativa de Duas IAs</strong>, <strong>OCR Coreano PP-OCRv5</strong> e modo <strong>IA Vision Híbrido</strong>.
           </p>
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 14px; font-size: 0.82rem;">
             <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--border-subtle);">
@@ -2614,15 +2673,33 @@
       }
     }
 
+    let inspectRequestSeq = 0;
+    let isInspectingFolder = false;
+
     async function inspectFolder(path) {
+      const reqId = ++inspectRequestSeq;
+      isInspectingFolder = true;
+      currentSelectedManga = null;
+      const startBtn = document.getElementById('btn-start');
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.style.opacity = '0.5';
+      }
+      const selCard = document.getElementById('selection-card');
+      const dz = document.getElementById('dropzone');
+      if (selCard) selCard.style.display = 'none';
+      if (dz) dz.style.display = 'block';
+      const langBadge = document.getElementById('selected-lang-badge');
+      if (langBadge) langBadge.innerText = 'Detectando idioma...';
+
       const isArchive = /\.(zip|cbz|pdf)$/i.test(path || '');
       const pBox = document.getElementById('upload-progress-box');
       const pText = document.getElementById('upload-status-text');
       const pFill = document.getElementById('upload-progress-fill');
       const pPct = document.getElementById('upload-pct-text');
-      if (isArchive && pBox) {
+      if (pBox) {
         pBox.style.display = 'block';
-        if (pText) pText.innerText = 'Extraindo páginas do arquivo... Por favor, aguarde.';
+        if (pText) pText.innerText = isArchive ? 'Extraindo páginas do arquivo... Por favor, aguarde.' : 'Analisando obra e detectando idioma (OCR)...';
         if (pFill) pFill.style.width = '100%';
         if (pPct) pPct.innerText = '⏳';
       }
@@ -2633,34 +2710,59 @@
           body: JSON.stringify({ path: path })
         });
         const data = await res.json();
+        if (reqId !== inspectRequestSeq) return;
+        isInspectingFolder = false;
         if (pBox) pBox.style.display = 'none';
         if (data.valid) {
           currentSelectedManga = data;
-          document.getElementById('dropzone').style.display = 'none';
-          document.getElementById('selection-card').style.display = 'flex';
+          if (dz) dz.style.display = 'none';
+          if (selCard) selCard.style.display = 'flex';
 
           document.getElementById('selected-manga-title').innerText = data.name;
           document.getElementById('selected-pages-badge').innerText = `${data.pages} Páginas`;
-          document.getElementById('selected-lang-badge').innerText = `Motor: ${data.detected_label}`;
+          if (langBadge) langBadge.innerText = `Motor: ${data.detected_label}`;
           document.getElementById('selected-path-badge').innerText = data.path;
           document.getElementById('manga-preview-img').src = `/api/thumb?path=${encodeURIComponent(data.first_img)}`;
 
           // Atualiza capa no player e card ao vivo
           updatePlayerCover(data.first_img, data.name, `${data.pages} páginas • Pronto para traduzir`);
 
-          // Seta valor sugerido de OCR
-          setOption('ocr', data.detected_engine);
+          // Seta valor sugerido de OCR somente após inspeção validada
+          setOption('ocr', data.detected_engine || 'auto');
+          if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.style.opacity = '1';
+          }
         } else {
+          if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.style.opacity = '1';
+          }
           alert(data.error || "Pasta inválida");
         }
       } catch (e) {
+        if (reqId !== inspectRequestSeq) return;
+        isInspectingFolder = false;
         if (pBox) pBox.style.display = 'none';
+        if (startBtn) {
+          startBtn.disabled = false;
+          startBtn.style.opacity = '1';
+        }
         console.error("Erro ao inspecionar pasta:", e);
       }
     }
 
     function resetSelection() {
+      inspectRequestSeq++;
+      isInspectingFolder = false;
       currentSelectedManga = null;
+      const pBox = document.getElementById('upload-progress-box');
+      if (pBox) pBox.style.display = 'none';
+      const startBtn = document.getElementById('btn-start');
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.style.opacity = '1';
+      }
       document.getElementById('selection-card').style.display = 'none';
       document.getElementById('dropzone').style.display = 'block';
     }
@@ -2939,7 +3041,7 @@
       const container = document.getElementById(selectorId);
       if (container) {
         container.querySelectorAll('.pill-btn').forEach(btn => btn.classList.remove('active'));
-        const index = type === 'ocr' ? ['auto', 'rapidocr', 'mokuro', 'korean'].indexOf(value) :
+        const index = type === 'ocr' ? ['auto', 'rapidocr', 'mokuro', 'korean', 'ai_vision'].indexOf(value) :
                       type === 'adult' ? (value ? 0 : 1) :
                       ['groq', 'ollama', 'openrouter'].indexOf(value);
         if (index >= 0 && container.children[index]) {
@@ -2950,7 +3052,7 @@
 
     // START TRANSLATION
     async function startTranslation() {
-      if (!currentSelectedManga) return;
+      if (isInspectingFolder || !currentSelectedManga) return;
       const btn = document.getElementById('btn-start');
       btn.disabled = true;
       btn.style.opacity = '0.6';
@@ -3448,7 +3550,44 @@
           });
         }
 
-        // 3. OLLAMA CARD
+        // 3. GOOGLE GEMINI VISION CARD
+        const gemData = d.gemini || {};
+        const gemKeys = gemData.keys || [];
+        if (gemKeys.length === 0) {
+          html += `
+            <div class="quota-card">
+              <div class="quota-card-header">
+                <h3>👁️ Google Gemini Vision</h3>
+                <span class="meta-badge">Opcional</span>
+              </div>
+              <p style="font-size: 0.84rem; color: var(--text-subdued); line-height: 1.45;">
+                Nenhuma chave Gemini cadastrada. O modo <strong>IA Vision</strong> funciona mesmo assim usando suas chaves OpenRouter ou Ollama Vision!
+              </p>
+            </div>
+          `;
+        } else {
+          gemKeys.forEach((gk, idx) => {
+            html += `
+              <div class="quota-card">
+                <div class="quota-card-header">
+                  <h3>👁️ Gemini Vision • Chave #${gk.index || (idx + 1)}</h3>
+                  <span class="meta-badge ${gk.ok ? 'highlight' : ''}" style="${gk.ok ? '' : 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);'}">
+                    ${gk.ok ? 'Pronta' : 'Erro'}
+                  </span>
+                </div>
+                <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 10px;">
+                  Chave: <code>${escapeHtml(gk.key || 'AIza...')}</code>
+                </div>
+                <div style="font-size: 0.82rem; color: var(--text-subdued);">
+                  Modelo: <strong style="color: white;">${escapeHtml(gemData.active_model || 'gemini-2.5-flash')}</strong> • ${escapeHtml(gk.msg || (gk.ok ? 'Operacional' : 'Verifique a chave'))}
+                </div>
+              </div>
+            `;
+          });
+        }
+
+        // 4. OLLAMA CARD
+        const olVisModels = (d.ollama && Array.isArray(d.ollama.vision_models)) ? d.ollama.vision_models : [];
         html += `
           <div class="quota-card">
             <div class="quota-card-header">
@@ -3457,8 +3596,11 @@
                 ${d.ollama.status.toUpperCase()}
               </span>
             </div>
-            <p style="font-size: 0.85rem; color: var(--text-subdued); margin-bottom: 10px;">
-              Modelos instalados: ${d.ollama.models.length ? d.ollama.models.join(', ') : 'Nenhum servidor rodando localmente'}
+            <p style="font-size: 0.85rem; color: var(--text-subdued); margin-bottom: 8px;">
+              Modelos instalados: ${d.ollama.models.length ? escapeHtml(d.ollama.models.join(', ')) : 'Nenhum servidor rodando localmente'}
+            </p>
+            <p style="font-size: 0.8rem; color: var(--text-muted);">
+              Modelos IA Vision: ${olVisModels.length ? `<strong style="color: var(--spotify-green);">${escapeHtml(olVisModels.join(', '))}</strong>` : 'Nenhum detectado (ex: qwen2.5vl:7b, gemma3:12b, llava)'}
             </p>
           </div>
         `;
@@ -3527,8 +3669,27 @@
       openrouter_api_keys: [],
       openrouter_api_key: '',
       openrouter_model: 'nvidia/nemotron-3.5-lightning:free',
-      ollama_host: 'http://localhost:11434'
+      openrouter_vision_model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      gemini_api_keys: [],
+      gemini_api_key: '',
+      gemini_model: 'gemini-2.5-flash',
+      ollama_host: 'http://localhost:11434',
+      ollama_vision_model: '',
+      vision_provider: 'auto'
     };
+
+    function setSelectValueSafe(elId, val, fallbackVal) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const v = val || fallbackVal;
+      if (v && !Array.from(el.options).some(o => o.value === v)) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.text = v + ' (Personalizado)';
+        el.appendChild(opt);
+      }
+      el.value = v;
+    }
 
     async function loadConfig() {
       try {
@@ -3550,10 +3711,23 @@
           currentConfig.openrouter_api_keys.unshift(currentConfig.openrouter_api_key);
         }
 
+        // Normaliza chaves Google Gemini
+        if (!Array.isArray(currentConfig.gemini_api_keys)) {
+          currentConfig.gemini_api_keys = currentConfig.gemini_api_key ? [currentConfig.gemini_api_key] : [];
+        } else if (currentConfig.gemini_api_key && !currentConfig.gemini_api_keys.includes(currentConfig.gemini_api_key)) {
+          currentConfig.gemini_api_keys.unshift(currentConfig.gemini_api_key);
+        }
+
         renderKeyLists();
-        document.getElementById('cfg-groq-model').value = currentConfig.groq_model || 'qwen/qwen3.8-27b';
-        document.getElementById('cfg-openrouter-model').value = currentConfig.openrouter_model || 'nvidia/nemotron-3.5-lightning:free';
+        setSelectValueSafe('cfg-groq-model', currentConfig.groq_model, 'qwen/qwen3.8-27b');
+        setSelectValueSafe('cfg-openrouter-model', currentConfig.openrouter_model, 'nvidia/nemotron-3.5-lightning:free');
+        setSelectValueSafe('cfg-vision-provider', currentConfig.vision_provider, 'auto');
+        setSelectValueSafe('cfg-gemini-model', currentConfig.gemini_model, 'gemini-2.5-flash');
+        setSelectValueSafe('cfg-openrouter-vision-model', currentConfig.openrouter_vision_model, 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free');
         document.getElementById('cfg-ollama-host').value = currentConfig.ollama_host || 'http://localhost:11434';
+        if (document.getElementById('cfg-ollama-vision-model')) {
+          document.getElementById('cfg-ollama-vision-model').value = currentConfig.ollama_vision_model || '';
+        }
         if (document.getElementById('cfg-raw-mangas-dir')) {
           document.getElementById('cfg-raw-mangas-dir').value = currentConfig.raw_mangas_dir || 'C:\\Users\\ja329\\OneDrive\\Documentos\\MANGAS';
         }
@@ -3562,18 +3736,48 @@
         }
 
         // Auto-sincronização com o perfil permanente salvo no navegador (localStorage)
-        const hasServerKeys = (currentConfig.groq_api_keys && currentConfig.groq_api_keys.length > 0) || (currentConfig.openrouter_api_keys && currentConfig.openrouter_api_keys.length > 0);
+        const hasServerKeys = (currentConfig.groq_api_keys && currentConfig.groq_api_keys.length > 0) ||
+                              (currentConfig.openrouter_api_keys && currentConfig.openrouter_api_keys.length > 0) ||
+                              (currentConfig.gemini_api_keys && currentConfig.gemini_api_keys.length > 0);
         if (!hasServerKeys) {
           const savedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
           if (savedProfileRaw) {
             try {
               const p = JSON.parse(savedProfileRaw);
-              if (p.groq_api_keys && p.groq_api_keys.length > 0) {
-                currentConfig.groq_api_keys = p.groq_api_keys;
-                currentConfig.groq_api_key = p.groq_api_keys[0];
+              const hasLocalProfileKeys = (p.groq_api_keys && p.groq_api_keys.length > 0) ||
+                                          (p.openrouter_api_keys && p.openrouter_api_keys.length > 0) ||
+                                          (p.gemini_api_keys && p.gemini_api_keys.length > 0);
+              if (hasLocalProfileKeys) {
+                if (p.groq_api_keys && p.groq_api_keys.length > 0) {
+                  currentConfig.groq_api_keys = p.groq_api_keys;
+                  currentConfig.groq_api_key = p.groq_api_keys[0];
+                }
                 if (p.openrouter_api_keys && p.openrouter_api_keys.length > 0) {
                   currentConfig.openrouter_api_keys = p.openrouter_api_keys;
                   currentConfig.openrouter_api_key = p.openrouter_api_keys[0];
+                }
+                if (p.gemini_api_keys && p.gemini_api_keys.length > 0) {
+                  currentConfig.gemini_api_keys = p.gemini_api_keys;
+                  currentConfig.gemini_api_key = p.gemini_api_keys[0];
+                }
+                if (p.groq_model) currentConfig.groq_model = p.groq_model;
+                if (p.openrouter_model) currentConfig.openrouter_model = p.openrouter_model;
+                if (p.openrouter_vision_model) currentConfig.openrouter_vision_model = p.openrouter_vision_model;
+                if (p.gemini_model) currentConfig.gemini_model = p.gemini_model;
+                if (p.ollama_host) currentConfig.ollama_host = p.ollama_host;
+                if (typeof p.ollama_vision_model === 'string') currentConfig.ollama_vision_model = p.ollama_vision_model;
+                if (p.vision_provider) currentConfig.vision_provider = p.vision_provider;
+
+                setSelectValueSafe('cfg-groq-model', currentConfig.groq_model, 'qwen/qwen3.8-27b');
+                setSelectValueSafe('cfg-openrouter-model', currentConfig.openrouter_model, 'nvidia/nemotron-3.5-lightning:free');
+                setSelectValueSafe('cfg-vision-provider', currentConfig.vision_provider, 'auto');
+                setSelectValueSafe('cfg-gemini-model', currentConfig.gemini_model, 'gemini-2.5-flash');
+                setSelectValueSafe('cfg-openrouter-vision-model', currentConfig.openrouter_vision_model, 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free');
+                if (document.getElementById('cfg-ollama-host')) {
+                  document.getElementById('cfg-ollama-host').value = currentConfig.ollama_host || 'http://localhost:11434';
+                }
+                if (document.getElementById('cfg-ollama-vision-model')) {
+                  document.getElementById('cfg-ollama-vision-model').value = currentConfig.ollama_vision_model || '';
                 }
                 fetch('/api/config', {
                   method: 'POST',
@@ -3623,7 +3827,7 @@
                 <span class="key-code">${escapeHtml(masked)}</span>
               </div>
               <div class="key-actions">
-                <button class="btn-small" onclick="testKey('groq', '${k}', this)">⚡ Testar</button>
+                <button class="btn-small" onclick="testKey('groq', '${escapeQuotes(k)}', this)">⚡ Testar</button>
                 <button class="btn-small danger" onclick="removeGroqKey(${idx})">Remover</button>
               </div>
             </div>
@@ -3645,12 +3849,36 @@
                 <span class="key-code">${escapeHtml(masked)}</span>
               </div>
               <div class="key-actions">
-                <button class="btn-small" onclick="testKey('openrouter', '${k}', this)">⚡ Testar</button>
+                <button class="btn-small" onclick="testKey('openrouter', '${escapeQuotes(k)}', this)">⚡ Testar</button>
                 <button class="btn-small danger" onclick="removeOpenRouterKey(${idx})">Remover</button>
               </div>
             </div>
           `;
         }).join('');
+      }
+
+      // 3. GOOGLE GEMINI KEYS
+      const gemList = document.getElementById('gemini-key-list');
+      if (gemList) {
+        if (!currentConfig.gemini_api_keys || currentConfig.gemini_api_keys.length === 0) {
+          gemList.innerHTML = '<div style="color: var(--text-muted); font-size: 0.84rem; padding: 6px 0;">Opcional — cadastre chave Google AI Studio ou use OpenRouter/Ollama Vision.</div>';
+        } else {
+          gemList.innerHTML = currentConfig.gemini_api_keys.map((k, idx) => {
+            const masked = k.length > 14 ? k.substring(0, 8) + '...' + k.substring(k.length - 4) : k;
+            return `
+              <div class="key-item">
+                <div class="key-meta">
+                  <span class="meta-badge highlight">Gemini #${idx + 1}</span>
+                  <span class="key-code">${escapeHtml(masked)}</span>
+                </div>
+                <div class="key-actions">
+                  <button class="btn-small" onclick="testKey('gemini', '${escapeQuotes(k)}', this)">⚡ Testar</button>
+                  <button class="btn-small danger" onclick="removeGeminiKey(${idx})">Remover</button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
       }
     }
 
@@ -3700,6 +3928,37 @@
       if (confirm("Deseja remover esta chave do OpenRouter?")) {
         currentConfig.openrouter_api_keys.splice(idx, 1);
         currentConfig.openrouter_api_key = currentConfig.openrouter_api_keys[0] || '';
+        renderKeyLists();
+      }
+    }
+
+    function addGeminiKey() {
+      const input = document.getElementById('new-gemini-key');
+      if (!input) return;
+      const val = input.value.trim();
+      if (!val) return;
+      if (val.startsWith('gsk_') || val.startsWith('sk-or-')) {
+        alert("Esta chave pertence à Groq/OpenRouter, não ao Google Gemini (que começa com 'AIza...').");
+        return;
+      }
+      if (!val.startsWith('AIza')) {
+        if (!confirm("Esta chave não começa com 'AIza'. Deseja adicionar mesmo assim?")) return;
+      }
+      if (!Array.isArray(currentConfig.gemini_api_keys)) currentConfig.gemini_api_keys = [];
+      if (currentConfig.gemini_api_keys.includes(val)) {
+        alert("Esta chave Gemini já está cadastrada!");
+        return;
+      }
+      currentConfig.gemini_api_keys.push(val);
+      currentConfig.gemini_api_key = currentConfig.gemini_api_keys[0];
+      input.value = '';
+      renderKeyLists();
+    }
+
+    function removeGeminiKey(idx) {
+      if (confirm("Deseja remover esta chave Google Gemini?")) {
+        currentConfig.gemini_api_keys.splice(idx, 1);
+        currentConfig.gemini_api_key = currentConfig.gemini_api_keys[0] || '';
         renderKeyLists();
       }
     }
@@ -3805,6 +4064,15 @@
         currentConfig.groq_model = document.getElementById('cfg-groq-model').value;
         currentConfig.openrouter_model = document.getElementById('cfg-openrouter-model').value;
         currentConfig.ollama_host = document.getElementById('cfg-ollama-host').value.trim();
+
+        const visionProvEl = document.getElementById('cfg-vision-provider');
+        if (visionProvEl) currentConfig.vision_provider = visionProvEl.value || 'auto';
+        const gemModelEl = document.getElementById('cfg-gemini-model');
+        if (gemModelEl) currentConfig.gemini_model = gemModelEl.value || 'gemini-2.5-flash';
+        const orVisionEl = document.getElementById('cfg-openrouter-vision-model');
+        if (orVisionEl) currentConfig.openrouter_vision_model = orVisionEl.value || 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+        const olVisionEl = document.getElementById('cfg-ollama-vision-model');
+        if (olVisionEl) currentConfig.ollama_vision_model = olVisionEl.value.trim();
         
         const rawEl = document.getElementById('cfg-raw-mangas-dir');
         if (rawEl && rawEl.value.trim()) {
@@ -3815,8 +4083,13 @@
           currentConfig.translated_mangas_dir = transEl.value.trim();
         }
 
+        if (!Array.isArray(currentConfig.groq_api_keys)) currentConfig.groq_api_keys = [];
+        if (!Array.isArray(currentConfig.openrouter_api_keys)) currentConfig.openrouter_api_keys = [];
+        if (!Array.isArray(currentConfig.gemini_api_keys)) currentConfig.gemini_api_keys = [];
+
         currentConfig.groq_api_key = currentConfig.groq_api_keys[0] || '';
         currentConfig.openrouter_api_key = currentConfig.openrouter_api_keys[0] || '';
+        currentConfig.gemini_api_key = currentConfig.gemini_api_keys[0] || '';
 
         const saveRes = await fetch('/api/config', {
           method: 'POST',
@@ -3846,9 +4119,14 @@
         const payload = {
           groq_api_keys: cfg.groq_api_keys || [],
           openrouter_api_keys: cfg.openrouter_api_keys || [],
+          gemini_api_keys: cfg.gemini_api_keys || [],
           groq_model: cfg.groq_model || 'qwen/qwen3.8-27b',
           openrouter_model: cfg.openrouter_model || 'nvidia/nemotron-3.5-lightning:free',
+          openrouter_vision_model: cfg.openrouter_vision_model || 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+          gemini_model: cfg.gemini_model || 'gemini-2.5-flash',
           ollama_host: cfg.ollama_host || 'http://localhost:11434',
+          ollama_vision_model: cfg.ollama_vision_model || '',
+          vision_provider: cfg.vision_provider || 'auto',
           updated_at: new Date().toISOString()
         };
         localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(payload));
@@ -3883,8 +4161,17 @@
           currentConfig.openrouter_api_keys = profile.openrouter_api_keys;
           currentConfig.openrouter_api_key = profile.openrouter_api_keys[0];
         }
+        if (Array.isArray(profile.gemini_api_keys) && profile.gemini_api_keys.length > 0) {
+          currentConfig.gemini_api_keys = profile.gemini_api_keys;
+          currentConfig.gemini_api_key = profile.gemini_api_keys[0];
+        }
         if (profile.groq_model) currentConfig.groq_model = profile.groq_model;
         if (profile.openrouter_model) currentConfig.openrouter_model = profile.openrouter_model;
+        if (profile.openrouter_vision_model) currentConfig.openrouter_vision_model = profile.openrouter_vision_model;
+        if (profile.gemini_model) currentConfig.gemini_model = profile.gemini_model;
+        if (profile.ollama_host) currentConfig.ollama_host = profile.ollama_host;
+        if (typeof profile.ollama_vision_model === 'string') currentConfig.ollama_vision_model = profile.ollama_vision_model;
+        if (profile.vision_provider) currentConfig.vision_provider = profile.vision_provider;
 
         const res = await fetch('/api/config', {
           method: 'POST',
@@ -3892,6 +4179,17 @@
           body: JSON.stringify(currentConfig)
         });
         if (res.ok) {
+          setSelectValueSafe('cfg-groq-model', currentConfig.groq_model, 'qwen/qwen3.8-27b');
+          setSelectValueSafe('cfg-openrouter-model', currentConfig.openrouter_model, 'nvidia/nemotron-3.5-lightning:free');
+          setSelectValueSafe('cfg-vision-provider', currentConfig.vision_provider, 'auto');
+          setSelectValueSafe('cfg-gemini-model', currentConfig.gemini_model, 'gemini-2.5-flash');
+          setSelectValueSafe('cfg-openrouter-vision-model', currentConfig.openrouter_vision_model, 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free');
+          if (document.getElementById('cfg-ollama-host')) {
+            document.getElementById('cfg-ollama-host').value = currentConfig.ollama_host || 'http://localhost:11434';
+          }
+          if (document.getElementById('cfg-ollama-vision-model')) {
+            document.getElementById('cfg-ollama-vision-model').value = currentConfig.ollama_vision_model || '';
+          }
           alert('⚡ Perfil sincronizado com sucesso!\nSuas chaves de IA foram restauradas no servidor e estão prontas.');
           renderKeyLists();
           loadStatus();
@@ -3932,8 +4230,18 @@
             currentConfig.openrouter_api_keys = orKeys;
             currentConfig.openrouter_api_key = orKeys[0];
           }
+          if (imported.gemini_api_keys || imported.gemini_api_key) {
+            const gemKeys = imported.gemini_api_keys || [imported.gemini_api_key];
+            currentConfig.gemini_api_keys = gemKeys;
+            currentConfig.gemini_api_key = gemKeys[0];
+          }
           if (imported.groq_model) currentConfig.groq_model = imported.groq_model;
           if (imported.openrouter_model) currentConfig.openrouter_model = imported.openrouter_model;
+          if (imported.openrouter_vision_model) currentConfig.openrouter_vision_model = imported.openrouter_vision_model;
+          if (imported.gemini_model) currentConfig.gemini_model = imported.gemini_model;
+          if (imported.ollama_host) currentConfig.ollama_host = imported.ollama_host;
+          if (typeof imported.ollama_vision_model === 'string') currentConfig.ollama_vision_model = imported.ollama_vision_model;
+          if (imported.vision_provider) currentConfig.vision_provider = imported.vision_provider;
 
           saveBrowserProfile(currentConfig, false);
           await fetch('/api/config', {
@@ -3941,6 +4249,17 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(currentConfig)
           });
+          setSelectValueSafe('cfg-groq-model', currentConfig.groq_model, 'qwen/qwen3.8-27b');
+          setSelectValueSafe('cfg-openrouter-model', currentConfig.openrouter_model, 'nvidia/nemotron-3.5-lightning:free');
+          setSelectValueSafe('cfg-vision-provider', currentConfig.vision_provider, 'auto');
+          setSelectValueSafe('cfg-gemini-model', currentConfig.gemini_model, 'gemini-2.5-flash');
+          setSelectValueSafe('cfg-openrouter-vision-model', currentConfig.openrouter_vision_model, 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free');
+          if (document.getElementById('cfg-ollama-host')) {
+            document.getElementById('cfg-ollama-host').value = currentConfig.ollama_host || 'http://localhost:11434';
+          }
+          if (document.getElementById('cfg-ollama-vision-model')) {
+            document.getElementById('cfg-ollama-vision-model').value = currentConfig.ollama_vision_model || '';
+          }
           alert('✅ Perfil importado com sucesso!\nSuas chaves foram restauradas.');
           renderKeyLists();
           loadStatus();

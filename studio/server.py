@@ -415,6 +415,7 @@ def api_status():
         "vision": {
             "provider": cfg.get("vision_provider", "auto"),
             "gemini_model": cfg.get("gemini_model", "gemini-2.5-flash"),
+            "groq_vision_model": cfg.get("groq_vision_model", "qwen/qwen3.8-27b"),
             "openrouter_vision_model": cfg.get("openrouter_vision_model", auto_translate.OPENROUTER_DEFAULT_VISION_MODELS[0]),
             "ollama_vision_model": cfg.get("ollama_vision_model", "")
         }
@@ -529,7 +530,7 @@ def api_version():
         "release": f"Manga Studio {APP_VERSION_NAME}",
         "dual_engine": True,
         "features": [
-            "IA Vision Híbrido (Detector Geométrico Local + Gemini / OpenRouter / Ollama Vision)",
+            "IA Vision Híbrido (Detector Geométrico Local + Gemini / Groq / OpenRouter / Ollama Vision)",
             "OCR Especializado Coreano PP-OCRv5 & Suporte Nativo a PDF / CBZ / ZIP",
             "Cooperative Dual-Engine (Spatial Cartographer + Narrative Synthesizer)",
             "Delete Manga & Fast Library Management",

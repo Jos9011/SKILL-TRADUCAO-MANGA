@@ -2006,7 +2006,7 @@
                   <div class="pill-btn" onclick="setOption('ocr', 'rapidocr')">Universal</div>
                   <div class="pill-btn" onclick="setOption('ocr', 'mokuro')">Japonês</div>
                   <div class="pill-btn" onclick="setOption('ocr', 'korean')">Coreano</div>
-                  <div class="pill-btn" onclick="setOption('ocr', 'ai_vision')" title="Usa Detector Local de Balões + IA Vision (Gemini, OpenRouter ou Ollama Vision)">IA Vision</div>
+                  <div class="pill-btn" onclick="setOption('ocr', 'ai_vision')" title="Usa Detector Local de Balões + IA Vision (Gemini, Groq Qwen3.8, OpenRouter ou Ollama Vision)">IA Vision</div>
                 </div>
               </div>
 
@@ -2293,7 +2293,7 @@
           <div class="quota-card">
             <div class="quota-card-header">
               <h3>👁️ IA Vision (OCR Híbrido)</h3>
-              <span class="meta-badge highlight">Gemini • OpenRouter • Ollama</span>
+              <span class="meta-badge highlight">Gemini • Groq • OpenRouter • Ollama</span>
             </div>
             <p style="font-size: 0.84rem; color: var(--text-subdued); margin-bottom: 14px; line-height: 1.45;">
               Extrai texto estilizado ou difícil direto da imagem com detector local de balões. Se alguma página +18 for bloqueada na nuvem, aciona fallback OCR automático.
@@ -2302,7 +2302,8 @@
             <div style="margin-bottom: 16px;">
               <label class="option-label">Prioridade do Motor Vision</label>
               <select id="cfg-vision-provider" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-size: 0.88rem;">
-                <option value="auto">Automático (Gemini → OpenRouter → Ollama Vision)</option>
+                <option value="auto">Automático (Gemini → Groq Vision → OpenRouter → Ollama)</option>
+                <option value="groq">Groq Vision (Qwen 3.8 Multimodal - Zero Censura)</option>
                 <option value="gemini">Google Gemini Vision (Requer chave AIza...)</option>
                 <option value="openrouter">OpenRouter Vision (Usa suas chaves OpenRouter)</option>
                 <option value="ollama">Ollama Vision (Local / GPU Colab)</option>
@@ -2332,10 +2333,9 @@
                 <label class="option-label">Modelo OpenRouter Vision</label>
                 <select id="cfg-openrouter-vision-model" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 9px 12px; border-radius: 8px; color: white; outline: none; font-size: 0.85rem;">
                   <option value="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free">Nemotron 3 Nano Omni 30B (Free)</option>
-                  <option value="google/gemma-4-31b-it:free">Gemma 4 31B Vision (Free)</option>
-                  <option value="dots-studio/dots-3-note-preview:free">Dots-3 Vision Preview (Free)</option>
-                  <option value="google/gemma-4-26b-a4b-it:free">Gemma 4 26B A4B Vision (Free)</option>
                   <option value="nvidia/nemotron-3.5-super-vl:free">Nemotron 3.5 Super VL (Free)</option>
+                  <option value="google/gemma-4-31b-it:free">Gemma 4 31B Vision (Free)</option>
+                  <option value="google/gemma-4-26b-a4b-it:free">Gemma 4 26B A4B Vision (Free)</option>
                 </select>
               </div>
             </div>

@@ -3,6 +3,7 @@
   "groq_api_key": "gsk_sua-chave-groq-aqui",
   "groq_model": "openai/gpt-oss-120b",
   "groq_fallback_model": "qwen/qwen3.8-27b",
+  "groq_vision_model": "qwen/qwen3.8-27b",
   "openrouter_api_keys": [
     "sk-or-v1-sua-chave-primaria-aqui",
     "sk-or-v1-sua-chave-reserva-1-aqui"

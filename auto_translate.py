@@ -108,6 +108,7 @@ def load_config(cli_args=None):
         "groq_api_key": "",
         "groq_api_keys": [],
         "groq_model": "qwen/qwen3.8-27b",
+        "groq_vision_model": "qwen/qwen3.8-27b",
         "groq_fallback_model": "openai/gpt-oss-120b",
         "openrouter_api_key": "",
         "openrouter_api_keys": [],
@@ -147,6 +148,8 @@ def load_config(cli_args=None):
         cfg["groq_api_keys"] = [k.strip() for k in os.environ.get("GROQ_API_KEYS").split(",") if k.strip()]
     if os.environ.get("GROQ_MODEL"):
         cfg["groq_model"] = os.environ.get("GROQ_MODEL")
+    if os.environ.get("GROQ_VISION_MODEL"):
+        cfg["groq_vision_model"] = os.environ.get("GROQ_VISION_MODEL")
     if os.environ.get("OPENROUTER_API_KEY"):
         cfg["openrouter_api_key"] = os.environ.get("OPENROUTER_API_KEY")
     if os.environ.get("OPENROUTER_API_KEYS"):
@@ -5002,12 +5005,15 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progres
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
 
+GROQ_DEFAULT_VISION_MODELS = [
+    "qwen/qwen3.8-27b",
+]
+
 OPENROUTER_DEFAULT_VISION_MODELS = [
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
     "nvidia/nemotron-3.5-super-vl:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "dots-studio/dots-3-note-preview:free",
 ]
 
 GEMINI_DEFAULT_VISION_MODELS = [
@@ -5110,6 +5116,20 @@ def _detect_text_boxes_for_vision(det_engine, img_cv):
 
     blocks_for_grouping = [{"box": b, "text": "T"} for b in boxes_xyxy]
     grouped = smart_group_bubbles(blocks_for_grouping)
+    ih, iw = img_cv.shape[:2]
+    ref_w = max(1.0, float(min(iw, ih)))
+    min_side_thr = max(18.0, 0.0155 * ref_w)
+    min_area_thr = max(360.0, (0.0155 * ref_w) ** 2)
+    filtered_grouped = []
+    for b in grouped:
+        bx0, by0, bx1, by1 = b["box"]
+        bw = max(0.0, float(bx1 - bx0))
+        bh = max(0.0, float(by1 - by0))
+        rbs = b.get("raw_boxes") or [b["box"]]
+        if len(rbs) <= 1 and (max(bw, bh) < min_side_thr or (bw * bh) < min_area_thr):
+            continue
+        filtered_grouped.append(b)
+    grouped = filtered_grouped
     grouped.sort(key=lambda b: (int(b["box"][1] // 100), b["box"][0]))
     return grouped
 
@@ -5350,6 +5370,222 @@ def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
         raise last_err
     raise RuntimeError("Falha ao consultar Google Gemini Vision.")
 
+def _parse_ratelimit_duration(raw_val, default=15.0):
+    """Converte strings de reset/retry-after da API (ex: '18.15s', '1m12.4s', '350ms') em segundos."""
+    if raw_val is None:
+        return default
+    s = str(raw_val).strip().lower()
+    if not s:
+        return default
+    try:
+        return float(s)
+    except Exception:
+        pass
+    total = 0.0
+    matched = False
+    for pattern, mult in ((r'(\d+(?:\.\d+)?)h', 3600.0), (r'(\d+(?:\.\d+)?)m(?!s)', 60.0), (r'(\d+(?:\.\d+)?)ms', 0.001), (r'(\d+(?:\.\d+)?)s', 1.0)):
+        m = re.search(pattern, s)
+        if m:
+            total += float(m.group(1)) * mult
+            matched = True
+    return total if matched and total > 0.0 else default
+
+def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, timeout=45):
+    """
+    Executa OCR via Groq Vision (qwen/qwen3.8-27b) com rotação round-robin entre todas as chaves,
+    respeito estrito ao limite OTPM (<=850 tokens) e controle de janela TPM/RPM.
+    """
+    engine_opts = engine_opts if engine_opts is not None else {}
+    raw_pool = list(cfg.get("groq_api_keys") or [])
+    if cfg.get("groq_api_key") and cfg.get("groq_api_key") not in raw_pool:
+        raw_pool.insert(0, cfg.get("groq_api_key"))
+    key_pool = [
+        str(k).strip() for k in raw_pool
+        if str(k or "").strip() and not str(k or "").strip().startswith(("sk-or-", "AIza"))
+    ]
+    if not key_pool:
+        raise ValueError("Nenhuma chave Groq válida configurada para Vision.")
+
+    exhausted_keys = engine_opts.setdefault("groq_vision_exhausted_keys", set())
+    exhausted_models = engine_opts.setdefault("groq_vision_exhausted_models", set())
+    cooldown_map = engine_opts.setdefault("groq_vision_cooldowns", {})
+
+    cfg_groq_m = str(cfg.get("groq_model", "") or "").strip()
+    cand_models = [cfg.get("groq_vision_model")]
+    if "qwen3.8" in cfg_groq_m.lower():
+        cand_models.append(cfg_groq_m)
+    cand_models.extend(GROQ_DEFAULT_VISION_MODELS)
+
+    vision_models = []
+    for m in cand_models:
+        m_s = str(m or "").strip()
+        if m_s and m_s not in vision_models and m_s not in exhausted_models:
+            vision_models.append(m_s)
+    if not vision_models:
+        raise RuntimeError("Nenhum modelo Groq Vision disponível.")
+
+    eff_max_tokens = max(250, min(850, int(max_tokens or 720)))
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    last_err = None
+    n_keys = len(key_pool)
+
+    for _round in range(2):
+        now = time.time()
+        avail_indices = [i for i in range(n_keys) if i not in exhausted_keys]
+        if not avail_indices:
+            break
+
+        rr_start = int(engine_opts.get("groq_vision_rr_idx", 0) or 0) % n_keys
+        ordered_indices = [(rr_start + off) % n_keys for off in range(n_keys)]
+        ordered_indices = [i for i in ordered_indices if i not in exhausted_keys]
+
+        made_attempt = False
+        for idx_k in ordered_indices:
+            api_key = key_pool[idx_k]
+            for m_name in vision_models:
+                if m_name in exhausted_models:
+                    continue
+                cd_until = cooldown_map.get(f"{idx_k}:{m_name}", 0.0)
+                if cd_until > time.time():
+                    continue
+
+                made_attempt = True
+                use_reasoning_effort = "qwen3" in m_name.lower()
+                for _sub in range(2):
+                    payload = {
+                        "model": m_name,
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                            ]
+                        }],
+                        "temperature": 0.0,
+                        "max_tokens": eff_max_tokens
+                    }
+                    if use_reasoning_effort:
+                        payload["reasoning_effort"] = "none"
+
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                        }
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=timeout) as resp:
+                            res = json.loads(resp.read().decode("utf-8"))
+                            rem_tok_h = resp.headers.get("x-ratelimit-remaining-tokens")
+                            rst_tok_h = resp.headers.get("x-ratelimit-reset-tokens")
+                        if rem_tok_h is not None:
+                            try:
+                                if int(rem_tok_h) < 2300:
+                                    cd_sec = min(max(_parse_ratelimit_duration(rst_tok_h, 18.0), 4.0), 62.0)
+                                    cooldown_map[f"{idx_k}:{m_name}"] = time.time() + cd_sec
+                                else:
+                                    cooldown_map.pop(f"{idx_k}:{m_name}", None)
+                            except Exception:
+                                pass
+                        choices = res.get("choices") or []
+                        ch0 = choices[0] if choices and isinstance(choices[0], dict) else {}
+                        fin_reason = str(ch0.get("finish_reason", "")).lower()
+                        if fin_reason in ("content_filter", "safety"):
+                            raise VisionSafetyBlockedError(f"Groq Vision bloqueou resposta ({fin_reason}).")
+                        msg = ch0.get("message") or {}
+                        raw_out = _strip_think_tags(msg.get("content") or "")
+                        engine_opts["groq_vision_rr_idx"] = (idx_k + 1) % n_keys
+                        if raw_out.strip():
+                            return raw_out.strip()
+                        last_err = RuntimeError(f"Groq Vision '{m_name}' retornou conteúdo vazio.")
+                        break
+                    except VisionSafetyBlockedError:
+                        raise
+                    except urllib.error.HTTPError as e:
+                        err_body = ""
+                        try:
+                            err_body = e.read().decode("utf-8", errors="ignore")
+                        except Exception:
+                            pass
+                        err_low = err_body.lower()
+                        last_err = e
+                        if e.code in (401, 403):
+                            exhausted_keys.add(idx_k)
+                            break
+                        if e.code == 429:
+                            is_daily = any(tok in err_low for tok in ("tokens per day", "requests per day", " tpd", " rpd"))
+                            if is_daily:
+                                exhausted_keys.add(idx_k)
+                                break
+                            wait_sec = 16.0
+                            try:
+                                retry_h = e.headers.get("retry-after") or e.headers.get("x-ratelimit-reset-tokens")
+                                if retry_h:
+                                    wait_sec = _parse_ratelimit_duration(retry_h, 16.0) + 0.5
+                                else:
+                                    m_retry = re.search(r'try again in\s*([^\s.,;]+)', err_low)
+                                    if m_retry:
+                                        wait_sec = _parse_ratelimit_duration(m_retry.group(1), 16.0) + 0.5
+                            except Exception:
+                                pass
+                            cd_sec = min(max(wait_sec, 4.0), 62.0)
+                            cooldown_map[f"{idx_k}:{m_name}"] = time.time() + cd_sec
+                            break
+                        if e.code == 400:
+                            if use_reasoning_effort and "reasoning_effort" in err_low:
+                                use_reasoning_effort = False
+                                continue
+                            if any(tok in err_low for tok in ("safety", "policy", "prohibited", "nsfw")):
+                                raise VisionSafetyBlockedError(f"Groq Vision bloqueou imagem (HTTP 400).")
+                            if any(tok in err_low for tok in ("image", "multimodal", "vision", "model")):
+                                exhausted_models.add(m_name)
+                            break
+                        if e.code == 404:
+                            exhausted_models.add(m_name)
+                            break
+                        cooldown_map[f"{idx_k}:{m_name}"] = time.time() + 8.0
+                        break
+                    except Exception as e:
+                        last_err = e
+                        cooldown_map[f"{idx_k}:{m_name}"] = time.time() + 6.0
+                        break
+                if idx_k in exhausted_keys:
+                    break
+
+        rem_keys = [i for i in range(n_keys) if i not in exhausted_keys]
+        if not rem_keys or not vision_models or all(m in exhausted_models for m in vision_models):
+            break
+
+        # Se todas as chaves restantes entraram em janela curta de TPM, aguarda a liberação da próxima janela
+        soonest_until = None
+        now = time.time()
+        for idx_k in rem_keys:
+            for m_name in vision_models:
+                if m_name in exhausted_models:
+                    continue
+                t_cd = cooldown_map.get(f"{idx_k}:{m_name}", 0.0)
+                if soonest_until is None or t_cd < soonest_until:
+                    soonest_until = t_cd
+        if soonest_until is not None:
+            wait_s = max(1.0, soonest_until - now) + 0.5
+            if wait_s <= 64.0 and _round == 0:
+                print(f"[*] Groq Vision: janela TPM em pausa nas {len(rem_keys)} chave(s). Aguardando {wait_s:.1f}s...")
+                time.sleep(wait_s)
+                now_after = time.time()
+                for ck in list(cooldown_map.keys()):
+                    if cooldown_map[ck] <= now_after + 0.5:
+                        cooldown_map.pop(ck, None)
+                continue
+        if not made_attempt:
+            break
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Falha ao consultar Groq Vision.")
+
 def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
     """Executa OCR via OpenRouter Vision com cascata de modelos :free e rotação de chaves (sem gsk_)."""
     engine_opts = engine_opts if engine_opts is not None else {}
@@ -5395,10 +5631,10 @@ def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
                         ]
                     }],
                     "temperature": 0.0,
-                    "max_tokens": 3500
+                    "max_tokens": 2000
                 }
                 if use_reasoning_param:
-                    payload["reasoning"] = {"effort": "low"}
+                    payload["reasoning"] = {"enabled": False}
                 req = urllib.request.Request(
                     url,
                     data=json.dumps(payload).encode("utf-8"),
@@ -5430,9 +5666,12 @@ def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
                     if e.code in (401, 403) or "free-models-per-day" in err_low:
                         exhausted_or_keys.add(idx_k)
                         break
-                    if e.code == 400 and use_reasoning_param and "reasoning" in err_low:
-                        use_reasoning_param = False
-                        continue
+                    if e.code == 400:
+                        if use_reasoning_param and "reasoning" in err_low:
+                            use_reasoning_param = False
+                            continue
+                        exhausted_or_models.add(m_name)
+                        break
                     if e.code == 404:
                         exhausted_or_models.add(m_name)
                         break
@@ -5572,7 +5811,7 @@ def _build_vision_prompt_for_ids(box_ids):
         f"- DO NOT translate the text. Copy the exact original words/characters visible inside each box.\n"
         f"- Preserve punctuation (!, ?, ..., ~) and heart symbols (♡).\n"
         f"- Join lines inside the same box cleanly in natural reading order with spaces (or without spaces for Japanese/Chinese).\n"
-        f"- If a numbered box contains only artwork, shading or no readable text, set its value to \"\".\n"
+        f"- If a numbered box contains only artwork, shading, decorative UI icons/lines, or no readable dialogue/SFX text, set its value to \"\".\n"
         f"Respond ONLY with a valid JSON object containing keys {id_list_str}. Example:\n"
         f"{{\"{id_min}\": \"original text\"}}"
     )
@@ -5600,27 +5839,36 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
     raw_gem_keys = list(cfg.get("gemini_api_keys") or [])
     if cfg.get("gemini_api_key") and cfg.get("gemini_api_key") not in raw_gem_keys:
         raw_gem_keys.insert(0, cfg.get("gemini_api_key"))
+    raw_groq_keys = list(cfg.get("groq_api_keys") or [])
+    if cfg.get("groq_api_key") and cfg.get("groq_api_key") not in raw_groq_keys:
+        raw_groq_keys.insert(0, cfg.get("groq_api_key"))
     raw_or_keys = list(cfg.get("openrouter_api_keys") or [])
     if cfg.get("openrouter_api_key") and cfg.get("openrouter_api_key") not in raw_or_keys:
         raw_or_keys.insert(0, cfg.get("openrouter_api_key"))
+
     has_gemini = bool([k for k in raw_gem_keys if str(k).strip() and not str(k).strip().startswith(("gsk_", "sk-or-"))])
+    has_groq = bool([k for k in raw_groq_keys if str(k).strip() and not str(k).strip().startswith(("sk-or-", "AIza"))])
     has_openrouter = bool([k for k in raw_or_keys if str(k).strip() and not str(k).strip().startswith("gsk_")])
 
     if vis_pref == "gemini":
-        chain = ["gemini", "openrouter", "ollama"]
+        chain = ["gemini", "groq", "openrouter", "ollama"]
+    elif vis_pref == "groq":
+        chain = ["groq", "gemini", "openrouter", "ollama"]
     elif vis_pref == "openrouter":
-        chain = ["openrouter", "gemini", "ollama"]
+        chain = ["openrouter", "groq", "gemini", "ollama"]
     elif vis_pref == "ollama":
-        chain = ["ollama", "gemini", "openrouter"]
+        chain = ["ollama", "groq", "gemini", "openrouter"]
     elif str(cfg.get("provider", "auto")).lower() == "ollama":
-        chain = ["ollama", "gemini", "openrouter"]
+        chain = ["ollama", "gemini", "groq", "openrouter"]
     else:
-        chain = ["gemini", "openrouter", "ollama"]
+        chain = ["gemini", "groq", "openrouter", "ollama"]
 
     # Remove provedores claramente não configurados na ordem rápida
     ordered_chain = []
     for p_name in chain:
         if p_name == "gemini" and not has_gemini:
+            continue
+        if p_name == "groq" and not has_groq:
             continue
         if p_name == "openrouter" and not has_openrouter:
             continue
@@ -5635,14 +5883,14 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
         b["vision_id"] = idx + 1
 
     extracted_map = {}
-    batch_size = 12
+    batch_size = 8
     used_backend = None
     vision_failed_all = False
 
     for b_start in range(0, len(grouped), batch_size):
         subset = grouped[b_start:b_start + batch_size]
         box_ids = [item["vision_id"] for item in subset]
-        b64_img = _render_vision_annotated_image(img_cv, subset)
+        b64_img = _render_vision_annotated_image(img_cv, subset, max_side=1450)
         prompt = _build_vision_prompt_for_ids(box_ids)
 
         chunk_parsed = None
@@ -5650,6 +5898,9 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
             try:
                 if backend == "gemini":
                     raw_resp = query_gemini_vision(b64_img, prompt, cfg, engine_opts=engine_opts)
+                elif backend == "groq":
+                    groq_max_tok = min(760, max(380, 95 * len(box_ids) + 120))
+                    raw_resp = query_groq_vision(b64_img, prompt, cfg, engine_opts=engine_opts, max_tokens=groq_max_tok)
                 elif backend == "openrouter":
                     raw_resp = query_openrouter_vision(b64_img, prompt, cfg, engine_opts=engine_opts)
                 elif backend == "ollama":
@@ -5658,7 +5909,8 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
                     continue
 
                 parsed = _parse_vision_ocr_json(raw_resp, box_ids)
-                if any(v for v in parsed.values()) or len(box_ids) <= 1:
+                has_json_keys = bool(re.search(r'"\d+"\s*:', str(raw_resp or "")))
+                if any(v for v in parsed.values()) or len(box_ids) <= 1 or has_json_keys:
                     chunk_parsed = parsed
                     used_backend = backend
                     break
@@ -5684,12 +5936,20 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
         print("[*] Vision AI sem extração válida nesta página -> Acionando fallback OCR clássico...")
         return _classic_fallback_page_blocks(img_cv, is_korean=fallback_is_korean, engine_opts=engine_opts), "classic_fallback"
 
+    ih, iw = img_cv.shape[:2]
+    ref_w = max(1.0, float(min(iw, ih)))
+    tiny_noise_area = (0.028 * ref_w) ** 2
+
     final_blocks = []
     for item in grouped:
         txt = extracted_map.get(str(item["vision_id"]), "").strip()
         if not txt:
             continue
         raw_bxs = item.get("raw_boxes") or [item["box"]]
+        bw = max(0.0, float(item["box"][2] - item["box"][0]))
+        bh = max(0.0, float(item["box"][3] - item["box"][1]))
+        if len(raw_bxs) <= 1 and (bw * bh) < tiny_noise_area and re.fullmatch(r'[a-z0-9.,:;\-_=+*~`\'"/\\↑↓←→°·]+', txt):
+            continue
         orig_lc = max(1, int(item.get("orig_line_count", len(raw_bxs))))
         final_blocks.append({
             "box": [int(round(float(v))) for v in item["box"]],
@@ -5726,10 +5986,16 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
     raw_gem_keys = list(cfg.get("gemini_api_keys") or [])
     if cfg.get("gemini_api_key") and cfg.get("gemini_api_key") not in raw_gem_keys:
         raw_gem_keys.insert(0, cfg.get("gemini_api_key"))
+    raw_groq_keys = list(cfg.get("groq_api_keys") or [])
+    if cfg.get("groq_api_key") and cfg.get("groq_api_key") not in raw_groq_keys:
+        raw_groq_keys.insert(0, cfg.get("groq_api_key"))
     raw_or_keys = list(cfg.get("openrouter_api_keys") or [])
     if cfg.get("openrouter_api_key") and cfg.get("openrouter_api_key") not in raw_or_keys:
         raw_or_keys.insert(0, cfg.get("openrouter_api_key"))
+
     has_gemini = bool([k for k in raw_gem_keys if str(k).strip() and not str(k).strip().startswith(("gsk_", "sk-or-"))])
+    groq_valid_keys = [k for k in raw_groq_keys if str(k).strip() and not str(k).strip().startswith(("sk-or-", "AIza"))]
+    has_groq = bool(groq_valid_keys)
     has_or = bool([k for k in raw_or_keys if str(k).strip() and not str(k).strip().startswith("gsk_")])
     ok_ov, ov_model = check_ollama_vision_available(
         host=cfg.get("ollama_host", "http://localhost:11434"),
@@ -5743,16 +6009,19 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
     active_backends = []
     if has_gemini:
         active_backends.append(f"Gemini Vision ({cfg.get('gemini_model', 'gemini-2.5-flash')})")
+    if has_groq:
+        active_backends.append(f"Groq Vision ({cfg.get('groq_vision_model', GROQ_DEFAULT_VISION_MODELS[0])} | {len(groq_valid_keys)} chave(s))")
     if has_or:
         active_backends.append(f"OpenRouter Vision ({cfg.get('openrouter_vision_model', OPENROUTER_DEFAULT_VISION_MODELS[0])})")
     if ok_ov and ov_model:
         active_backends.append(f"Ollama Vision ({ov_model})")
     if not active_backends:
-        print("[!] Aviso: Nenhum provedor IA Vision configurado/online (Gemini, OpenRouter ou Ollama Vision). Usando OCR clássico automático por página.")
+        print("[!] Aviso: Nenhum provedor IA Vision configurado/online (Gemini, Groq, OpenRouter ou Ollama Vision). Usando OCR clássico automático por página.")
     else:
         print(f"[*] Extraindo textos com IA Vision Híbrido -> Motores prontos: {' | '.join(active_backends)}")
 
     pages = []
+    mode_counts = {}
     for idx, img_path in enumerate(tqdm(img_files, desc="IA Vision OCR")):
         if progress_cb:
             try:
@@ -5797,6 +6066,7 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
                 pass
             korean_checked = True
 
+        mode_counts[mode_used] = mode_counts.get(mode_used, 0) + 1
         pages.append({
             "img_path": img_name,
             "img_width": int(img_cv.shape[1]),
@@ -5804,11 +6074,26 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
             "blocks": blocks
         })
 
-    mokuro_data = {
-        "version": "ai_vision",
-        "ocr_model": "ai_vision_hybrid",
-        "pages": pages
-    }
+    vision_pages = sum(cnt for m_k, cnt in mode_counts.items() if m_k not in ("classic_fallback", "empty"))
+    fallback_pages = mode_counts.get("classic_fallback", 0)
+    if mode_counts:
+        stats_str = ", ".join(f"{k}={v}" for k, v in mode_counts.items())
+        print(f"[+] IA Vision OCR concluído: {vision_pages}/{len(pages)} página(s) via Visão IA ({stats_str})")
+
+    if vision_pages == 0 and fallback_pages > 0:
+        mokuro_data = {
+            "version": "rapidocr_korean" if fallback_is_korean else "rapidocr",
+            "ocr_model": "ppocr_v5_korean" if fallback_is_korean else "rapidocr_default",
+            "vision_stats": mode_counts,
+            "pages": pages
+        }
+    else:
+        mokuro_data = {
+            "version": "ai_vision",
+            "ocr_model": "ai_vision_hybrid",
+            "vision_stats": mode_counts,
+            "pages": pages
+        }
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
     return True
@@ -5903,10 +6188,27 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     # Carrega glossário específico da obra se existir
     glossary = load_project_glossary(manga_dir)
     
-    # 0. Define o diretório de destino (respeitando configuração do usuário ou Google Drive se estiver no Colab)
+    # 0. Define o diretório de destino (respeitando pares MANGAS -> MANGAS [PT-BR] no Drive/Colab ou config do usuário)
     cfg_target = config.get("translated_mangas_dir") if config else None
     norm_manga_path = os.path.abspath(manga_dir).replace('\\', '/')
-    if cfg_target and os.path.isdir(cfg_target):
+    sibling_ptbr_dir = None
+    if "/MANGAS/" in f"/{norm_manga_path}/" or norm_manga_path.endswith("/MANGAS"):
+        parts = norm_manga_path.split('/')
+        m_idx = max(i for i, part in enumerate(parts) if part.upper() == "MANGAS")
+        parent_dir = '/'.join(parts[:m_idx])
+        if parent_dir:
+            cand_ptbr = os.path.join(parent_dir, "MANGAS [PT-BR]")
+            if os.path.exists(cand_ptbr) or "drive" in parent_dir.lower():
+                sibling_ptbr_dir = cand_ptbr
+
+    is_default_onedrive = bool(
+        cfg_target
+        and os.path.normcase(os.path.abspath(str(cfg_target))) == os.path.normcase(os.path.abspath(BASE_OUTPUT_DIR))
+    )
+    if sibling_ptbr_dir and (is_default_onedrive or not cfg_target or not os.path.isdir(cfg_target)):
+        base_drive_dir = sibling_ptbr_dir
+        os.makedirs(base_drive_dir, exist_ok=True)
+    elif cfg_target and os.path.isdir(cfg_target):
         base_drive_dir = cfg_target
     elif os.path.exists("/content/drive/MyDrive"):
         base_drive_dir = "/content/drive/MyDrive/MANGAS [PT-BR]"
@@ -6973,7 +7275,7 @@ def show_credits_dashboard(cfg=None):
             except Exception as e:
                 print(f"    Chave #{idx+1}: {masked_gem} -> Erro ({e})")
     else:
-        print("    [i] Nenhuma chave Google Gemini cadastrada (OpenRouter/Ollama Vision funcionam mesmo assim).")
+        print("    [i] Nenhuma chave Google Gemini cadastrada (Groq/OpenRouter/Ollama Vision funcionam mesmo assim).")
 
     print("\n" + "=" * 68)
 
@@ -7015,7 +7317,7 @@ if __name__ == "__main__":
         elif "--clean-cache" in args:
             force_ocr_flag = True
             args.remove("--clean-cache")
-        elif "--retranslate" in args or "--retrans" in args:
+        if "--retranslate" in args or "--retrans" in args:
             retranslate_flag = True
             if "--retranslate" in args: args.remove("--retranslate")
             if "--retrans" in args: args.remove("--retrans")

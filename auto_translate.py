@@ -393,7 +393,7 @@ def sanitize_lettering_text(text):
         '！': '!',
         '？': '?',
         '・': '·',
-        '♥': '♡',
+        '♥': '♥',
         '●': '·',
         '◎': '·',
         '▼': '·',
@@ -461,6 +461,42 @@ def get_glyph_font(char, primary_font):
 
 _LINE_WIDTH_CACHE = {}
 
+def _draw_vector_heart(draw, x, cy, box_w, filled=False, fill=(0, 0, 0), stroke_width=0, stroke_fill=(255, 255, 255)):
+    """Desenha corações '♡' (contorno) e '♥' (preenchido) vetorialmente sem depender de fontes de sistema."""
+    steps = 32
+    raw_pts = []
+    for i in range(steps):
+        t = (2.0 * math.pi * i) / float(steps)
+        hx = 16.0 * (math.sin(t) ** 3)
+        hy = -(13.0 * math.cos(t) - 5.0 * math.cos(2.0 * t) - 2.0 * math.cos(3.0 * t) - math.cos(4.0 * t))
+        raw_pts.append((hx, hy))
+    min_hx = min(p[0] for p in raw_pts)
+    max_hx = max(p[0] for p in raw_pts)
+    min_hy = min(p[1] for p in raw_pts)
+    max_hy = max(p[1] for p in raw_pts)
+    hw = max(6.0, float(box_w) * 0.80)
+    hh = hw * 0.90
+    mid_hx = 0.5 * (min_hx + max_hx)
+    mid_hy = 0.5 * (min_hy + max_hy)
+    cx = float(x) + 0.5 * float(box_w)
+    pts = [
+        (
+            cx + ((hx - mid_hx) / max(1e-5, max_hx - min_hx)) * hw,
+            float(cy) + ((hy - mid_hy) / max(1e-5, max_hy - min_hy)) * hh,
+        )
+        for hx, hy in raw_pts
+    ]
+    line_th = max(2, int(round(hw * 0.13)))
+    sw = max(0, int(stroke_width or 0))
+    if filled:
+        if sw > 0:
+            draw.line(pts + [pts[0]], fill=stroke_fill, width=max(3, sw * 2 + 1), joint="curve")
+        draw.polygon(pts, fill=fill)
+    else:
+        if sw > 0:
+            draw.line(pts + [pts[0]], fill=stroke_fill, width=line_th + sw * 2, joint="curve")
+        draw.line(pts + [pts[0]], fill=fill, width=line_th, joint="curve")
+
 def measure_manga_line_width(draw, line, font, stroke_width=0):
     """Mede a largura exata em pixels correspondente ao desenho caractere por caractere de draw_manga_text_line."""
     line = sanitize_lettering_text(line)
@@ -479,6 +515,10 @@ def measure_manga_line_width(draw, line, font, stroke_width=0):
         if c.isspace():
             bb = draw.textbbox((0, 0), " ", font=font)
             tot_w += max(4, bb[2] - bb[0])
+            continue
+        if c in ('♡', '♥'):
+            tot_w += max(8.0, float(fsize) * 0.88)
+            has_chars = True
             continue
         use_f = get_glyph_font(c, font)
         if use_f is None:
@@ -501,11 +541,15 @@ def draw_manga_text_line(draw, xy, line, font, fill=(0, 0, 0), stroke_width=0, s
     if not line:
         return
 
+    fsize = getattr(font, 'size', 20)
     char_widths = []
     for c in line:
         if c.isspace():
             bb = draw.textbbox((0, 0), " ", font=font)
             char_widths.append((c, font, max(4, bb[2] - bb[0])))
+            continue
+        if c in ('♡', '♥'):
+            char_widths.append((c, font, max(8.0, float(fsize) * 0.88)))
             continue
             
         use_f = get_glyph_font(c, font)
@@ -530,6 +574,10 @@ def draw_manga_text_line(draw, xy, line, font, fill=(0, 0, 0), stroke_width=0, s
 
     for c, use_f, w in char_widths:
         if c.isspace():
+            curr_x += w
+            continue
+        if c in ('♡', '♥'):
+            _draw_vector_heart(draw, curr_x, cy, w, filled=(c == '♥'), fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
             curr_x += w
             continue
         draw.text((curr_x, cy), c, font=use_f, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, anchor="lm")
@@ -603,14 +651,14 @@ def _filter_learning_rules_for_lang(lines, src_lang="auto"):
                     continue
 
         if is_asian_ko:
-            if re.search(r'[\u4e00-\u9fff]', s) and not re.search(r'[\uac00-\ud7af]', s):
+            if re.search(r'[\u4e00-\u9fff]', s) and not re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', s):
                 continue
-            if re.match(r'^[*•-]\s*[a-zA-Z0-9\s\'/\-~!?,]+->', s) and not re.search(r'[\uac00-\ud7af]', s):
+            if re.match(r'^[*•-]\s*[a-zA-Z0-9\s\'/\-~!?,]+->', s) and not re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', s):
                 continue
             if any(marker in s for marker in ("Boku no Toshiue", "Slave Is", "Come hang out:", "It's hard (", "Fr I END (", "MARCAS D'ÁGUA DE SCANS CHINESES")):
                 continue
         elif is_latin:
-            if re.search(r'[\u4e00-\u9fff\uac00-\ud7af\u3040-\u30ff]', s) and "-> " in s:
+            if re.search(r'[\u4e00-\u9fff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f\u3040-\u30ff]', s) and "-> " in s:
                 continue
             if any(marker in s for marker in ("Slave Is", "MARCAS D'ÁGUA DE SCANS CHINESES", "888 / 8888888")):
                 continue
@@ -684,7 +732,7 @@ def lookup_translation_memory(orig_text):
         return None
     clean_key = str(orig_text or "").strip()
     # Palavras curtas em Hangul/CJK dependem 100% do contexto da cena e não devem pular o tradutor contextual
-    if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', clean_key) and len(clean_key) <= 6:
+    if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', clean_key) and len(clean_key) <= 6:
         return None
     try:
         with open(GLOBAL_TRANSLATION_MEMORY, "r", encoding="utf-8") as f:
@@ -712,7 +760,7 @@ def update_global_translation_memory(new_translations):
         t_s = str(trans or "").strip()
         if not t_s or o_s == t_s or len(o_s) < 4:
             continue
-        if "<x " in t_s or "MYMEMORY" in t_s.upper() or re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', t_s):
+        if "<x " in t_s or "MYMEMORY" in t_s.upper() or re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', t_s):
             continue
         mem[o_s] = t_s
     try:
@@ -765,7 +813,7 @@ def detect_language_from_samples(texts):
         return "en-US"
         
     # Contagem de caracteres por categoria
-    ko_chars = len(re.findall(r'[\uac00-\ud7af\u1100-\u11ff]', full_str))
+    ko_chars = len(re.findall(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', full_str))
     jp_kana = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', full_str))
     cjk_ideographs = len(re.findall(r'[\u4e00-\u9fff]', full_str))
     latin_chars = len(re.findall(r'[a-zA-Z]', full_str))
@@ -952,7 +1000,183 @@ PRESERVE_WORDS = {
     'MADOROMI', 'MIYOBI', 'FURIYA', 'ROCHE'
 }
 
-VALID_2LETTER_WORDS = {'in', 'on', 'at', 'to', 'is', 'it', 'he', 'me', 'we', 'my', 'by', 'up', 'so', 'do', 'no', 'go', 'if', 'as', 'of', 'or', 'am', 'an', 'us'}
+VALID_2LETTER_WORDS = {
+    'in', 'on', 'at', 'to', 'is', 'it', 'he', 'me', 'we', 'my', 'by', 'up', 'so',
+    'do', 'no', 'go', 'if', 'as', 'of', 'or', 'am', 'an', 'us', 'oh', 'ah', 'eh',
+    'ok', 'hi', 'uh', 'ha', 'be'
+}
+
+_ENGLISH_CONTRACTIONS = {
+    "can't", "don't", "won't", "isn't", "aren't", "wasn't", "weren't", "haven't", "hasn't",
+    "hadn't", "didn't", "wouldn't", "couldn't", "shouldn't", "i'm", "i'll", "i've", "i'd",
+    "it's", "that's", "there's", "here's", "what's", "who's", "how's", "let's", "he's",
+    "she's", "you're", "they're", "we're", "you'd", "you'll", "you've", "we'll", "we've",
+    "they'll", "they've", "they'd", "she'll", "she'd", "he'll", "he'd", "that'd", "what'd",
+    "who'd", "how'll"
+}
+
+_OCR_SFX_PRESERVE = {
+    "SAKU", "GLUP", "SHING", "SNICK", "THUMP", "SLASH", "GASP",
+    "SIGH", "PANT", "BOING", "SPLASH", "CLAP"
+}
+
+def _split_glued_latin_token(token, lm):
+    """Separa com precisão palavras e contrações coladas pelo OCR sem quebrar nomes próprios ou sufixos."""
+    if not lm or not wordninja or not token or len(token) < 3:
+        return token
+    m = re.match(r'^([^A-Za-z]*)(.*?)([^A-Za-z]*)$', token)
+    if not m:
+        return token
+    p_str, core, s_str = m.group(1), m.group(2), m.group(3)
+    if not core:
+        return token
+    low = core.lower()
+    if low in _ENGLISH_CONTRACTIONS or core.upper() in PRESERVE_WORDS or core.upper() in _OCR_SFX_PRESERVE:
+        return token
+
+    if "'" in core:
+        # 1) Contração colada ANTES de outra palavra: IT'SMADE -> IT'S MADE
+        for c_len in range(min(len(core) - 1, 9), 2, -1):
+            head_c = core[:c_len]
+            tail_w = core[c_len:]
+            if head_c.lower() in _ENGLISH_CONTRACTIONS and tail_w.isalpha():
+                return f"{p_str}{head_c} {_split_glued_latin_token(tail_w, lm)}{s_str}"
+        # 2) Prefixo colado ANTES de contração: WHILEI'M -> WHILE I'M, WEDON'T -> WE DON'T
+        for c_len in range(min(len(core) - 1, 9), 2, -1):
+            tail_c = core[-c_len:]
+            head_w = core[:-c_len]
+            if tail_c.lower() in _ENGLISH_CONTRACTIONS and head_w.isalpha():
+                hl = head_w.lower()
+                ok_head = (
+                    (len(hl) == 1 and hl in ('a', 'i'))
+                    or (len(hl) == 2 and hl in VALID_2LETTER_WORDS)
+                    or (lm._wordcost.get(hl, 99.0) <= 13.0)
+                )
+                if ok_head:
+                    return f"{p_str}{_split_glued_latin_token(head_w, lm)} {tail_c}{s_str}"
+        return token
+
+    if not core.isalpha():
+        return token
+    if core[0].isupper() and core[1:].islower():
+        return token
+    if len(core) <= 2:
+        return token
+
+    whole_cost = lm._wordcost.get(low, 25.0)
+    if whole_cost < 11.4:
+        return token
+
+    for sfx in ('less', 'ness', 'ship', 'ful', 'able', 'like', 'ward', 'wise', 'kin', 'ies', 'ing', 'ous', 'tion', 'ment'):
+        if low.endswith(sfx) and len(low) > len(sfx) + 2:
+            if whole_cost < 16.0 or low in lm._wordcost:
+                return token
+
+    splits = wordninja.split(core)
+    if len(splits) == 1:
+        for i_cut in range(1, len(core)):
+            w1, w2 = core[:i_cut], core[i_cut:]
+            l1, l2 = w1.lower(), w2.lower()
+            ok1 = (l1 in ('a', 'i')) or (len(l1) == 2 and l1 in VALID_2LETTER_WORDS) or (len(l1) >= 3 and lm._wordcost.get(l1, 99.0) <= 10.0)
+            ok2 = (l2 in ('a', 'i')) or (len(l2) == 2 and l2 in VALID_2LETTER_WORDS) or (len(l2) >= 3 and lm._wordcost.get(l2, 99.0) <= 10.0)
+            if ok1 and ok2:
+                c1 = 3.85 if l1 in ('a', 'i') else lm._wordcost.get(l1, 99.0)
+                c2 = 3.85 if l2 in ('a', 'i') else lm._wordcost.get(l2, 99.0)
+                if min(c1, c2) <= 7.0 and (c1 + c2) < whole_cost + 1.0 and (c1 + c2) <= 14.0:
+                    splits = [w1, w2]
+                    break
+
+    if len(splits) < 2 or len(splits) >= len(core):
+        return token
+
+    part_costs = []
+    for sp in splits:
+        spl = sp.lower()
+        if len(spl) == 1 and spl not in ('a', 'i'):
+            return token
+        if len(spl) == 2 and spl not in VALID_2LETTER_WORDS:
+            return token
+        c = 3.85 if spl in ('a', 'i') else lm._wordcost.get(spl, 999.0)
+        if c > 13.4:
+            return token
+        part_costs.append(c)
+
+    if len(splits) >= 3:
+        long_cnt = sum(1 for sp in splits if len(sp) >= 3)
+        if len(splits) >= 4 and (long_cnt < 2 or max(part_costs) > 10.5):
+            return token
+        if long_cnt == 0 or (long_cnt == 1 and max(part_costs) > 10.5):
+            return token
+
+    min_c = min(part_costs)
+    avg_c = sum(part_costs) / float(len(part_costs))
+    if min_c <= 10.0 and avg_c <= 11.4 and (whole_cost >= 11.9 or (len(core) <= 5 and avg_c <= 6.8)):
+        joined = " ".join(sp.upper() if core.isupper() else (sp.lower() if core.islower() else sp) for sp in splits)
+        return f"{p_str}{joined}{s_str}"
+    return token
+
+def _rejoin_broken_latin_tokens(text, lm):
+    """Reúne tokens fragmentados no meio por espaço indevido do OCR (ex: 'SCAN DALOUS' -> 'SCANDALOUS')."""
+    if not lm or not text:
+        return text
+    text = re.sub(r'\bSCAN\s+DALOUS\b', 'SCANDALOUS', text, flags=re.IGNORECASE)
+    tokens = text.split()
+    if len(tokens) < 2:
+        return text
+    out = []
+    i = 0
+    while i < len(tokens):
+        if i + 1 < len(tokens):
+            t1, t2 = tokens[i], tokens[i + 1]
+            m1 = re.fullmatch(r"([A-Za-z]+)", t1)
+            m2 = re.fullmatch(r"([A-Za-z]+(?:'[A-Za-z]{1,2})?)([^A-Za-z]*)", t2)
+            if m1 and m2:
+                w1 = m1.group(1)
+                w2_full, suf2 = m2.group(1), m2.group(2)
+                w2_stem = w2_full.split("'")[0]
+                l1, l2 = w1.lower(), w2_stem.lower()
+                def _is_bad_frag(lw):
+                    if len(lw) == 1:
+                        return lw not in ('a', 'i')
+                    if len(lw) == 2:
+                        return lw not in VALID_2LETTER_WORDS
+                    return lm._wordcost.get(lw, 99.0) > 11.4
+                if _is_bad_frag(l1) or _is_bad_frag(l2):
+                    merged_stem = (w1 + w2_stem).lower()
+                    merged_cost = lm._wordcost.get(merged_stem, 99.0)
+                    c1 = lm._wordcost.get(l1, 18.0) if l1 not in ('a', 'i') else 3.0
+                    c2 = lm._wordcost.get(l2, 18.0) if l2 not in ('a', 'i') else 3.0
+                    if merged_cost < 11.6 and merged_cost + 1.5 < (c1 + c2):
+                        out.append(w1 + w2_full + suf2)
+                        i += 2
+                        continue
+        out.append(tokens[i])
+        i += 1
+    return " ".join(out)
+
+def _restore_spanish_inverted_punct(text):
+    """Restaura sinais iniciais '¡' e '¿' que modelos OCR sem acentuação latina leem como 'i' colado."""
+    if not text or ('?' not in text and '!' not in text):
+        return text
+    def _repl_clause(m):
+        clause = m.group(0)
+        end_p = clause[-1]
+        inv_ch = '¿' if end_p == '?' else '¡'
+        # 1) 'i' colado antes de maiúscula (ex: iHola, iNO, iPor, iQué), exceto marcas Apple (iPhone, iOS...)
+        clause_fixed = re.sub(
+            r'(^|[\s"\'(])i(?!(?:Phone|Pad|Pod|Mac|OS|Tunes|Cloud|Watch|Books)\b)([A-ZÁÉÍÓÚÑÜ][A-Za-zÁÉÍÓÚáéíóúÑñÜü]{1,})',
+            lambda hm: f"{hm.group(1)}{inv_ch}{hm.group(2)}",
+            clause
+        )
+        # 2) 'i' colado antes de palavra interrogativa/exclamativa em espanhol em minúsculas (ex: icomo estas?)
+        clause_fixed = re.sub(
+            r'(^|[\s"\'(])i((?:c[oó]mo|qu[eé]|qui[eé]n|cu[aá]ndo|d[oó]nde|por|cu[aá]l|cu[aá]nto|verdad|acaso|hola|dios|mira|oye|claro|vamos|venga)[A-Za-zÁÉÍÓÚáéíóúÑñÜü]*)\b',
+            lambda hm: f"{hm.group(1)}{inv_ch}{hm.group(2)}",
+            clause_fixed,
+            flags=re.IGNORECASE
+        )
+        return clause_fixed
+    return re.sub(r'[^?!]+[?!]+', _repl_clause, text)
 
 def repair_glued_text(text, src_lang="en-US"):
     """Separa palavras coladas no OCR em inglês/latino com proteção estrita para nomes, romaji e palavras reais."""
@@ -980,91 +1204,31 @@ def repair_glued_text(text, src_lang="en-US"):
     text = re.sub(r'\bi\s+t\b', 'it', text)
     text = re.sub(r'\bNo\s+run\b', 'Norun', text, flags=re.IGNORECASE)
 
-    # 3. Corrige falta de espaço após pontuação: 'PANTIES,AND' -> 'PANTIES, AND'
+    # 3. Corrige falta de espaço após pontuação (sem quebrar reticências iniciais como '...IN' ou '...SO')
     text = re.sub(r'([,;:!?])([A-Za-z])', r'\1 \2', text)
-    text = re.sub(r'(\.{2,})([A-Za-z])', r'\1 \2', text)
+    text = re.sub(r'(?<=[A-Za-z0-9!?])(\.{2,})([A-Za-z])', r'\1 \2', text)
 
-    # 4. Separa CamelCase ou colagens óbvias com números (ex: 'Ofroyalty' -> 'Of royalty')
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    # 4. Separa CamelCase verdadeiro e colagens com números (sem partir ruídos tipo 'DELIClOUS')
+    text = re.sub(r'([a-z]{2,})([A-Z][a-z]{2,})', r'\1 \2', text)
     text = re.sub(r'([A-Za-z])(\d)', r'\1 \2', text)
     text = re.sub(r'(\d)([A-Za-z])', r'\1 \2', text)
-    
+
+    # 5. Restaura '¡' / '¿' espanhóis antes da tokenização
+    text = _restore_spanish_inverted_punct(text)
+
+    # Evita aplicar divisor de palavras inglesas (wordninja) em textos espanhóis / latinos acentuados
+    src_l = str(src_lang or "").lower()
+    if src_l.startswith(("es", "pt", "fr", "de", "it")) or re.search(r'[¡¿ñÑáéíóúÁÉÍÓÚüÜãõÃÕçÇ]', text):
+        return text
+    if len(re.findall(r'\b(hola|senor|senora|senorita|como|estas|hoy|pero|por|para|con|los|las|una|eso|esto|muy|gracias|buenos|dias|hacer|puede|quiero|donde|quien|cuando|porque|muchas|joyas|tienda|todo|dinero|nada|bien|mal|el|la|en|que)\b', text, re.I)) >= 2:
+        return text
+
     if not wordninja:
         return text
 
     lm = getattr(wordninja, 'DEFAULT_LANGUAGE_MODEL', None)
-    tokens = text.split()
-    fixed_tokens = []
-    
-    for token in tokens:
-        clean_tok = re.sub(r'[^a-zA-Z]', '', token)
-        # Palavras curtas (< 7 letras) NÃO devem ser separadas por wordninja para não quebrar romaji e nomes
-        if len(clean_tok) < 7:
-            fixed_tokens.append(token)
-            continue
-        
-        # Preserva palavras reservadas e nomes
-        if clean_tok.upper() in PRESERVE_WORDS:
-            fixed_tokens.append(token)
-            continue
-
-        clean_low = clean_tok.lower()
-        # Se a palavra já existe no dicionário/modelo de linguagem com boa frequência, NUNCA divida
-        if lm and clean_low in lm._wordcost and lm._wordcost[clean_low] < 12.0:
-            fixed_tokens.append(token)
-            continue
-            
-        # Palavras em TitleCase (iniciadas com maiúscula) em mangás são quase sempre Nomes Próprios
-        if clean_tok[0].isupper() and clean_tok[1:].islower():
-            fixed_tokens.append(token)
-            continue
-
-        # Proteção contra sufixos comuns em inglês (masterless, beastkin, etc.)
-        is_suffix = False
-        for sfx in ('less', 'ness', 'ship', 'ful', 'able', 'like', 'ward', 'wise', 'kin'):
-            if clean_low.endswith(sfx):
-                base = clean_low[:-len(sfx)]
-                if lm and base in lm._wordcost and lm._wordcost[base] < 11.0:
-                    is_suffix = True
-                    break
-        if is_suffix:
-            fixed_tokens.append(token)
-            continue
-
-        splits = wordninja.split(clean_tok)
-        if len(splits) >= 2 and len(splits) < len(clean_tok):
-            # Valida rigorosamente cada fragmento
-            valid = True
-            for s in splits:
-                s_low = s.lower()
-                if len(s) == 1 and s_low not in {'a', 'i'}:
-                    valid = False
-                    break
-                if len(s) == 2 and s_low not in VALID_2LETTER_WORDS:
-                    valid = False
-                    break
-                if lm:
-                    cost = lm._wordcost.get(s_low, 999.0)
-                    if cost > 11.0:
-                        valid = False
-                        break
-
-            if valid:
-                prefix = re.match(r'^[^a-zA-Z]+', token)
-                suffix = re.search(r'[^a-zA-Z]+$', token)
-                p_str = prefix.group(0) if prefix else ''
-                s_str = suffix.group(0) if suffix else ''
-                if token.isupper():
-                    fixed_tok = ' '.join(s.upper() for s in splits)
-                elif token.islower():
-                    fixed_tok = ' '.join(s.lower() for s in splits)
-                else:
-                    fixed_tok = ' '.join(splits)
-                fixed_tokens.append(p_str + fixed_tok + s_str)
-                continue
-                
-        fixed_tokens.append(token)
-        
+    text = _rejoin_broken_latin_tokens(text, lm)
+    fixed_tokens = [_split_glued_latin_token(tok, lm) for tok in text.split()]
     return ' '.join(fixed_tokens)
 
 def smart_join_lines(lines, is_cjk=False, preserve_spaces=False):
@@ -1093,7 +1257,7 @@ def smart_join_lines(lines, is_cjk=False, preserve_spaces=False):
             text = text + " " + nxt
     return text
 
-def should_merge_lines(b1, b2):
+def should_merge_lines(b1, b2, img_gray=None):
     """Verifica se duas caixas de OCR pertencem ao MESMO balão, evitando fusão de balões adjacentes."""
     x1_min, y1_min, x1_max, y1_max = b1["box"]
     x2_min, y2_min, x2_max, y2_max = b2["box"]
@@ -1113,6 +1277,30 @@ def should_merge_lines(b1, b2):
     max_h = max(h1, h2)
     min_w = max(min(w1, w2), 1)
     max_w = max(w1, w2)
+
+    def _has_border_wall():
+        if img_gray is None:
+            return False
+        ih, iw = img_gray.shape[:2]
+        if gap_y >= 2 and overlap_x > 8:
+            sx0 = int(max(0, max(x1_min, x2_min) + 2))
+            sx1 = int(min(iw, min(x1_max, x2_max) - 2))
+            sy0 = int(max(0, min(y1_max, y2_max)))
+            sy1 = int(min(ih, max(y1_min, y2_min)))
+            if sx1 > sx0 + 4 and sy1 > sy0 + 2:
+                strip = img_gray[sy0:sy1, sx0:sx1]
+                if float(np.max(np.mean(strip < 105, axis=1))) >= 0.45:
+                    return True
+        if gap_x >= 2 and overlap_y > 8:
+            sy0 = int(max(0, max(y1_min, y2_min) + 2))
+            sy1 = int(min(ih, min(y1_max, y2_max) - 2))
+            sx0 = int(max(0, min(x1_max, x2_max)))
+            sx1 = int(min(iw, max(x1_min, x2_min)))
+            if sx1 > sx0 + 2 and sy1 > sy0 + 4:
+                strip = img_gray[sy0:sy1, sx0:sx1]
+                if float(np.max(np.mean(strip < 105, axis=0))) >= 0.45:
+                    return True
+        return False
     
     if max_h > min_h * 2.8 and (gap_y > 15 or gap_x > 15):
         return False
@@ -1127,12 +1315,19 @@ def should_merge_lines(b1, b2):
         cx2 = (x2_min + x2_max) / 2
         center_dist_x = abs(cx1 - cx2)
         overlap_ratio_x = overlap_x / min_w
+
+        # Permite fusão de SFX idênticos escalonados em diagonal (ex: SAKU / SAKU / SAKU)
+        t1 = re.sub(r'\s+', '', str(b1.get("text", ""))).upper()
+        t2 = re.sub(r'\s+', '', str(b2.get("text", ""))).upper()
+        if t1 and t1 == t2 and 2 <= len(t1) <= 6 and overlap_x >= 10 and gap_y <= 14:
+            if not _has_border_wall():
+                return True
         
         # Devem estar bem alinhados horizontalmente (linhas do mesmo balão)
         if (overlap_ratio_x >= 0.40 and center_dist_x <= max_w * 0.45) or overlap_ratio_x >= 0.65:
             allowed_gap_y = max(min(min_h * 1.1, 45), 28)
             if gap_y <= allowed_gap_y:
-                return True
+                return not _has_border_wall()
                 
         return False
 
@@ -1151,7 +1346,7 @@ def should_merge_lines(b1, b2):
             # O vão horizontal entre colunas adjacentes do mesmo balão deve ser proporcional à largura da linha
             allowed_gap_x = max(min(min_w * 0.9, 60), 38)
             if gap_x <= allowed_gap_x:
-                return True
+                return not _has_border_wall()
                 
         return False
         
@@ -1162,7 +1357,7 @@ def is_majority_cjk(lines_text):
     if not lines_text:
         return False
     joined = " ".join(str(lt) for lt in lines_text if lt)
-    cjk_cnt = len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", joined))
+    cjk_cnt = len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]", joined))
     if cjk_cnt == 0:
         return False
     latin_cnt = len(re.findall(r"[A-Za-z]", joined))
@@ -1175,13 +1370,13 @@ def is_majority_hangul(lines_text):
     if not lines_text:
         return False
     joined = " ".join(str(lt) for lt in lines_text if lt)
-    ko_cnt = len(re.findall(r"[\uac00-\ud7af]", joined))
+    ko_cnt = len(re.findall(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]", joined))
     if ko_cnt == 0:
         return False
     zh_ja_cnt = len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff]", joined))
     return ko_cnt >= zh_ja_cnt
 
-def smart_group_bubbles(blocks):
+def smart_group_bubbles(blocks, img_gray=None):
     """Agrupa linhas de texto próximas usando conectividade de grafos, suportando leitura oriental e ocidental."""
     n = len(blocks)
     if n == 0:
@@ -1190,7 +1385,7 @@ def smart_group_bubbles(blocks):
     
     for i in range(n):
         for j in range(i + 1, n):
-            if should_merge_lines(blocks[i], blocks[j]):
+            if should_merge_lines(blocks[i], blocks[j], img_gray=img_gray):
                 adj[i].append(j)
                 adj[j].append(i)
                 
@@ -1217,7 +1412,7 @@ def smart_group_bubbles(blocks):
         
         avg_w = np.mean([b["box"][2] - b["box"][0] for b in comp_blocks])
         avg_h = np.mean([b["box"][3] - b["box"][1] for b in comp_blocks])
-        is_vertical = avg_h > avg_w * 1.2
+        is_vertical = bool(avg_h > avg_w * 1.2)
         
         if is_vertical:
             # Leitura oriental: Direita para Esquerda (X descrescente), Topo para Baixo
@@ -1366,11 +1561,14 @@ def clean_speech_bubble(img, box, balloon_mask=None):
 
         # Máscara restritiva para contornos grandes que encostam na borda externa do balão
         inner_ocr_mask = np.zeros_like(text_mask)
-        ix0_in = min(max(0, ox0 + 1), rw)
-        iy0_in = min(max(0, oy0 + 1), rh)
-        ix1_in = max(ix0_in, min(rw, ox1 - 1))
-        iy1_in = max(iy0_in, min(rh, oy1 - 1))
+        inset_x = 2 if (ox1 - ox0) >= 16 else 1
+        inset_y = 2 if (oy1 - oy0) >= 16 else 1
+        ix0_in = min(max(0, ox0 + inset_x), rw)
+        iy0_in = min(max(0, oy0 + inset_y), rh)
+        ix1_in = max(ix0_in, min(rw, ox1 - inset_x))
+        iy1_in = max(iy0_in, min(rh, oy1 - inset_y))
         inner_ocr_mask[iy0_in:iy1_in, ix0_in:ix1_in] = 255
+        edge_clean_mask = np.zeros_like(text_mask)
 
         for c in contours:
             rcx, rcy, rcw, rch = cv2.boundingRect(c)
@@ -1383,19 +1581,20 @@ def clean_speech_bubble(img, box, balloon_mask=None):
             if not touches_ctx_edge and not is_outer_ring:
                 cv2.drawContours(clean_mask, [c], -1, 255, -1)
             elif white_ratio_erase > 0.45:
-                # Letra tocou a borda do balão: remove somente os traços estritamente dentro da caixa OCR
+                # Letra tocou a borda do balão: remove somente os traços estritamente dentro da caixa OCR interna sem dilatar para o contorno
                 single_c = np.zeros_like(text_mask)
                 cv2.drawContours(single_c, [c], -1, 255, -1)
-                clean_mask |= (single_c & inner_ocr_mask)
+                edge_clean_mask |= (single_c & inner_ocr_mask)
 
         # Varredura de halo anti-aliasing (+ contorno branco em balão cinza/tintado) e confinamento à erase_box
         dil_clean = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
         halo_near = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1) > 0
-        halo_ring = halo_near & (luma_diff > 12)
+        edge_halo = (cv2.dilate(edge_clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1) & inner_ocr_mask) > 0
+        halo_ring = (halo_near | edge_halo) & (luma_diff > 12)
         if bg_luma < 236:
             halo_wide = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1) > 0
             halo_ring = halo_ring | (halo_wide & ((gray_ctx.astype(np.int16) - bg_luma) > 26))
-        final_mask = ((dil_clean > 0) | halo_ring).astype(np.uint8) * 255
+        final_mask = ((dil_clean > 0) | (edge_clean_mask > 0) | halo_ring).astype(np.uint8) * 255
 
         # Nunca pinta fora de erase_box (e respeita balloon_mask se fornecida)
         erase_gate = np.zeros_like(text_mask)
@@ -3213,12 +3412,19 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     # TRADUÇÃO DE ESPANHOL RESIDUAL -> PORTUGUÊS DO BRASIL:
     cleaned = _preserve_case(r'\bescribiendo\b', 'escrevendo', cleaned)
     cleaned = _preserve_case(r'\bescribendo\b', 'escrevendo', cleaned)
-    if re.search(r'[\uac00-\ud7af]', original_text or ""):
-        if re.search(r'자지', original_text or "") and re.search(r'쓰[고는거기]', original_text or ""):
+    if re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', original_text or ""):
+        orig_ko = original_text or ""
+        has_writing_noun = bool(re.search(r'(?:글|편지|일기|소설|펜|연필|노트|책|보고서|메모)', orig_ko))
+        has_use_verb = bool(re.search(r'쓰[고는거기와써서]', orig_ko))
+        has_tool_body_ctx = bool(re.search(r'(?:자지|고추|꼬추|거기|이거|그거|저거|손|혀|입|몸|구멍|장난감|페니스|딜도|펫|배|힘)', orig_ko))
+        if has_use_verb and (has_tool_body_ctx or not has_writing_noun):
             cleaned = _preserve_case(r'\bescrevendo\b', 'usando', cleaned)
             cleaned = _preserve_case(r'\bescrever\b', 'usar', cleaned)
-        if '바둑이' in (original_text or "") and cleaned.strip().lower() in ('go', 'go!', 'ir!', 'vai!'):
+        if '바둑이' in orig_ko and cleaned.strip().lower() in ('go', 'go!', 'ir!', 'vai!'):
             cleaned = 'Baduki'
+        if re.search(r'[\uac00-\ud7af]님(?:\b|[^가-힣]|$)|님[!?.~\s]*$', orig_ko):
+            cleaned = re.sub(r'\b([A-Za-zÀ-ÿ]{2,})-sen\b', r'\1-sama', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'(?i)\bfury\s+a\b', 'Furiya', cleaned)
     cleaned = _preserve_case(r'\bml\s*chas\s+gracias\b', 'muito obrigado', cleaned)
     cleaned = _preserve_case(r'\bmuchas\s+gracias\b', 'muito obrigado', cleaned)
     cleaned = _preserve_case(r'\bpelo\s+visit\s*a\b', 'pela visita', cleaned)
@@ -3309,7 +3515,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     
     # 9. Proteção para gemidos/sons latinos curtos (evita que 'NGH!' vire um parágrafo; nunca trunca frases CJK onde 3-6 ideogramas são sentenças completas!)
     orig_stripped = original_text.strip()
-    is_orig_cjk = bool(re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', orig_stripped))
+    is_orig_cjk = bool(re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', orig_stripped))
     if not is_orig_cjk and len(orig_stripped) <= 6 and len(cleaned.split()) > 3:
         cleaned = cleaned.split()[0].strip()
 
@@ -3493,7 +3699,7 @@ def google_translate_free(text, source_lang="auto", target_lang="pt"):
 
     # Se source_lang for 'auto', detecta pelo conteúdo para evitar erros de APIs secundárias (ex: MyMemory)
     if sl == "auto":
-        if re.search(r'[\uac00-\ud7af]', clean):
+        if re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', clean):
             sl = "ko"
         elif re.search(r'[\u3040-\u30ff]', clean):
             sl = "ja"
@@ -3816,7 +4022,7 @@ def build_page_spatial_dossier(bubbles_to_trans, page_w=1200, page_h=1800, src_l
         # Orçamento de caracteres recomendados (considera expansão CJK/Hangul -> PT-BR para não podar falas asiáticas)
         raw_char_len = len(orig_text)
         is_asian_src = str(src_lang or "").lower() in ("ko-kr", "ko", "ja-jp", "ja", "zh-cn", "zh-tw", "zh") or bool(
-            re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', orig_text)
+            re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', orig_text)
         )
         char_mult = 2.4 if is_asian_src else 1.35
         if area < 16000:
@@ -4561,6 +4767,10 @@ KOREAN_MODEL_DIR = os.path.join(SCRIPT_DIR, "models", "korean")
 KOREAN_REC_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_PP-OCRv5_rec_infer.onnx")
 KOREAN_DICT_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_v5_dict.txt")
 
+JAPANESE_MODEL_DIR = os.path.join(SCRIPT_DIR, "models", "japanese")
+JAPANESE_REC_PATH = os.path.join(JAPANESE_MODEL_DIR, "japan_PP-OCRv4_rec_infer.onnx")
+JAPANESE_DICT_PATH = os.path.join(JAPANESE_MODEL_DIR, "japan_v4_dict.txt")
+
 def _onnx_ensure_character_metadata(onnx_path, dict_path):
     """Embute a propriedade protobuf 'character' no ONNX se ausente (exigido pelo RapidOCR 1.2.x que ignora rec_keys_path)."""
     if not (os.path.exists(onnx_path) and os.path.exists(dict_path)):
@@ -4670,6 +4880,32 @@ def ensure_korean_ocr_model():
         return True
     return False
 
+def ensure_japanese_ocr_model():
+    """Garante que os arquivos do modelo de OCR Japonês (PP-OCRv4 ONNX com Hiragana/Katakana/Kanji) estejam prontos."""
+    os.makedirs(JAPANESE_MODEL_DIR, exist_ok=True)
+    if not os.path.exists(JAPANESE_REC_PATH):
+        try:
+            print("[*] Baixando modelo de OCR Japonês PP-OCRv4 (japan_PP-OCRv4_rec_infer.onnx)...")
+            url_m = "https://huggingface.co/cycloneboy/japan_PP-OCRv4_rec_infer/resolve/main/model.onnx"
+            req = urllib.request.Request(url_m, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=60) as resp, open(JAPANESE_REC_PATH, 'wb') as f:
+                f.write(resp.read())
+        except Exception as e:
+            print(f"[!] Erro ao baixar modelo japonês PP-OCRv4: {e}")
+    if not os.path.exists(JAPANESE_DICT_PATH):
+        try:
+            print("[*] Baixando dicionário PP-OCRv4 Japonês (Hiragana/Katakana/Kanji)...")
+            url_d = "https://huggingface.co/cycloneboy/japan_PP-OCRv4_rec_infer/resolve/main/japan_dict.txt"
+            req = urllib.request.Request(url_d, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=30) as resp, open(JAPANESE_DICT_PATH, 'wb') as f:
+                f.write(resp.read())
+        except Exception as e:
+            print(f"[!] Erro ao baixar dicionário japonês PP-OCRv4: {e}")
+    if os.path.exists(JAPANESE_REC_PATH) and os.path.exists(JAPANESE_DICT_PATH):
+        _onnx_ensure_character_metadata(JAPANESE_REC_PATH, JAPANESE_DICT_PATH)
+        return True
+    return False
+
 def _detect_rapidocr_api_style():
     """Detecta se RapidOCR instalado usa API 1.4.x (use_cls) ou 1.2.x/1.3.x (use_angle_cls)."""
     try:
@@ -4686,42 +4922,80 @@ def _detect_rapidocr_api_style():
         pass
     return "1.2"
 
-def get_rapidocr_engine(is_korean=False):
-    """Instancia o RapidOCR Coreano (PP-OCRv5 sem rotação de ângulo que inverte Hangul) ou o padrão universal."""
+def get_rapidocr_engine(is_korean=False, is_japanese=False):
+    """Instancia o RapidOCR Coreano (PP-OCRv5), Japonês (PP-OCRv4) ou Universal com DBNet calibrado para balões de mangá."""
+    api_style = _detect_rapidocr_api_style()
     if is_korean:
         if not ensure_korean_ocr_model():
             raise RuntimeError("Modelo de OCR Coreano (PP-OCRv5) indisponível em models/korean/.")
-        api_style = _detect_rapidocr_api_style()
         try:
+            common_ko = {
+                "det_model_path": None,
+                "det_limit_side_len": 1200,
+                "det_limit_type": "min",
+                "det_box_thresh": 0.28,
+                "det_thresh": 0.18,
+                "det_unclip_ratio": 1.74,
+                "text_score": 0.25,
+                "width_height_ratio": 16,
+                "min_height": 10,
+                "rec_model_path": KOREAN_REC_PATH,
+                "rec_img_shape": [3, 48, 320],
+            }
             if api_style == "1.4":
-                return RapidOCR(
-                    use_cls=False,
-                    det_model_path=None,
-                    det_box_thresh=0.45,
-                    text_score=0.35,
-                    width_height_ratio=16,
-                    min_height=15,
-                    rec_model_path=KOREAN_REC_PATH,
-                    rec_keys_path=KOREAN_DICT_PATH,
-                    rec_img_shape=[3, 48, 320],
-                )
-            return RapidOCR(
-                use_angle_cls=False,
-                det_model_path=None,
-                det_box_thresh=0.35,
-                det_thresh=0.24,
-                det_unclip_ratio=1.72,
-                text_score=0.35,
-                width_height_ratio=16,
-                min_height=15,
-                rec_model_path=KOREAN_REC_PATH,
-                rec_img_shape=[3, 48, 320],
-            )
+                return RapidOCR(use_cls=False, rec_keys_path=KOREAN_DICT_PATH, **common_ko)
+            return RapidOCR(use_angle_cls=False, **common_ko)
         except Exception as e:
             print(f"[!] Aviso ao iniciar RapidOCR Coreano com parâmetros customizados ({e}); tentando modo seguro sem angle_cls...")
             safe_kw = {"use_cls": False, "rec_model_path": KOREAN_REC_PATH, "rec_keys_path": KOREAN_DICT_PATH} if api_style == "1.4" else {"use_angle_cls": False, "rec_model_path": KOREAN_REC_PATH}
             return RapidOCR(**safe_kw)
-    return RapidOCR()
+
+    if is_japanese:
+        if not ensure_japanese_ocr_model():
+            raise RuntimeError("Modelo de OCR Japonês (PP-OCRv4) indisponível em models/japanese/.")
+        try:
+            common_jp = {
+                "det_model_path": None,
+                "det_limit_side_len": 1200,
+                "det_limit_type": "min",
+                "det_box_thresh": 0.22,
+                "det_thresh": 0.15,
+                "det_unclip_ratio": 1.78,
+                "width_height_ratio": -1,
+                "min_height": 6,
+                "text_score": 0.05,
+                "rec_model_path": JAPANESE_REC_PATH,
+                "rec_img_shape": [3, 48, 320],
+            }
+            if api_style == "1.4":
+                return RapidOCR(use_cls=False, rec_keys_path=JAPANESE_DICT_PATH, **common_jp)
+            return RapidOCR(use_angle_cls=False, **common_jp)
+        except Exception as e:
+            print(f"[!] Aviso ao iniciar RapidOCR Japonês com parâmetros customizados ({e}); tentando modo seguro...")
+            safe_jp = {"use_cls": False, "rec_model_path": JAPANESE_REC_PATH, "rec_keys_path": JAPANESE_DICT_PATH} if api_style == "1.4" else {"use_angle_cls": False, "rec_model_path": JAPANESE_REC_PATH}
+            return RapidOCR(**safe_jp)
+
+    try:
+        common_uni = {
+            "det_model_path": None,
+            "det_limit_side_len": 1200,
+            "det_limit_type": "min",
+            "det_box_thresh": 0.22,
+            "det_thresh": 0.15,
+            "det_unclip_ratio": 1.78,
+            "width_height_ratio": -1,
+            "min_height": 6,
+            "text_score": 0.05,
+        }
+        if api_style == "1.4":
+            return RapidOCR(use_cls=False, **common_uni)
+        return RapidOCR(use_angle_cls=False, **common_uni)
+    except Exception:
+        safe_uni = {"use_cls": False} if api_style == "1.4" else {"use_angle_cls": False}
+        try:
+            return RapidOCR(**safe_uni)
+        except Exception:
+            return RapidOCR()
 
 def is_mokuro_available():
     """Verifica se o Mokuro está disponível no ambiente sem carregar modelos pesados."""
@@ -4739,7 +5013,7 @@ def detect_manga_language_and_engine(manga_dir):
     """
     Detecta automaticamente o idioma da obra e seleciona o motor ideal:
     - 'korean': Manhwa / Coreano (Hangul) -> Usa RapidOCR Coreano (NUNCA usa Mokuro)
-    - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (manga-ocr) se disponível
+    - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (ou RapidOCR Japonês PP-OCRv4 se Mokuro ausente)
     - 'rapidocr': Ocidental / Inglês / Espanhol / Chinês -> Usa RapidOCR padrão
     """
     folder_name = os.path.basename(manga_dir)
@@ -4755,7 +5029,7 @@ def detect_manga_language_and_engine(manga_dir):
         r'\[(russian|russo|ru)\]', r'\((russian|russo|ru)\)',
     ]
     has_latin_tag = any(re.search(tag_pattern, folder_name, re.IGNORECASE) for tag_pattern in latin_tags)
-    has_hangul_in_title = bool(re.search(r'[\uac00-\ud7af]', folder_name))
+    has_hangul_in_title = bool(re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', folder_name))
     has_korean_tag = bool(
         re.search(r'\[(korean|coreano|kr|ko)\]', folder_name, re.IGNORECASE)
         or re.search(r'\((korean|coreano|kr|ko)\)', folder_name, re.IGNORECASE)
@@ -4765,6 +5039,11 @@ def detect_manga_language_and_engine(manga_dir):
     has_jp_in_title = bool(
         re.search(r'[\u3040-\u30ff]', folder_name)
         or re.search(r'\[(japanese|japon[êe]s|japones|raw|jp)\]', folder_name, re.IGNORECASE)
+    )
+    has_chinese_tag = bool(
+        re.search(r'\[(chinese|chin[êe]s|chines|zh|cn|tc|sc)\]', folder_name, re.IGNORECASE)
+        or re.search(r'\((chinese|chin[êe]s|chines|zh|cn|tc|sc)\)', folder_name, re.IGNORECASE)
+        or "manhua" in folder_lower
     )
 
     has_title_conflict = has_latin_tag and (has_hangul_in_title or has_korean_tag)
@@ -4779,14 +5058,20 @@ def detect_manga_language_and_engine(manga_dir):
         print("[+] Idioma detectado pelo título: COREANO (Hangul) -> Usando RapidOCR Coreano.")
         return "korean"
 
-    # 3. Título explicitamente Japonês
-    if has_jp_in_title and not has_latin_tag and not has_hangul_in_title:
-        if is_mokuro_available():
-            return "mokuro"
-        print("[i] Mangá com caracteres japoneses no título, mas Mokuro não está disponível. Usando RapidOCR Universal.")
+    # 3. Título explicitamente Chinês sem tag conflitante
+    if has_chinese_tag and not has_hangul_in_title and not has_jp_in_title:
+        print(f"[+] Idioma detectado pelo título: CHINÊS ({folder_name}) -> Usando RapidOCR Universal.")
         return "rapidocr"
 
-    # 4. Amostra páginas internas para decidir sem margem de erro (inclusive em títulos com múltiplos idiomas)
+    # 4. Título explicitamente Japonês
+    if has_jp_in_title and not has_latin_tag and not has_hangul_in_title:
+        if is_mokuro_available():
+            print("[+] Idioma detectado pelo título: JAPONÊS -> Usando Mokuro.")
+        else:
+            print("[+] Idioma detectado pelo título: JAPONÊS -> Usando RapidOCR Japonês (PP-OCRv4).")
+        return "mokuro"
+
+    # 5. Amostra páginas internas para decidir sem margem de erro (inclusive em títulos com múltiplos idiomas ou neutros)
     try:
         img_files = get_image_files(manga_dir)
         if not img_files:
@@ -4803,7 +5088,7 @@ def detect_manga_language_and_engine(manga_dir):
                 min((3 * len(img_files)) // 4, len(img_files) - 1)
             ]))
 
-        engine = RapidOCR()
+        engine = get_rapidocr_engine(is_korean=False)
         combined_texts = []
         sample_imgs = []
         zh_high_chars = 0
@@ -4828,7 +5113,7 @@ def detect_manga_language_and_engine(manga_dir):
                 continue
 
         full_sample_text = " ".join(combined_texts)
-        korean_count = len(re.findall(r'[\uac00-\ud7af]', full_sample_text))
+        korean_count = len(re.findall(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', full_sample_text))
         japanese_count = len(re.findall(r'[\u3040-\u30ff]', full_sample_text))
         chinese_count = len(re.findall(r'[\u4e00-\u9fff]', full_sample_text))
         latin_count = len(re.findall(r'[a-zA-Z]', full_sample_text))
@@ -4843,7 +5128,7 @@ def detect_manga_language_and_engine(manga_dir):
             return "rapidocr"
 
         # Sonda com motor Coreano PP-OCRv5 para distinguir Manhwa (Hangul) vs Manhua (Chinês) mesmo sem tag ou com título conflitante
-        if japanese_count <= 2 and sample_imgs and ensure_korean_ocr_model():
+        if japanese_count <= 2 and not has_chinese_tag and sample_imgs and ensure_korean_ocr_model():
             try:
                 ko_engine = get_rapidocr_engine(is_korean=True)
                 ko_high_chars = 0
@@ -4854,7 +5139,7 @@ def detect_manga_language_and_engine(manga_dir):
                         for kd in k_res:
                             txt_k = str(kd[1] or "").strip()
                             sc_k = float(kd[2]) if len(kd) > 2 else 1.0
-                            h_n = len(re.findall(r'[\uac00-\ud7af]', txt_k))
+                            h_n = len(re.findall(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', txt_k))
                             ko_all_chars += h_n
                             if sc_k >= 0.65:
                                 ko_high_chars += h_n
@@ -4870,6 +5155,40 @@ def detect_manga_language_and_engine(manga_dir):
 
         if korean_count > 0:
             return "korean"
+
+        if japanese_count >= 2 and not has_chinese_tag:
+            print("[+] Obra identificada pelas páginas como JAPONÊS (Kana detectado) -> Selecionando motor Japonês.")
+            return "mokuro"
+
+        # Sonda com motor Japonês PP-OCRv4: distingue Mangá Japonês (Hiragana/Katakana) vs Manhua Chinês (apenas Hanzi)
+        if not has_chinese_tag and latin_count <= 25 and sample_imgs and (chinese_count >= 1 or japanese_count >= 1 or latin_count < 8):
+            if ensure_japanese_ocr_model():
+                try:
+                    jp_engine = get_rapidocr_engine(is_japanese=True)
+                    jp_high_kana = 0
+                    jp_all_kana = 0
+                    jp_high_cjk = 0
+                    for img_cv in sample_imgs:
+                        j_res, _ = jp_engine(img_cv)
+                        if j_res:
+                            for jd in j_res:
+                                txt_j = str(jd[1] or "").strip()
+                                sc_j = float(jd[2]) if len(jd) > 2 else 1.0
+                                kana_n = len(re.findall(r'[\u3040-\u30ff]', txt_j))
+                                cjk_n = len(re.findall(r'[\u4e00-\u9fff\u3040-\u30ff]', txt_j))
+                                if sc_j >= 0.35:
+                                    jp_all_kana += kana_n
+                                if sc_j >= 0.55:
+                                    jp_high_kana += kana_n
+                                if sc_j >= 0.65:
+                                    jp_high_cjk += cjk_n
+
+                    if jp_high_kana >= 2 or (jp_all_kana >= 3 and jp_high_cjk >= zh_high_chars * 0.50):
+                        print(f"[+] Obra identificada pelas páginas como JAPONÊS (Kana: {jp_all_kana}, alta conf.: {jp_high_kana}) -> Selecionando motor Japonês.")
+                        return "mokuro"
+                except Exception:
+                    pass
+
         if japanese_count == 0 and chinese_count >= 3:
             print("[+] Obra identificada como CHINÊS (Hanzi) sem kana -> Usando RapidOCR Universal.")
             return "rapidocr"
@@ -4881,13 +5200,12 @@ def detect_manga_language_and_engine(manga_dir):
                 print("[+] Obra identificada com alfabeto LATINO (Inglês/Ocidental) -> Usando RapidOCR.")
             return "rapidocr"
 
-        if is_mokuro_available():
-            return "mokuro"
-        print("[i] Amostra sem Mokuro instalado no ambiente. Usando RapidOCR Universal com suporte multilíngue.")
-        return "rapidocr"
+        return "mokuro" if is_mokuro_available() else "rapidocr"
     except Exception:
         if has_hangul_in_title or has_korean_tag:
             return "korean"
+        if has_jp_in_title:
+            return "mokuro"
         return "mokuro" if is_mokuro_available() else "rapidocr"
 
 def check_needs_rapidocr(manga_dir):
@@ -4895,8 +5213,8 @@ def check_needs_rapidocr(manga_dir):
     engine = detect_manga_language_and_engine(manga_dir)
     return engine != "mokuro"
 
-def is_ocr_noise(text, score, is_korean=False):
-    """Filtra ruídos de OCR para não apagar detalhes de arte ou fundos (com preservação para Hangul de 1 caractere)."""
+def is_ocr_noise(text, score, is_korean=False, is_japanese=False):
+    """Filtra ruídos de OCR para não apagar detalhes de arte ou fundos (preservando Hangul/Jamo, Japonês e reticências)."""
     t = text.strip()
     if not t:
         return True
@@ -4904,18 +5222,30 @@ def is_ocr_noise(text, score, is_korean=False):
         sc = float(score)
     except Exception:
         sc = 1.0
-    if sc < (0.40 if is_korean else 0.42):
+    if re.fullmatch(r'\.{2,8}[!?]*', t) and sc >= 0.28:
+        return False
+    if re.search(r'[\u3130-\u318f\u1100-\u11ff]{2,}', t) and sc >= 0.35:
+        return False
+    if sc < (0.40 if (is_korean or is_japanese) else 0.42):
         return True
-    has_letters = bool(re.search(r'[a-zA-Z\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', t))
+    has_letters = bool(re.search(r'[a-zA-Z\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', t))
     if not has_letters and sc < (0.85 if is_korean else 0.75):
         return True
     if is_korean:
-        has_ko_cjk = bool(re.search(r'[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]', t))
+        has_ko_cjk = bool(re.search(r'[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', t))
         if has_ko_cjk:
             if len(t) <= 1 and sc < 0.42:
                 return True
         else:
             if len(t) <= 2 and t.upper() not in {"OK", "TV", "NO", "HI", "SO", "OH", "AH"} and sc < 0.78:
+                return True
+    elif is_japanese:
+        has_jp_cjk = bool(re.search(r'[\u3040-\u30ff\u4e00-\u9fff]', t))
+        if has_jp_cjk:
+            if len(t) <= 1 and sc < 0.44:
+                return True
+        else:
+            if len(t) <= 1 and sc < 0.75:
                 return True
     else:
         if len(t) <= 1 and sc < 0.60:
@@ -4924,17 +5254,409 @@ def is_ocr_noise(text, score, is_korean=False):
         return True
     return False
 
-def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progress_cb=None):
-    """Extrai textos usando RapidOCR (PP-OCRv5 Coreano em Hangul ou Universal com detecção de textos coloridos)."""
+def _crop_border_bg_bgr(crop):
+    border_px = np.concatenate([crop[0, :], crop[-1, :], crop[:, 0], crop[:, -1]], axis=0)
+    med = np.median(border_px, axis=0)
+    return (int(round(med[0])), int(round(med[1])), int(round(med[2])))
+
+def _warp_ocr_quad_crop(img, quad, allow_rot90=False, px_x=2.0, px_y=0.0):
+    ih, iw = img.shape[:2]
+    pts = np.array(quad, dtype=np.float32).copy()
+    cx = float(np.mean(pts[:, 0]))
+    cy = float(np.mean(pts[:, 1]))
+    for i in range(4):
+        pts[i, 0] += px_x if pts[i, 0] >= cx else -px_x
+        pts[i, 1] += px_y if pts[i, 1] >= cy else -px_y
+        pts[i, 0] = max(0.0, min(float(iw - 1), pts[i, 0]))
+        pts[i, 1] = max(0.0, min(float(ih - 1), pts[i, 1]))
+    w = max(4, int(round(max(np.linalg.norm(pts[0] - pts[1]), np.linalg.norm(pts[2] - pts[3])))))
+    h = max(4, int(round(max(np.linalg.norm(pts[0] - pts[3]), np.linalg.norm(pts[1] - pts[2])))))
+    pts_std = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    M = cv2.getPerspectiveTransform(pts, pts_std)
+    crop = cv2.warpPerspective(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_CUBIC)
+    did_rot = False
+    if allow_rot90 and h * 1.0 / max(1, w) >= 1.5:
+        crop = np.rot90(crop)
+        did_rot = True
+    return crop, did_rot
+
+def _recognize_bg_padded_crop(engine, crop, pad_x=6, pad_y=3, min_h=28):
+    rec_fn = getattr(engine, "text_recognizer", None) or getattr(engine, "text_rec", None)
+    if not callable(rec_fn) or crop is None or crop.size == 0:
+        return "", 0.0
+    try:
+        bg = _crop_border_bg_bgr(crop)
+        work = crop
+        if min_h > 0 and work.shape[0] < min_h:
+            sc = float(min_h) / max(1.0, float(work.shape[0]))
+            work = cv2.resize(work, (max(4, int(round(work.shape[1] * sc))), min_h), interpolation=cv2.INTER_CUBIC)
+        work = cv2.copyMakeBorder(work, pad_y, pad_y, pad_x, pad_x, cv2.BORDER_CONSTANT, value=bg)
+        out_raw = rec_fn([work])
+        out = out_raw[0] if isinstance(out_raw, tuple) else out_raw
+        if out and len(out) > 0:
+            item = out[0]
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                return str(item[0] or "").strip(), float(item[1])
+    except Exception:
+        pass
+    return "", 0.0
+
+def _is_corner_page_number_box(box, txt, iw, ih):
+    cx = 0.5 * (box[0] + box[2])
+    cy = 0.5 * (box[1] + box[3])
+    t = re.sub(r'\s+', '', str(txt or ''))
+    if not re.fullmatch(r'[0-9OIlo]{1,4}', t):
+        return False
+    if (cy > 0.925 * ih or cy < 0.055 * ih) and (cx < 0.25 * iw or cx > 0.75 * iw or (box[3] - box[1]) < 0.032 * ih):
+        return True
+    return False
+
+def _detect_ellipsis_bubbles_fallback(gray, existing_boxes):
+    """Detecta reticências horizontais puras ('......') em balões brancos ovais que o DBNet pode ignorar."""
+    if gray is None or gray.size == 0:
+        return []
+    ih, iw = gray.shape[:2]
+    dark = (gray < 145).astype(np.uint8)
+    n_lbl, _, stats, cents = cv2.connectedComponentsWithStats(dark)
+    dots = []
+    for l in range(1, n_lbl):
+        x, y, w, h, area = [int(v) for v in stats[l]]
+        if not (2 <= w <= 11 and 2 <= h <= 11 and 4 <= area <= 85):
+            continue
+        asp = w / float(h)
+        if not (0.45 <= asp <= 2.2):
+            continue
+        if y < int(0.06 * ih) or y > int(0.92 * ih):
+            continue
+        x0 = max(0, x - 3)
+        y0 = max(0, y - 3)
+        x1 = min(iw, x + w + 3)
+        y1 = min(ih, y + h + 3)
+        sub = gray[y0:y1, x0:x1]
+        if float(np.percentile(sub, 85)) < 232 or float(np.mean(sub > 220)) < 0.52:
+            continue
+        dots.append((x, y, x + w, y + h, float(cents[l][0]), float(cents[l][1]), w, h))
+
+    if len(dots) < 5:
+        return []
+
+    dots.sort(key=lambda d: d[4])
+    used = [False] * len(dots)
+    found = []
+    for i in range(len(dots)):
+        if used[i]:
+            continue
+        row = [dots[i]]
+        last = dots[i]
+        for j in range(i + 1, len(dots)):
+            if used[j]:
+                continue
+            cand = dots[j]
+            dx = cand[4] - last[4]
+            dy = abs(cand[5] - last[5])
+            if 3.5 <= dx <= 24.0 and dy <= 4.0 and max(cand[6], last[6]) <= min(cand[6], last[6]) * 1.9 + 1:
+                row.append(cand)
+                last = cand
+            elif cand[4] - last[4] > 28.0:
+                break
+        if 5 <= len(row) <= 8:
+            dxs = [row[k + 1][4] - row[k][4] for k in range(len(row) - 1)]
+            med_dx = float(np.median(dxs))
+            if med_dx >= 3.8 and all(0.55 * med_dx <= d <= 1.65 * med_dx for d in dxs):
+                bx0 = min(d[0] for d in row)
+                by0 = min(d[1] for d in row)
+                bx1 = max(d[2] for d in row)
+                by1 = max(d[3] for d in row)
+                pad_box = [bx0 - 8, by0 - 8, bx1 + 8, by1 + 8]
+                if any(
+                    _box_iou_xyxy(pad_box, eb) > 0.05
+                    or (eb[0] <= 0.5 * (bx0 + bx1) <= eb[2] and eb[1] <= 0.5 * (by0 + by1) <= eb[3])
+                    for eb in existing_boxes
+                ):
+                    continue
+                wx0 = max(0, bx0 - 10)
+                wy0 = max(0, by0 - 22)
+                wx1 = min(iw, bx1 + 10)
+                wy1 = min(ih, by1 + 22)
+                win = gray[wy0:wy1, wx0:wx1]
+                top_band = gray[max(0, by0 - 16):max(0, by0 - 3), bx0:bx1]
+                bot_band = gray[min(ih, by1 + 3):min(ih, by1 + 16), bx0:bx1]
+                if win.size > 0 and top_band.size > 0 and bot_band.size > 0:
+                    if float(np.mean(top_band > 228)) > 0.90 and float(np.mean(bot_band > 228)) > 0.90 and float(np.mean(win > 220)) > 0.85:
+                        l_band = gray[by0:by1, max(0, bx0 - 16):max(0, bx0 - 3)]
+                        r_band = gray[by0:by1, min(iw, bx1 + 3):min(iw, bx1 + 16)]
+                        if (l_band.size == 0 or float(np.mean(l_band > 225)) > 0.75) and (r_band.size == 0 or float(np.mean(r_band > 225)) > 0.75):
+                            for d_item in row:
+                                used[dots.index(d_item)] = True
+                            found.append({"box": [bx0, by0, bx1, by1], "text": "." * len(row), "score": 0.95, "src": "ellipsis"})
+    return found
+
+def _extract_page_blocks_tuned(engine, img_cv, is_korean=False, is_japanese=False):
+    """Pipeline OCR multi-passagem de alta precisão: original + canal mínimo (cores) + invertido (fundos escuros) + retry contextual."""
+    if img_cv is None or img_cv.size == 0:
+        return []
+    ih, iw = img_cv.shape[:2]
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    min_ch = img_cv.min(axis=2)
+    min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
+
+    cand_items = []
+    existing_xyxy = []
+
+    res_orig, _ = engine(img_cv)
+    for bd in (res_orig or []):
+        q, txt = bd[0], str(bd[1] or "").strip()
+        sc = float(bd[2]) if len(bd) > 2 else 1.0
+        xs = [float(p[0]) for p in q]
+        ys = [float(p[1]) for p in q]
+        b = [min(xs), min(ys), max(xs), max(ys)]
+        cand_items.append([q, b, img_cv, txt, sc, "orig"])
+        existing_xyxy.append(b)
+
+    res_min, _ = engine(min_bgr)
+    for bd in (res_min or []):
+        q, txt = bd[0], str(bd[1] or "").strip()
+        sc = float(bd[2]) if len(bd) > 2 else 1.0
+        xs = [float(p[0]) for p in q]
+        ys = [float(p[1]) for p in q]
+        b = [min(xs), min(ys), max(xs), max(ys)]
+        best_iou, best_idx = 0.0, -1
+        for idx_e, eb in enumerate(existing_xyxy):
+            iou = _box_iou_xyxy(b, eb)
+            if iou > best_iou:
+                best_iou, best_idx = iou, idx_e
+        if best_iou < 0.45:
+            cand_items.append([q, b, min_bgr, txt, sc, "min"])
+            existing_xyxy.append(b)
+        elif best_idx >= 0 and sc > cand_items[best_idx][4] + 0.14 and sc >= 0.65:
+            cand_items[best_idx] = [q, b, min_bgr, txt, sc, "min"]
+
+    if float(np.mean(gray < 75)) > 0.15:
+        inv_bgr = 255 - img_cv
+        res_inv, _ = engine(inv_bgr)
+        for bd in (res_inv or []):
+            q, txt = bd[0], str(bd[1] or "").strip()
+            sc = float(bd[2]) if len(bd) > 2 else 1.0
+            xs = [float(p[0]) for p in q]
+            ys = [float(p[1]) for p in q]
+            b = [min(xs), min(ys), max(xs), max(ys)]
+            if not any(_box_iou_xyxy(b, eb) >= 0.45 for eb in existing_xyxy):
+                sub_g = gray[max(0, int(b[1])):min(ih, int(b[3])), max(0, int(b[0])):min(iw, int(b[2]))]
+                if sub_g.size > 0 and float(np.median(sub_g)) < 90 and float(np.percentile(sub_g, 92)) > 150:
+                    cand_items.append([q, b, inv_bgr, txt, sc, "inv"])
+                    existing_xyxy.append(b)
+
+    # Costura e re-reconhece fragmentos verticais da MESMA coluna em mangá japonês (PP-OCRv4 exige rot90 CCW k=1 com padding)
+    if is_japanese and len(cand_items) >= 2:
+        nc = len(cand_items)
+        v_adj = {i: [] for i in range(nc)}
+        elig = []
+        for idx_k in range(nc):
+            bk = cand_items[idx_k][1]
+            bwk = bk[2] - bk[0]
+            bhk = bk[3] - bk[1]
+            elig.append(bwk <= 95.0 and bwk <= bhk * 1.45 + 6.0)
+        for i in range(nc):
+            if not elig[i]:
+                continue
+            b1 = cand_items[i][1]
+            bw1 = max(1.0, b1[2] - b1[0])
+            for j in range(i + 1, nc):
+                if not elig[j]:
+                    continue
+                b2 = cand_items[j][1]
+                bw2 = max(1.0, b2[2] - b2[0])
+                ov_x = max(0.0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
+                min_bw = min(bw1, bw2)
+                max_bw = max(bw1, bw2)
+                if ov_x / min_bw < 0.48 or max_bw > min_bw * 1.9:
+                    continue
+                gap_y = max(0.0, max(b1[1], b2[1]) - min(b1[3], b2[3]))
+                if gap_y > max(64.0, min_bw * 1.85):
+                    continue
+                blocked = False
+                if gap_y >= 2.0:
+                    sx0 = int(max(0, min(b1[0], b2[0]) - 14))
+                    sx1 = int(min(iw, max(b1[2], b2[2]) + 14))
+                    sy0 = int(max(0, min(b1[3], b2[3])))
+                    sy1 = int(min(ih, max(b1[1], b2[1])))
+                    if sx1 > sx0 + 6 and sy1 > sy0 + 2:
+                        strip = gray[sy0:sy1, sx0:sx1]
+                        if float(np.max(np.mean(strip < 105, axis=1))) >= 0.72:
+                            blocked = True
+                if not blocked:
+                    v_adj[i].append(j)
+                    v_adj[j].append(i)
+
+        v_vis = set()
+        stitched_cands = []
+        for i in range(nc):
+            if i in v_vis:
+                continue
+            comp = []
+            q_bfs = [i]
+            v_vis.add(i)
+            while q_bfs:
+                c_i = q_bfs.pop(0)
+                comp.append(c_i)
+                for nb in v_adj[c_i]:
+                    if nb not in v_vis:
+                        v_vis.add(nb)
+                        q_bfs.append(nb)
+            if len(comp) == 1:
+                stitched_cands.append(cand_items[i])
+                continue
+
+            ux0 = min(cand_items[k][1][0] for k in comp)
+            uy0 = min(cand_items[k][1][1] for k in comp)
+            ux1 = max(cand_items[k][1][2] for k in comp)
+            uy1 = max(cand_items[k][1][3] for k in comp)
+            if (uy1 - uy0) / max(1.0, ux1 - ux0) < 1.35:
+                for k in comp:
+                    stitched_cands.append(cand_items[k])
+                continue
+
+            tags_c = [cand_items[k][5] for k in comp]
+            if "inv" in tags_c:
+                src_u = next(cand_items[k][2] for k in comp if cand_items[k][5] == "inv")
+                tag_u = "inv"
+            elif tags_c.count("min") > tags_c.count("orig"):
+                src_u = next(cand_items[k][2] for k in comp if cand_items[k][5] == "min")
+                tag_u = "min"
+            else:
+                src_u = img_cv
+                tag_u = "orig"
+
+            cx0 = max(0, int(round(ux0)) - 4)
+            cy0 = max(0, int(round(uy0)) - 4)
+            cx1 = min(iw, int(round(ux1)) + 4)
+            cy1 = min(ih, int(round(uy1)) + 4)
+            crop_col = src_u[cy0:cy1, cx0:cx1]
+            t_col, s_col = _recognize_bg_padded_crop(engine, np.rot90(crop_col, k=1), pad_x=8, pad_y=4, min_h=48)
+            avg_frag_sc = sum(cand_items[k][4] for k in comp) / float(len(comp))
+            if t_col and len(t_col) >= 2 and (s_col >= 0.55 or (s_col >= avg_frag_sc and len(t_col) >= len(comp))):
+                uq = [[ux0, uy0], [ux1, uy0], [ux1, uy1], [ux0, uy1]]
+                stitched_cands.append([uq, [ux0, uy0, ux1, uy1], src_u, t_col, s_col, tag_u])
+            else:
+                for k in comp:
+                    stitched_cands.append(cand_items[k])
+        cand_items = stitched_cands
+
+    raw_blocks = []
+    for q, box_xyxy, src_img, txt, sc, tag in cand_items:
+        bw = box_xyxy[2] - box_xyxy[0]
+        bh = box_xyxy[3] - box_xyxy[1]
+        did_rot = (not is_korean and not is_japanese) and ((bh / max(1.0, bw)) >= 1.5)
+        if is_japanese and (bh / max(1.0, bw)) >= 1.45 and (sc < 0.78 or len(txt) <= 1):
+            c_rot, _ = _warp_ocr_quad_crop(src_img, q, allow_rot90=True, px_x=3.5, px_y=3.5)
+            t_rot, s_rot = _recognize_bg_padded_crop(engine, c_rot, pad_x=8, pad_y=4, min_h=48)
+            if t_rot and (s_rot >= max(0.55, sc + 0.06) or (len(t_rot) > len(txt) and s_rot >= 0.52)):
+                txt, sc = t_rot, s_rot
+        elif did_rot and (sc < 0.68 or len(txt) <= 1 or (re.search(r'[\u4e00-\u9fff]', txt) and sc < 0.72)):
+            c_no, _ = _warp_ocr_quad_crop(src_img, q, allow_rot90=False, px_x=2.0, px_y=0.0)
+            t_no, s_no = _recognize_bg_padded_crop(engine, c_no, pad_x=6, pad_y=3, min_h=30)
+            if s_no >= max(0.55, sc + 0.12) or (re.search(r'[A-Za-z]', t_no) and not re.search(r'[A-Za-z]', txt) and s_no >= 0.40):
+                txt, sc = t_no, s_no
+        elif sc < 0.55:
+            c_safe, _ = _warp_ocr_quad_crop(src_img, q, allow_rot90=(is_japanese and bh >= bw * 1.45), px_x=2.5, px_y=2.0 if is_japanese else 0.0)
+            t_s, s_s = _recognize_bg_padded_crop(engine, c_safe, pad_x=6, pad_y=3, min_h=36 if is_japanese else 28)
+            if t_s and ((s_s >= sc + 0.08 and s_s >= 0.52) or (not is_japanese and re.search(r'[A-Za-z]', t_s) and not re.search(r'[A-Za-z]', txt) and s_s >= 0.42)):
+                txt, sc = t_s, s_s
+        elif not is_korean and not is_japanese and re.match(r'^\.{1,5}[A-Za-z]|^[A-Za-z]+\.{2}$', txt):
+            c_ed, _ = _warp_ocr_quad_crop(src_img, q, allow_rot90=False, px_x=6.0, px_y=0.0)
+            t_ed, s_ed = _recognize_bg_padded_crop(engine, c_ed, pad_x=8, pad_y=2, min_h=0)
+            if t_ed and t_ed.count('.') > txt.count('.') and s_ed >= max(0.50, sc - 0.12):
+                txt, sc = t_ed, max(sc, s_ed)
+
+        if not is_korean and not is_japanese and re.fullmatch(r'A{3,}H+["\']?', txt, re.IGNORECASE):
+            txt = re.sub(r'["\']+$', '!!', txt)
+
+        if _is_corner_page_number_box(box_xyxy, txt, iw, ih):
+            continue
+
+        raw_blocks.append({"box": box_xyxy, "text": txt, "score": sc, "src": tag})
+
+    ell_boxes = _detect_ellipsis_bubbles_fallback(gray, [b["box"] for b in raw_blocks])
+    raw_blocks.extend(ell_boxes)
+
+    lat_chars = sum(len(re.findall(r'[A-Za-z]', b["text"])) for b in raw_blocks if b["score"] >= 0.50)
+    cjk_chars = sum(len(re.findall(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', b["text"])) for b in raw_blocks if b["score"] >= 0.55)
+    page_is_latin = (not is_korean and not is_japanese) and (lat_chars >= 12 and lat_chars > cjk_chars * 3)
+
+    n = len(raw_blocks)
+    has_conf_neighbor = [False] * n
+    for i in range(n):
+        if raw_blocks[i]["score"] < 0.55:
+            continue
+        for j in range(n):
+            if i != j and should_merge_lines(raw_blocks[i], raw_blocks[j], img_gray=gray):
+                has_conf_neighbor[j] = True
+
+    kept = []
+    for i, b in enumerate(raw_blocks):
+        t, sc = b["text"], b["score"]
+        bw = b["box"][2] - b["box"][0]
+        if not t:
+            continue
+        if page_is_latin and re.search(r'[\u4e00-\u9fff]', t) and not re.search(r'[A-Za-z]', t) and sc < 0.72:
+            if not (t in ("？", "！") and has_conf_neighbor[i]):
+                continue
+        if t == "？" and has_conf_neighbor[i]:
+            t = "?"
+        if t == "！" and has_conf_neighbor[i]:
+            t = "!"
+
+        if has_conf_neighbor[i] and page_is_latin:
+            if t in ("1", "l", "|") and bw < 28:
+                t = "I"
+                sc = max(sc, 0.55)
+            elif t == "T" and sc < 0.45 and bw < 30:
+                t = "IT"
+                sc = max(sc, 0.55)
+            elif t in ("50", "S0") and sc < 0.55 and bw < 42:
+                t = "SO"
+                sc = max(sc, 0.55)
+
+        if page_is_latin and re.search(r'\b15\b', t) and (re.search(r'[A-Za-z]', t) or has_conf_neighbor[i]):
+            if not re.search(r'(?:\$|years?|yrs?|age|day|chapter|p\.|no\.|minutes?|hours?|#)', t, re.I):
+                t = re.sub(r'\b15\b', 'IS', t)
+
+        is_ellipsis = bool(re.fullmatch(r'\.{2,8}', t))
+        if is_ellipsis and sc >= 0.28:
+            pass
+        elif has_conf_neighbor[i] and sc >= 0.25 and re.search(r'[A-Za-z?!]', t):
+            pass
+        elif is_ocr_noise(t, sc, is_korean=is_korean, is_japanese=is_japanese):
+            continue
+
+        kept.append({"box": b["box"], "text": t})
+
+    grouped = smart_group_bubbles(kept, img_gray=gray)
+    return grouped
+
+def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, is_japanese=False, progress_cb=None):
+    """Extrai textos usando RapidOCR (PP-OCRv5 Coreano, PP-OCRv4 Japonês ou Universal calibrado com detecção multi-passagem)."""
     img_files = get_image_files(manga_dir)
     if not img_files:
         print(f"[!] Erro crítico: Nenhuma imagem válida encontrada em '{manga_dir}'.")
         return False
     
-    engine = get_rapidocr_engine(is_korean=is_korean)
+    engine = get_rapidocr_engine(is_korean=is_korean, is_japanese=is_japanese)
     pages = []
     
-    desc_msg = "OCR Coreano PP-OCRv5 (Hangul)" if is_korean else "OCR Universal (RapidOCR)"
+    if is_korean:
+        desc_msg = "OCR Coreano PP-OCRv5 (Hangul)"
+        ver_str = "rapidocr_korean"
+        mdl_str = "ppocr_v5_korean"
+    elif is_japanese:
+        desc_msg = "OCR Japonês PP-OCRv4 (Hiragana/Katakana/Kanji)"
+        ver_str = "rapidocr_japanese"
+        mdl_str = "ppocr_v4_japanese"
+    else:
+        desc_msg = "OCR Universal (RapidOCR)"
+        ver_str = "rapidocr"
+        mdl_str = "rapidocr_default"
+
     print(f"[*] Extraindo textos usando {desc_msg}...")
     for idx, img_path in enumerate(tqdm(img_files, desc="OCR Pages")):
         if progress_cb:
@@ -4952,58 +5674,34 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, progres
             
         if img_cv is None:
             continue
-            
-        # Gera versão com canal mínimo (min_ch): faz textos rosa, vermelho e azul terem alto contraste
-        min_ch = img_cv.min(axis=2)
-        min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
-        
-        # Para Coreano, combina detecção no original e no min_bgr
-        res, _ = engine(img_cv)
-        if not res or len(res) < 2:
-            res_alt, _ = engine(min_bgr)
-            if res_alt and len(res_alt) > (len(res) if res else 0):
-                res = res_alt
 
-        blocks_for_grouping = []
-        if res:
-            for box_data in res:
-                coords = box_data[0]
-                text = box_data[1]
-                score = float(box_data[2]) if len(box_data) > 2 else 1.0
-                
-                if is_ocr_noise(text, score, is_korean=is_korean):
-                    continue
-                    
-                xs = [p[0] for p in coords]
-                ys = [p[1] for p in coords]
-                
-                clean_ocr_text = text.strip()
-                blocks_for_grouping.append({
-                    "box": [min(xs), min(ys), max(xs), max(ys)],
-                    "text": clean_ocr_text
-                })
-                
-        grouped = smart_group_bubbles(blocks_for_grouping)
+        grouped = _extract_page_blocks_tuned(engine, img_cv, is_korean=is_korean, is_japanese=is_japanese)
         final_blocks = []
         for b in grouped:
+            raw_bxs = b.get("raw_boxes") or [b["box"]]
             final_blocks.append({
                 "box": [int(round(float(v))) for v in b["box"]],
+                "raw_boxes": [[int(round(float(v))) for v in rb] for rb in raw_bxs],
+                "orig_line_count": int(b.get("orig_line_count", max(1, len(b.get("lines", []))))),
                 "vertical": bool(b["is_vertical"]),
                 "lines": b["lines"]
             })
             
         pages.append({
             "img_path": img_name,
+            "img_width": int(img_cv.shape[1]),
+            "img_height": int(img_cv.shape[0]),
             "blocks": final_blocks
         })
         
     mokuro_data = {
-        "version": "rapidocr_korean" if is_korean else "rapidocr",
-        "ocr_model": "ppocr_v5_korean" if is_korean else "rapidocr_default",
+        "version": ver_str,
+        "ocr_model": mdl_str,
         "pages": pages
     }
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(mokuro_data, f, ensure_ascii=False)
+    return True
 
 GROQ_DEFAULT_VISION_MODELS = [
     "qwen/qwen3.8-27b",
@@ -5076,62 +5774,199 @@ def _run_text_detector_only(det_engine, img_arr):
         return []
 
 def _detect_text_boxes_for_vision(det_engine, img_cv):
-    """Localiza e agrupa balões de diálogo geometricamente usando DBNet local (inclui textos coloridos)."""
+    """Localiza e agrupa balões de diálogo geometricamente usando DBNet calibrado + canal mínimo + invertido + reticências."""
     if img_cv is None:
         return []
 
-    raw_quads = _run_text_detector_only(det_engine, img_cv)
+    ih, iw = img_cv.shape[:2]
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
     boxes_xyxy = []
-    for quad in raw_quads:
-        try:
-            xs = [float(p[0]) for p in quad]
-            ys = [float(p[1]) for p in quad]
-            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
-            if (x1 - x0) >= 5.0 and (y1 - y0) >= 5.0 and ((x1 - x0) * (y1 - y0)) >= 48.0:
-                boxes_xyxy.append([x0, y0, x1, y1])
-        except Exception:
-            continue
+    block_meta = {}
 
-    if len(boxes_xyxy) < 2:
-        try:
-            min_ch = img_cv.min(axis=2)
-            min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
-            alt_quads = _run_text_detector_only(det_engine, min_bgr)
-            for quad in alt_quads:
-                try:
-                    xs = [float(p[0]) for p in quad]
-                    ys = [float(p[1]) for p in quad]
-                    ab = [min(xs), min(ys), max(xs), max(ys)]
-                    if (ab[2] - ab[0]) < 5.0 or (ab[3] - ab[1]) < 5.0 or ((ab[2] - ab[0]) * (ab[3] - ab[1])) < 48.0:
-                        continue
-                    if not any(_box_iou_xyxy(ab, eb) >= 0.45 for eb in boxes_xyxy):
-                        boxes_xyxy.append(ab)
-                except Exception:
+    def _add_quads(quads, src_tag):
+        for quad in (quads or []):
+            try:
+                xs = [float(p[0]) for p in quad]
+                ys = [float(p[1]) for p in quad]
+                x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+                if (x1 - x0) < 4.0 or (y1 - y0) < 4.0 or ((x1 - x0) * (y1 - y0)) < 36.0:
                     continue
+                if src_tag == "inv":
+                    sub_g = gray[max(0, int(y0)):min(ih, int(y1)), max(0, int(x0)):min(iw, int(x1))]
+                    if sub_g.size == 0 or float(np.median(sub_g)) >= 90 or float(np.percentile(sub_g, 92)) <= 150:
+                        continue
+                ab = [x0, y0, x1, y1]
+                if not any(_box_iou_xyxy(ab, eb) >= 0.45 for eb in boxes_xyxy):
+                    boxes_xyxy.append(ab)
+            except Exception:
+                continue
+
+    # Passagem 1: Imagem original
+    _add_quads(_run_text_detector_only(det_engine, img_cv), "orig")
+
+    # Passagem 2: Canal mínimo (sempre ativo para textos coloridos/rosa/azul/vermelho)
+    try:
+        min_ch = img_cv.min(axis=2)
+        min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
+        _add_quads(_run_text_detector_only(det_engine, min_bgr), "min")
+    except Exception:
+        pass
+
+    # Passagem 3: Condicional invertido (caixas escuras com texto claro)
+    if float(np.mean(gray < 75)) > 0.15:
+        try:
+            inv_bgr = 255 - img_cv
+            _add_quads(_run_text_detector_only(det_engine, inv_bgr), "inv")
         except Exception:
             pass
+
+    # Passagem 4: Fallback para ovais de reticências ('......') ignorados pelo DBNet
+    ell_boxes = _detect_ellipsis_bubbles_fallback(gray, boxes_xyxy)
+    for eb in ell_boxes:
+        b = eb["box"]
+        boxes_xyxy.append(b)
+        block_meta[tuple(int(round(v)) for v in b)] = eb["text"]
 
     if not boxes_xyxy:
         return []
 
-    blocks_for_grouping = [{"box": b, "text": "T"} for b in boxes_xyxy]
-    grouped = smart_group_bubbles(blocks_for_grouping)
-    ih, iw = img_cv.shape[:2]
+    blocks_for_grouping = []
+    for b in boxes_xyxy:
+        key = tuple(int(round(v)) for v in b)
+        blocks_for_grouping.append({"box": b, "text": block_meta.get(key, "T")})
+
+    grouped = smart_group_bubbles(blocks_for_grouping, img_gray=gray)
     ref_w = max(1.0, float(min(iw, ih)))
-    min_side_thr = max(18.0, 0.0155 * ref_w)
-    min_area_thr = max(360.0, (0.0155 * ref_w) ** 2)
+    min_side_thr = max(8.0, 0.008 * ref_w)
+    min_area_thr = max(64.0, (0.009 * ref_w) ** 2)
     filtered_grouped = []
     for b in grouped:
         bx0, by0, bx1, by1 = b["box"]
         bw = max(0.0, float(bx1 - bx0))
         bh = max(0.0, float(by1 - by0))
+        cx = 0.5 * (bx0 + bx1)
+        cy = 0.5 * (by0 + by1)
         rbs = b.get("raw_boxes") or [b["box"]]
+        ell_fb = block_meta.get(tuple(int(round(v)) for v in b["box"])) if len(rbs) == 1 else None
+        if ell_fb:
+            b["_ellipsis_fallback"] = ell_fb
+            filtered_grouped.append(b)
+            continue
         if len(rbs) <= 1 and (max(bw, bh) < min_side_thr or (bw * bh) < min_area_thr):
+            continue
+        if len(rbs) <= 1 and (cy > 0.935 * ih or cy < 0.045 * ih) and (cx < 0.22 * iw or cx > 0.78 * iw) and bh < 0.032 * ih and bw < 0.05 * iw:
             continue
         filtered_grouped.append(b)
     grouped = filtered_grouped
     grouped.sort(key=lambda b: (int(b["box"][1] // 100), b["box"][0]))
     return grouped
+
+def _render_vision_collage_image(img_cv, grouped_subset, max_side=1360):
+    """Monta grade compacta com recortes individuais [id] nítidos e sem sobreposição/ruído de arte externa."""
+    ih, iw = img_cv.shape[:2]
+    palette_bgr = [
+        (36, 28, 237),   # Vermelho vivo
+        (235, 110, 20),  # Azul forte
+        (60, 155, 10),   # Verde escuro
+        (205, 45, 165),  # Roxo
+        (0, 125, 230),   # Laranja
+    ]
+
+    prepared_cells = []
+    max_cell_w = 880
+    hdr_h = 28
+    pad_inner = 4
+
+    for idx, item in enumerate(grouped_subset):
+        box_id = item["vision_id"]
+        bx0, by0, bx1, by1 = item["box"]
+        bw = max(4.0, float(bx1 - bx0))
+        bh = max(4.0, float(by1 - by0))
+        px = max(8, min(18, int(round(bw * 0.09))))
+        py = max(6, min(14, int(round(bh * 0.12))))
+        x0 = max(0, int(round(bx0)) - px)
+        y0 = max(0, int(round(by0)) - py)
+        x1 = min(iw, int(round(bx1)) + px)
+        y1 = min(ih, int(round(by1)) + py)
+        crop = img_cv[y0:y1, x0:x1]
+        if crop is None or crop.size == 0:
+            crop = np.full((36, 60, 3), 255, dtype=np.uint8)
+
+        ch, cw = crop.shape[:2]
+        if ch < 44:
+            sc = min(2.4, 50.0 / float(max(1, ch)))
+            crop = cv2.resize(crop, (max(4, int(round(cw * sc))), max(4, int(round(ch * sc)))), interpolation=cv2.INTER_CUBIC)
+            ch, cw = crop.shape[:2]
+        elif ch < 70 and bw < 140:
+            sc = min(1.5, 68.0 / float(max(1, ch)))
+            crop = cv2.resize(crop, (max(4, int(round(cw * sc))), max(4, int(round(ch * sc)))), interpolation=cv2.INTER_CUBIC)
+            ch, cw = crop.shape[:2]
+
+        if cw > max_cell_w:
+            sc = float(max_cell_w) / float(cw)
+            crop = cv2.resize(crop, (max_cell_w, max(8, int(round(ch * sc)))), interpolation=cv2.INTER_AREA)
+            ch, cw = crop.shape[:2]
+
+        col = palette_bgr[idx % len(palette_bgr)]
+        label = f"[{box_id}]"
+        (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
+        cell_w = max(cw + pad_inner * 2, tw + 22)
+        cell_h = hdr_h + ch + pad_inner * 2
+
+        cell_img = np.full((cell_h, cell_w, 3), 255, dtype=np.uint8)
+        cv2.rectangle(cell_img, (0, 0), (cell_w - 1, cell_h - 1), (210, 210, 210), 1)
+        pill_w = min(cell_w, tw + 16)
+        cv2.rectangle(cell_img, (0, 0), (pill_w, hdr_h - 2), col, -1)
+        cv2.putText(cell_img, label, (7, hdr_h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2, cv2.LINE_AA)
+        cx_off = (cell_w - cw) // 2
+        cy_off = hdr_h + pad_inner
+        cell_img[cy_off:cy_off + ch, cx_off:cx_off + cw] = crop
+        prepared_cells.append(cell_img)
+
+    if not prepared_cells:
+        return _render_vision_annotated_image(img_cv, grouped_subset, max_side=max_side)
+
+    max_row_w = 1360
+    gutter = 18
+    margin = 16
+    rows = []
+    cur_row = []
+    cur_w = margin
+    for cimg in prepared_cells:
+        cw = cimg.shape[1]
+        if cur_row and (cur_w + cw + margin > max_row_w):
+            rows.append(cur_row)
+            cur_row = [cimg]
+            cur_w = margin + cw + gutter
+        else:
+            cur_row.append(cimg)
+            cur_w += cw + gutter
+    if cur_row:
+        rows.append(cur_row)
+
+    total_w = max(margin * 2 + sum(c.shape[1] for c in r) + gutter * max(0, len(r) - 1) for r in rows)
+    total_h = margin * 2 + sum(max(c.shape[0] for c in r) for r in rows) + gutter * max(0, len(rows) - 1)
+    canvas = np.full((total_h, total_w, 3), 255, dtype=np.uint8)
+
+    y_cur = margin
+    for r in rows:
+        x_cur = margin
+        row_h = max(c.shape[0] for c in r)
+        for cimg in r:
+            ch, cw = cimg.shape[:2]
+            canvas[y_cur:y_cur + ch, x_cur:x_cur + cw] = cimg
+            x_cur += cw + gutter
+        y_cur += row_h + gutter
+
+    cur_max = max(total_w, total_h)
+    if cur_max > max_side and max_side > 0:
+        sc = float(max_side) / float(cur_max)
+        canvas = cv2.resize(canvas, (max(1, int(round(total_w * sc))), max(1, int(round(total_h * sc)))), interpolation=cv2.INTER_AREA)
+
+    ok, buf = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    if not ok:
+        raise RuntimeError("Falha ao codificar colagem de recortes para IA Vision.")
+    return base64.b64encode(buf.tobytes()).decode("ascii")
 
 def _render_vision_annotated_image(img_cv, grouped_subset, max_side=1600):
     """Desenha caixas numeradas [id] sem cobrir o texto interno e codifica em JPEG base64."""
@@ -5243,7 +6078,8 @@ def _parse_vision_ocr_json(raw_text, expected_ids):
         val = parsed.get(k_str, parsed.get(int(eid) if str(eid).isdigit() else eid, ""))
         txt = str(val if val is not None else "").strip()
         txt = re.sub(rf'^\[{re.escape(k_str)}\]\s*', '', txt)
-        if re.search(r'[\u4e00-\u9fff\u3040-\u30ff]', txt) and not re.search(r'[\uac00-\ud7af]', txt):
+        txt = re.sub(r'^\[\d+\]$', '', txt)
+        if re.search(r'[\u4e00-\u9fff\u3040-\u30ff]', txt) and not re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', txt):
             txt = re.sub(r'\s*\n+\s*', '', txt)
         else:
             txt = re.sub(r'\s*\n+\s*', ' ', txt)
@@ -5429,7 +6265,7 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
     last_err = None
     n_keys = len(key_pool)
 
-    for _round in range(2):
+    for _round in range(3):
         now = time.time()
         avail_indices = [i for i in range(n_keys) if i not in exhausted_keys]
         if not avail_indices:
@@ -5483,8 +6319,8 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                             rst_tok_h = resp.headers.get("x-ratelimit-reset-tokens")
                         if rem_tok_h is not None:
                             try:
-                                if int(rem_tok_h) < 2300:
-                                    cd_sec = min(max(_parse_ratelimit_duration(rst_tok_h, 18.0), 4.0), 62.0)
+                                if int(rem_tok_h) < 2800:
+                                    cd_sec = min(max(_parse_ratelimit_duration(rst_tok_h, 15.0), 4.0), 62.0)
                                     cooldown_map[f"{idx_k}:{m_name}"] = time.time() + cd_sec
                                 else:
                                     cooldown_map.pop(f"{idx_k}:{m_name}", None)
@@ -5516,10 +6352,8 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                             exhausted_keys.add(idx_k)
                             break
                         if e.code == 429:
-                            is_daily = any(tok in err_low for tok in ("tokens per day", "requests per day", " tpd", " rpd"))
-                            if is_daily:
-                                exhausted_keys.add(idx_k)
-                                break
+                            is_rpd = any(tok in err_low for tok in ("requests per day", " rpd"))
+                            is_daily = is_rpd or any(tok in err_low for tok in ("tokens per day", " tpd"))
                             wait_sec = 16.0
                             try:
                                 retry_h = e.headers.get("retry-after") or e.headers.get("x-ratelimit-reset-tokens")
@@ -5531,7 +6365,10 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                                         wait_sec = _parse_ratelimit_duration(m_retry.group(1), 16.0) + 0.5
                             except Exception:
                                 pass
-                            cd_sec = min(max(wait_sec, 4.0), 62.0)
+                            if is_rpd or (is_daily and wait_sec > 1800.0):
+                                exhausted_keys.add(idx_k)
+                                break
+                            cd_sec = min(max(wait_sec, 4.0), 1800.0)
                             cooldown_map[f"{idx_k}:{m_name}"] = time.time() + cd_sec
                             break
                         if e.code == 400:
@@ -5540,7 +6377,7 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                                 continue
                             if any(tok in err_low for tok in ("safety", "policy", "prohibited", "nsfw")):
                                 raise VisionSafetyBlockedError(f"Groq Vision bloqueou imagem (HTTP 400).")
-                            if any(tok in err_low for tok in ("image", "multimodal", "vision", "model")):
+                            if any(tok in err_low for tok in ("model_not_found", "model not found", "does not support images", "not a multimodal", "invalid model")):
                                 exhausted_models.add(m_name)
                             break
                         if e.code == 404:
@@ -5571,7 +6408,7 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                     soonest_until = t_cd
         if soonest_until is not None:
             wait_s = max(1.0, soonest_until - now) + 0.5
-            if wait_s <= 64.0 and _round == 0:
+            if wait_s <= 64.0 and _round < 2:
                 print(f"[*] Groq Vision: janela TPM em pausa nas {len(rem_keys)} chave(s). Aguardando {wait_s:.1f}s...")
                 time.sleep(wait_s)
                 now_after = time.time()
@@ -5757,39 +6594,16 @@ def query_ollama_vision(b64_img, prompt, cfg, engine_opts=None, timeout=90):
         raise RuntimeError(f"Ollama Vision '{v_model}' retornou resposta vazia.")
     return out.strip()
 
-def _classic_fallback_page_blocks(img_cv, is_korean=False, engine_opts=None):
-    """Fallback cirúrgico por página para OCR clássico caso Vision falhe ou bloqueie página +18."""
+def _classic_fallback_page_blocks(img_cv, is_korean=False, is_japanese=False, engine_opts=None):
+    """Fallback cirúrgico por página para OCR clássico calibrado caso Vision falhe ou bloqueie página +18."""
     engine_opts = engine_opts if engine_opts is not None else {}
-    cache_key = f"_fallback_rec_engine_{bool(is_korean)}"
+    cache_key = f"_fallback_rec_engine_{bool(is_korean)}_{bool(is_japanese)}"
     rec_engine = engine_opts.get(cache_key)
     if rec_engine is None:
-        rec_engine = get_rapidocr_engine(is_korean=bool(is_korean))
+        rec_engine = get_rapidocr_engine(is_korean=bool(is_korean), is_japanese=bool(is_japanese))
         engine_opts[cache_key] = rec_engine
 
-    min_ch = img_cv.min(axis=2)
-    min_bgr = cv2.cvtColor(min_ch, cv2.COLOR_GRAY2BGR)
-    res, _ = rec_engine(img_cv)
-    if not res or len(res) < 2:
-        res_alt, _ = rec_engine(min_bgr)
-        if res_alt and len(res_alt) > (len(res) if res else 0):
-            res = res_alt
-
-    blocks_for_grouping = []
-    if res:
-        for box_data in res:
-            coords = box_data[0]
-            text = box_data[1]
-            score = float(box_data[2]) if len(box_data) > 2 else 1.0
-            if is_ocr_noise(text, score, is_korean=is_korean):
-                continue
-            xs = [p[0] for p in coords]
-            ys = [p[1] for p in coords]
-            blocks_for_grouping.append({
-                "box": [min(xs), min(ys), max(xs), max(ys)],
-                "text": str(text).strip()
-            })
-
-    grouped = smart_group_bubbles(blocks_for_grouping)
+    grouped = _extract_page_blocks_tuned(rec_engine, img_cv, is_korean=bool(is_korean), is_japanese=bool(is_japanese))
     final_blocks = []
     for b in grouped:
         final_blocks.append({
@@ -5801,22 +6615,34 @@ def _classic_fallback_page_blocks(img_cv, is_korean=False, engine_opts=None):
         })
     return final_blocks
 
-def _build_vision_prompt_for_ids(box_ids):
+def _build_vision_prompt_for_ids(box_ids, is_collage=True):
     id_min, id_max = box_ids[0], box_ids[-1]
     id_list_str = ", ".join(f'"{i}"' for i in box_ids)
+    if is_collage:
+        return (
+            f"Look at this white sheet showing cropped manga speech bubbles and SFX, each labeled [{id_min}] through [{id_max}] in a banner above its crop.\n"
+            f"Extract the EXACT original text visible inside each numbered crop in its ORIGINAL source language (Japanese, Korean, Chinese, English, Spanish, etc.).\n"
+            f"CRITICAL RULES:\n"
+            f"- DO NOT translate the text. Transcribe the exact characters/words visible inside each numbered crop.\n"
+            f"- Preserve leading/trailing ellipses ('...', '......'), punctuation (!, ?, ~), apostrophes ('), quotation marks, and heart symbols (♡/♥).\n"
+            f"- Keep all lines inside a single crop joined cleanly in natural reading order with spaces (or without spaces for Japanese/Chinese).\n"
+            f"- If a numbered crop contains ONLY artwork/shading/empty white background with no readable text or ellipses, set its value to \"\".\n"
+            f"Respond ONLY with a valid JSON object containing keys {id_list_str}. Example:\n"
+            f"{{\"{id_min}\": \"original text\"}}"
+        )
     return (
         f"Look at this manga/comic page. Specific text regions are marked with colored rectangles labeled [{id_min}] through [{id_max}].\n"
         f"Extract the EXACT original text inside each numbered rectangle in its ORIGINAL source language (Japanese, Korean, Chinese, English, Spanish, etc.).\n"
         f"CRITICAL RULES:\n"
         f"- DO NOT translate the text. Copy the exact original words/characters visible inside each box.\n"
-        f"- Preserve punctuation (!, ?, ..., ~) and heart symbols (♡).\n"
+        f"- Preserve punctuation (!, ?, ..., ~), apostrophes ('), and heart symbols (♡/♥).\n"
         f"- Join lines inside the same box cleanly in natural reading order with spaces (or without spaces for Japanese/Chinese).\n"
         f"- If a numbered box contains only artwork, shading, decorative UI icons/lines, or no readable dialogue/SFX text, set its value to \"\".\n"
         f"Respond ONLY with a valid JSON object containing keys {id_list_str}. Example:\n"
         f"{{\"{id_min}\": \"original text\"}}"
     )
 
-def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opts=None, fallback_is_korean=False):
+def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opts=None, fallback_is_korean=False, fallback_is_japanese=False):
     """
     Pipeline Híbrido para uma página:
     1. Detector geométrico local encontra balões/linhas e preserva coordenadas exatas (raw_boxes).
@@ -5877,7 +6703,7 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
         ordered_chain.append(p_name)
 
     if not ordered_chain:
-        return _classic_fallback_page_blocks(img_cv, is_korean=fallback_is_korean, engine_opts=engine_opts), "classic_fallback"
+        return _classic_fallback_page_blocks(img_cv, is_korean=fallback_is_korean, is_japanese=fallback_is_japanese, engine_opts=engine_opts), "classic_fallback"
 
     for idx, b in enumerate(grouped):
         b["vision_id"] = idx + 1
@@ -5890,8 +6716,13 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
     for b_start in range(0, len(grouped), batch_size):
         subset = grouped[b_start:b_start + batch_size]
         box_ids = [item["vision_id"] for item in subset]
-        b64_img = _render_vision_annotated_image(img_cv, subset, max_side=1450)
-        prompt = _build_vision_prompt_for_ids(box_ids)
+        is_collage = True
+        try:
+            b64_img = _render_vision_collage_image(img_cv, subset, max_side=1360)
+        except Exception:
+            b64_img = _render_vision_annotated_image(img_cv, subset, max_side=1450)
+            is_collage = False
+        prompt = _build_vision_prompt_for_ids(box_ids, is_collage=is_collage)
 
         chunk_parsed = None
         for backend in ordered_chain:
@@ -5934,7 +6765,7 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
     non_empty_count = sum(1 for item in grouped if extracted_map.get(str(item["vision_id"]), "").strip())
     if vision_failed_all or (len(substantive_boxes) >= 2 and non_empty_count == 0):
         print("[*] Vision AI sem extração válida nesta página -> Acionando fallback OCR clássico...")
-        return _classic_fallback_page_blocks(img_cv, is_korean=fallback_is_korean, engine_opts=engine_opts), "classic_fallback"
+        return _classic_fallback_page_blocks(img_cv, is_korean=fallback_is_korean, is_japanese=fallback_is_japanese, engine_opts=engine_opts), "classic_fallback"
 
     ih, iw = img_cv.shape[:2]
     ref_w = max(1.0, float(min(iw, ih)))
@@ -5943,12 +6774,18 @@ def extract_page_bubbles_with_ai_vision(img_cv, cfg, det_engine=None, engine_opt
     final_blocks = []
     for item in grouped:
         txt = extracted_map.get(str(item["vision_id"]), "").strip()
+        ell_fb = item.get("_ellipsis_fallback")
+        if ell_fb and (not txt or (re.fullmatch(r'\.{1,8}', txt) and len(txt) < len(ell_fb))):
+            txt = ell_fb
         if not txt:
             continue
+        if not is_majority_cjk([txt]):
+            txt = repair_glued_text(txt)
         raw_bxs = item.get("raw_boxes") or [item["box"]]
         bw = max(0.0, float(item["box"][2] - item["box"][0]))
         bh = max(0.0, float(item["box"][3] - item["box"][1]))
-        if len(raw_bxs) <= 1 and (bw * bh) < tiny_noise_area and re.fullmatch(r'[a-z0-9.,:;\-_=+*~`\'"/\\↑↓←→°·]+', txt):
+        is_ell = bool(re.fullmatch(r'\.{2,8}[!?]*', txt))
+        if not is_ell and len(raw_bxs) <= 1 and (bw * bh) < tiny_noise_area and re.fullmatch(r'[a-z0-9.,:;\-_=+*~`\'"/\\↑↓←→°·]+', txt):
             continue
         orig_lc = max(1, int(item.get("orig_line_count", len(raw_bxs))))
         final_blocks.append({
@@ -5976,12 +6813,16 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
 
     folder_name = os.path.basename(manga_dir)
     fallback_is_korean = bool(
-        re.search(r'[\uac00-\ud7af]', folder_name)
+        re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', folder_name)
         or re.search(r'\[(korean|coreano|kr|ko)\]', folder_name, re.IGNORECASE)
         or "manhwa" in folder_name.lower()
         or "webtoon" in folder_name.lower()
     )
-    korean_checked = fallback_is_korean
+    fallback_is_japanese = bool(
+        re.search(r'[\u3040-\u30ff]', folder_name)
+        or re.search(r'\[(japanese|japon[êe]s|japones|raw|jp)\]', folder_name, re.IGNORECASE)
+    ) and not fallback_is_korean
+    lang_checked = fallback_is_korean or fallback_is_japanese
 
     raw_gem_keys = list(cfg.get("gemini_api_keys") or [])
     if cfg.get("gemini_api_key") and cfg.get("gemini_api_key") not in raw_gem_keys:
@@ -6040,31 +6881,39 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
             continue
 
         # Se precisar de fallback clássico numa obra sem título óbvio, detecta idioma real 1 única vez
-        if not korean_checked and (
+        if not lang_checked and (
             (not active_backends)
             or engine_opts.get("_need_lang_check")
         ):
             try:
-                fallback_is_korean = (detect_manga_language_and_engine(manga_dir) == "korean")
+                det_res = detect_manga_language_and_engine(manga_dir)
+                fallback_is_korean = (det_res == "korean")
+                fallback_is_japanese = (det_res in ("mokuro", "japanese"))
             except Exception:
                 fallback_is_korean = False
-            korean_checked = True
+                fallback_is_japanese = False
+            lang_checked = True
 
         blocks, mode_used = extract_page_bubbles_with_ai_vision(
             img_cv,
             cfg,
             det_engine=det_engine,
             engine_opts=engine_opts,
-            fallback_is_korean=fallback_is_korean
+            fallback_is_korean=fallback_is_korean,
+            fallback_is_japanese=fallback_is_japanese
         )
-        if mode_used == "classic_fallback" and not korean_checked:
+        if mode_used == "classic_fallback" and not lang_checked:
             try:
-                if detect_manga_language_and_engine(manga_dir) == "korean":
+                det_res = detect_manga_language_and_engine(manga_dir)
+                if det_res == "korean":
                     fallback_is_korean = True
                     blocks = _classic_fallback_page_blocks(img_cv, is_korean=True, engine_opts=engine_opts)
+                elif det_res in ("mokuro", "japanese"):
+                    fallback_is_japanese = True
+                    blocks = _classic_fallback_page_blocks(img_cv, is_japanese=True, engine_opts=engine_opts)
             except Exception:
                 pass
-            korean_checked = True
+            lang_checked = True
 
         mode_counts[mode_used] = mode_counts.get(mode_used, 0) + 1
         pages.append({
@@ -6081,9 +6930,15 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
         print(f"[+] IA Vision OCR concluído: {vision_pages}/{len(pages)} página(s) via Visão IA ({stats_str})")
 
     if vision_pages == 0 and fallback_pages > 0:
+        if fallback_is_korean:
+            fb_ver, fb_mdl = "rapidocr_korean", "ppocr_v5_korean"
+        elif fallback_is_japanese:
+            fb_ver, fb_mdl = "rapidocr_japanese", "ppocr_v4_japanese"
+        else:
+            fb_ver, fb_mdl = "rapidocr", "rapidocr_default"
         mokuro_data = {
-            "version": "rapidocr_korean" if fallback_is_korean else "rapidocr",
-            "ocr_model": "ppocr_v5_korean" if fallback_is_korean else "rapidocr_default",
+            "version": fb_ver,
+            "ocr_model": fb_mdl,
             "vision_stats": mode_counts,
             "pages": pages
         }
@@ -6135,12 +6990,12 @@ def is_valid_translation(orig_text, trans_text):
         return False
     clean_orig = str(orig_text).strip()
     clean_trans = str(trans_text).strip()
-    # Se a tradução ainda contém ideogramas chineses, kana japoneses ou hangul coreano, NÃO foi traduzida para português
-    if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', clean_trans):
+    # Se a tradução ainda contém ideogramas chineses, kana japoneses ou hangul/jamo coreano, NÃO foi traduzida para português
+    if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', clean_trans):
         return False
     # Se for idêntico ao original e contiver letras ou caracteres asiáticos, não houve tradução
     if clean_trans.lower() == clean_orig.lower():
-        if re.search(r'[a-zA-Z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', clean_orig):
+        if re.search(r'[a-zA-Z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', clean_orig):
             return False
     # Rejeita saídas truncadas de uma única letra quando o original tem 3 ou mais caracteres (ex: 'O' para frase longa)
     if len(clean_orig) >= 3 and len(clean_trans) <= 1:
@@ -6278,6 +7133,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         expected_engine = "ai_vision"
     elif ocr_mode_low in ("korean", "manhwa"):
         expected_engine = "rapidocr_korean"
+    elif ocr_mode_low in ("japanese", "jp", "rapidocr_japanese", "japones", "japonês"):
+        expected_engine = "rapidocr_japanese"
     elif ocr_mode_low == "rapidocr":
         expected_engine = "rapidocr"
     elif ocr_mode_low == "mokuro":
@@ -6287,15 +7144,17 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         auto_lang = detect_manga_language_and_engine(manga_dir)
         if auto_lang == "korean":
             expected_engine = "rapidocr_korean"
+        elif auto_lang == "japanese":
+            expected_engine = "rapidocr_japanese"
         elif auto_lang == "rapidocr":
             expected_engine = "rapidocr"
         else:
             expected_engine = "mokuro"
 
-    # Verificação de segurança: se Mokuro foi escolhido mas não está instalado no ambiente
+    # Verificação de segurança: se Mokuro foi escolhido mas não está instalado no ambiente, usa RapidOCR Japonês PP-OCRv4
     if expected_engine == "mokuro" and not is_mokuro_available():
-        print("[!] Aviso: Mokuro não está instalado neste ambiente. Alternando automaticamente para RapidOCR Universal...")
-        expected_engine = "rapidocr"
+        print("[!] Aviso: Mokuro não está instalado neste ambiente. Alternando automaticamente para RapidOCR Japonês (PP-OCRv4)...")
+        expected_engine = "rapidocr_japanese"
 
     print(f"[+] Motor OCR definido: {expected_engine.upper()}")
 
@@ -6313,8 +7172,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             engine_matches = (
                 (expected_engine == "ai_vision" and file_version == "ai_vision" and file_ocr_model == "ai_vision_hybrid") or
                 (expected_engine == "rapidocr_korean" and file_version == "rapidocr_korean" and file_ocr_model == "ppocr_v5_korean") or
+                (expected_engine == "rapidocr_japanese" and file_version == "rapidocr_japanese" and file_ocr_model == "ppocr_v4_japanese") or
                 (expected_engine == "rapidocr" and file_version == "rapidocr") or
-                (expected_engine == "mokuro" and file_version not in ("rapidocr", "rapidocr_korean", "ai_vision"))
+                (expected_engine == "mokuro" and file_version not in ("rapidocr", "rapidocr_korean", "rapidocr_japanese", "ai_vision"))
             )
             
             if len(pages) > 0 and total_blocks > 0 and engine_matches:
@@ -6323,6 +7183,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             else:
                 if expected_engine == "rapidocr_korean" and file_ocr_model != "ppocr_v5_korean":
                     print("[*] Modelo OCR Coreano atualizado (PP-OCRv5). Regerando OCR e traduções antigas automaticamente...")
+                    ocr_model_upgraded = True
+                elif expected_engine == "rapidocr_japanese" and file_ocr_model != "ppocr_v4_japanese":
+                    print("[*] Modelo OCR Japonês atualizado (PP-OCRv4). Regerando OCR e traduções antigas automaticamente...")
                     ocr_model_upgraded = True
                 try: os.remove(mokuro_path)
                 except Exception: pass
@@ -6337,6 +7200,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         elif expected_engine == "rapidocr_korean":
             print("[+] Executando RapidOCR Coreano (Hangul)...")
             generate_rapidocr_json(manga_dir, mokuro_path, is_korean=True, progress_cb=progress_cb)
+        elif expected_engine == "rapidocr_japanese":
+            print("[+] Executando RapidOCR Japonês (PP-OCRv4 Hiragana/Katakana/Kanji)...")
+            generate_rapidocr_json(manga_dir, mokuro_path, is_japanese=True, progress_cb=progress_cb)
         elif expected_engine == "rapidocr":
             print("[+] Executando RapidOCR Universal com detecção de textos coloridos...")
             generate_rapidocr_json(manga_dir, mokuro_path, is_korean=False, progress_cb=progress_cb)
@@ -6355,9 +7221,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 mokuro_ok = False
 
             if not mokuro_ok:
-                print("[*] Ativando fallback automático para RapidOCR Universal para garantir a conclusão da tradução...")
-                expected_engine = "rapidocr"
-                generate_rapidocr_json(manga_dir, mokuro_path, is_korean=False, progress_cb=progress_cb)
+                print("[*] Ativando fallback automático para RapidOCR Japonês (PP-OCRv4) para garantir a conclusão da tradução...")
+                expected_engine = "rapidocr_japanese"
+                generate_rapidocr_json(manga_dir, mokuro_path, is_japanese=True, progress_cb=progress_cb)
 
     if not os.path.exists(mokuro_path):
         print("[!] Arquivo de texto OCR não foi gerado. Falha na leitura.")
@@ -6375,6 +7241,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     all_raw_texts = []
     font_path = get_best_font()
     
+    is_pregrouped_ocr = str(mokuro_data.get("version", "")) in ("rapidocr", "rapidocr_korean", "rapidocr_japanese", "ai_vision")
     for idx, page_info in enumerate(mokuro_data.get("pages", [])):
         fname = os.path.basename(page_info.get("img_path", ""))
         blocks_for_grouping = []
@@ -6387,6 +7254,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             text = smart_join_lines(lines, is_cjk=is_cjk_blk, preserve_spaces=is_ko_blk).strip()
             if not text:
                 continue
+            if not is_cjk_blk and is_pregrouped_ocr:
+                text = repair_glued_text(text)
             blk_entry = {
                 "box": [xmin, ymin, xmax, ymax],
                 "text": text,
@@ -6398,18 +7267,33 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 blk_entry["raw_boxes"] = blk.get("raw_boxes")
             blocks_for_grouping.append(blk_entry)
             
-        grouped = smart_group_bubbles(blocks_for_grouping)
-        bubbles = []
-        for b in grouped:
-            all_raw_texts.append(b["combined_text"])
-            bubbles.append({
-                "box": b["box"],
-                "raw_boxes": b.get("raw_boxes", [b["box"]]),
-                "orig_line_count": b.get("orig_line_count", max(1, len(b.get("lines", [])))),
-                "lines": b["lines"],
-                "combined_text": b["combined_text"],
-                "is_vertical": b["is_vertical"]
-            })
+        if is_pregrouped_ocr:
+            bubbles = []
+            for b in blocks_for_grouping:
+                combined_t = b["text"]
+                all_raw_texts.append(combined_t)
+                bubbles.append({
+                    "box": b["box"],
+                    "raw_boxes": b.get("raw_boxes", [b["box"]]),
+                    "orig_line_count": b.get("orig_line_count", max(1, len(b.get("lines", [])))),
+                    "lines": b["lines"],
+                    "combined_text": combined_t,
+                    "is_vertical": b["is_vertical"]
+                })
+            bubbles.sort(key=lambda b: (b["box"][1], b["box"][0]))
+        else:
+            grouped = smart_group_bubbles(blocks_for_grouping)
+            bubbles = []
+            for b in grouped:
+                all_raw_texts.append(b["combined_text"])
+                bubbles.append({
+                    "box": b["box"],
+                    "raw_boxes": b.get("raw_boxes", [b["box"]]),
+                    "orig_line_count": b.get("orig_line_count", max(1, len(b.get("lines", [])))),
+                    "lines": b["lines"],
+                    "combined_text": b["combined_text"],
+                    "is_vertical": b["is_vertical"]
+                })
             
         pages_data.append({
             "page": idx + 1,
@@ -6562,33 +7446,25 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             img_pil.save(out_file, quality=95)
             continue
         
-        # 4.1 Limpar balões com algoritmo cirúrgico (Apenas se foi traduzido com sucesso)
+        # 4.1 Limpar balões com algoritmo cirúrgico (Apenas se foi traduzido com sucesso; preserva reticências puras)
         img_cv_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
         for b in bubbles:
             trans_txt = b.get("translated_text", "").strip()
-            if not trans_txt or not is_valid_translation(b["combined_text"], trans_txt):
+            if not trans_txt or re.fullmatch(r'\.{2,8}|…+', trans_txt) or not is_valid_translation(b["combined_text"], trans_txt):
                 continue
             r_boxes = b.get("raw_boxes") or [b["box"]]
             for r_box in r_boxes:
                 clean_speech_bubble(cleaned, r_box)
-            # Evita limpar retângulo de união diagonal em texto solto na arte; só aplica se o interior resultante já for liso/claro
-            if len(r_boxes) > 1:
-                ux0, uy0, ux1, uy1 = [max(0, int(round(v))) for v in b["box"]]
-                ux1, uy1 = min(w_img, ux1), min(h_img, uy1)
-                if ux1 > ux0 + 4 and uy1 > uy0 + 4:
-                    u_gray = cv2.cvtColor(cleaned[uy0:uy1, ux0:ux1], cv2.COLOR_BGR2GRAY)
-                    if float(np.mean(u_gray > 195)) > 0.72:
-                        clean_speech_bubble(cleaned, b["box"])
                 
         # 4.2 Desenhar texto traduzido com geometria anti-extravasamento e escala consistente
         cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
         line_heights_all = []
         for b in bubbles:
             b_txt = b.get("translated_text", "").strip()
-            if not b_txt or b_txt in ("...", "…") or not is_valid_translation(b["combined_text"], b_txt):
+            if not b_txt or re.fullmatch(r'\.{2,8}|…+', b_txt) or not is_valid_translation(b["combined_text"], b_txt):
                 continue
             rbs = b.get("raw_boxes") or [b["box"]]
-            has_cjk_b = bool(re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', b.get("combined_text", "")))
+            has_cjk_b = bool(re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', b.get("combined_text", "")))
             if b.get("is_vertical") and has_cjk_b:
                 b_hs = [(rb[2] - rb[0]) for rb in rbs]
                 b_h_med = float(np.median([max(8.0, float(v)) for v in b_hs])) if b_hs else float(b["box"][2] - b["box"][0])
@@ -6610,7 +7486,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
         for i, b in enumerate(bubbles):
             text = b.get("translated_text", "").strip().upper()
-            if not text or text in ("...", "…"):
+            if not text or re.fullmatch(r'\.{2,8}|…+', text):
                 continue
             if not is_valid_translation(b["combined_text"], text):
                 continue
@@ -6631,7 +7507,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 if i == j:
                     continue
                 other_text = other.get("translated_text", "").strip().upper()
-                if not other_text or other_text in ("...", "…"):
+                if not other_text or re.fullmatch(r'\.{2,8}|…+', other_text):
                     continue
                 o_xmin, o_ymin, o_xmax, o_ymax = other["box"]
                 o_cx = (o_xmin + o_xmax) / 2
@@ -7307,6 +8183,10 @@ if __name__ == "__main__":
         elif "--rapidocr" in args:
             chosen_mode = "rapidocr"
             args.remove("--rapidocr")
+        elif "--japanese" in args or "--jp" in args:
+            chosen_mode = "japanese"
+            if "--japanese" in args: args.remove("--japanese")
+            if "--jp" in args: args.remove("--jp")
         elif "--mokuro" in args:
             chosen_mode = "mokuro"
             args.remove("--mokuro")

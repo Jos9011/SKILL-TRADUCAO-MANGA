@@ -1107,7 +1107,8 @@ def api_inspect_folder():
     lang_labels = {
         "korean": "Coreano (Manhwa / Webtoon)",
         "rapidocr": "Ocidental / Inglês / Chinês",
-        "mokuro": "Japonês (Leitura Vertical)"
+        "mokuro": "Japonês (Leitura Vertical)",
+        "japanese": "Japonês (Leitura Vertical)",
     }
     
     return jsonify({

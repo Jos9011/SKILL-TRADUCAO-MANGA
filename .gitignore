@@ -4,4 +4,5 @@ __pycache__/
 *.log
 .temp/
 .thumb_cache/
+models/
 config.json

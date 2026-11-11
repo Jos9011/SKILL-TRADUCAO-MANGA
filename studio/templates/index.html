@@ -1931,8 +1931,8 @@
             Modo App Desktop
           </button>
           <div class="status-pill" id="header-ai-pill">
-            <div class="status-dot pulsing"></div>
-            <span id="header-ai-label">Groq Cloud • Qwen 27B</span>
+            <div class="status-dot pulsing" id="header-ai-dot"></div>
+            <span id="header-ai-label">Groq Cloud • Qwen 3.8 27B</span>
           </div>
         </div>
       </header>
@@ -2114,12 +2114,17 @@
         <div class="section-header-row">
           <div style="min-width: 0;">
             <h2 style="font-size: 1.4rem; font-weight: 800; margin-bottom: 4px;">Status das Contas e Cotas de IA</h2>
-            <p style="color: var(--text-subdued); font-size: 0.9rem;">Monitoramento ao vivo de saldo, tokens e limites diários.</p>
+            <p style="color: var(--text-subdued); font-size: 0.9rem;">Monitoramento real de RPD, TPM, TPD diário, saldo líquido e alertas 429 em execução.</p>
           </div>
-          <button class="btn-spotify" onclick="loadStatus()">
-            <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-            Atualizar Agora
-          </button>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button class="btn-secondary" style="border-color: rgba(29, 185, 84, 0.45); color: var(--spotify-green);" onclick="loadStatus(true)" title="Envia uma sondagem realista (~2k tokens no Groq e :generateContent no Gemini) para confirmar se há cota TPD real disponível agora">
+              🔬 Sondar TPD Real
+            </button>
+            <button class="btn-spotify" onclick="loadStatus(false)">
+              <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+              Atualizar Agora
+            </button>
+          </div>
         </div>
 
         <div class="quota-grid" id="quota-cards-container">
@@ -2249,7 +2254,7 @@
             <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-subtle);">
               <label class="option-label">Modelo Ativo Padrão</label>
               <select id="cfg-groq-model" style="width: 100%; background: var(--bg-card); border: 1px solid var(--border-subtle); padding: 10px 14px; border-radius: 8px; color: white; outline: none; font-size: 0.9rem;">
-                <option value="qwen/qwen3.8-27b">Qwen 2.5 (27B) - Recomendado / Mais Rápido / Sem Censura</option>
+                <option value="qwen/qwen3.8-27b">Qwen 3.8 (27B) - Recomendado / Mais Rápido / Sem Censura</option>
                 <option value="openai/gpt-oss-120b">GPT-OSS (120B) - Zero Censura Avançado</option>
                 <option value="openai/gpt-oss-20b">GPT-OSS (20B) - Leve e Estável</option>
               </select>
@@ -3125,7 +3130,7 @@
           }
           const liveEngine = document.getElementById('live-engine-label');
           if (liveEngine) {
-            liveEngine.innerText = selectedOptions.provider === 'groq' ? 'Groq Cloud (Híbrido • Qwen 27B)' :
+            liveEngine.innerText = selectedOptions.provider === 'groq' ? `Groq Cloud (${formatModelShortName(currentConfig.groq_model || 'qwen/qwen3.8-27b')})` :
                                    selectedOptions.provider === 'openrouter' ? 'OpenRouter Cloud' : 'IA Local GPU (Ollama)';
           }
 
@@ -3422,83 +3427,193 @@
       confirmDeleteManga(currentSelectedManga.path, currentSelectedManga.name || 'Obra Selecionada');
     }
 
-    // QUOTAS & STATUS
-    async function loadStatus() {
-      const container = document.getElementById('quota-cards-container');
-      container.innerHTML = '<div style="color: var(--text-subdued);">Consultando servidores de IA ao vivo...</div>';
-      try {
-        const res = await fetch('/api/status');
-        const d = await res.json();
-        
-        let html = '';
-        
-        // 1. GROQ CARDS & POOL SUMMARY
-        const groqKeys = d.groq.keys || (d.groq.configured ? [{
-          index: 1,
-          masked_key: d.groq.masked_key,
-          models: d.groq.models
-        }] : []);
+    function formatModelShortName(modelName) {
+      const m = String(modelName || '').trim();
+      const ml = m.toLowerCase();
+      if (!m) return 'Qwen 3.8 27B';
+      if (ml.includes('qwen3.8-27b')) return 'Qwen 3.8 (27B)';
+      if (ml.includes('gpt-oss-120b')) return 'GPT-OSS 120B';
+      if (ml.includes('gpt-oss-20b')) return 'GPT-OSS 20B';
+      if (ml.includes('maverick')) return 'Llama 4 Maverick';
+      if (ml.includes('scout')) return 'Llama 4 Scout';
+      return m.split('/').pop();
+    }
 
-        if (d.groq.total_qwen_limit) {
+    function formatDurationPt(sec) {
+      const s = Math.max(0, Math.round(Number(sec || 0)));
+      if (!s) return '0s';
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const r = s % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${r}s`;
+      return `${r}s`;
+    }
+
+    function updateHeaderAiPill(labelText, state = 'ok') {
+      const lbl = document.getElementById('header-ai-label');
+      const dot = document.getElementById('header-ai-dot');
+      if (lbl && labelText) lbl.innerText = labelText;
+      if (dot) {
+        if (state === 'err') dot.style.backgroundColor = 'var(--red-accent)';
+        else if (state === 'warn') dot.style.backgroundColor = 'var(--yellow-accent)';
+        else dot.style.backgroundColor = 'var(--spotify-green)';
+      }
+    }
+
+    // QUOTAS & STATUS
+    async function loadStatus(deep = false) {
+      const container = document.getElementById('quota-cards-container');
+      container.innerHTML = `<div style="color: var(--text-subdued);">${deep ? '🔬 Executando sondagem realista TPD/Vision nos servidores de IA...' : 'Consultando servidores e telemetria real de cotas...'}</div>`;
+      try {
+        const res = await fetch(deep ? '/api/status?deep=1' : '/api/status');
+        const d = await res.json();
+
+        let html = '';
+
+        // 0. ALERTAS DE EXECUÇÃO RECENTE (runtime 429 / fallback)
+        const warnings = Array.isArray(d.runtime_warnings) ? d.runtime_warnings : [];
+        if (warnings.length > 0) {
           html += `
-            <div class="pool-summary-card">
-              <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
-                <span style="font-size: 1.4rem;">⚡</span>
-                <div style="min-width: 0;">
-                  <h4 style="font-size: 1rem; font-weight: 800; color: white;">Pool de Chaves Groq Cloud (${groqKeys.length} chave${groqKeys.length > 1 ? 's' : ''} ativa${groqKeys.length > 1 ? 's' : ''})</h4>
-                  <p style="font-size: 0.8rem; color: var(--text-subdued);">Rotação automática inteligente com zero censura</p>
-                </div>
+            <div class="pool-summary-card" style="grid-column: 1 / -1; border-color: rgba(255, 193, 7, 0.45); background: rgba(255, 193, 7, 0.08); flex-direction: column; align-items: stretch; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 8px; font-weight: 800; color: var(--yellow-accent); font-size: 0.95rem;">
+                <span>⚠️ Alertas Recentes de Cota / Limite na Execução</span>
               </div>
-              <div>
-                <div style="font-size: 1.25rem; font-weight: 800; color: var(--spotify-green);">${d.groq.total_qwen_remaining || 0} / ${d.groq.total_qwen_limit || 1000}</div>
-                <div style="font-size: 0.75rem; color: var(--text-muted);">Requisições Diárias Disponíveis</div>
+              <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.82rem; color: #f5e6b3;">
+                ${warnings.slice(0, 3).map(w => `
+                  <div>• <strong>${escapeHtml((w.provider || 'IA').toUpperCase())}</strong>${w.key ? ` (${escapeHtml(w.key)})` : ''}: ${escapeHtml(w.msg || '')}</div>
+                `).join('')}
               </div>
             </div>
           `;
         }
 
+        // 1. GROQ CARDS & POOL SUMMARY
+        const activeGroqM = d.groq.active_model || 'qwen/qwen3.8-27b';
+        const fbGroqM = d.groq.fallback_model || 'openai/gpt-oss-120b';
+        const groqKeys = d.groq.keys || (d.groq.configured ? [{
+          index: 1,
+          masked_key: d.groq.masked_key,
+          models: d.groq.models,
+          ok: true
+        }] : []);
+
+        const readyCount = d.groq.ready_keys_count != null ? d.groq.ready_keys_count : groqKeys.filter(k => k.ok).length;
+        const anyReadyCount = d.groq.any_model_ready_keys != null ? d.groq.any_model_ready_keys : readyCount;
+        const actRem = d.groq.total_active_remaining != null ? d.groq.total_active_remaining : (d.groq.total_qwen_remaining || 0);
+        const actLim = d.groq.total_active_limit != null ? d.groq.total_active_limit : (d.groq.total_qwen_limit || 0);
+
+        if (groqKeys.length > 0) {
+          let poolTitleColor = readyCount > 0 ? 'var(--spotify-green)' : (anyReadyCount > 0 ? 'var(--yellow-accent)' : 'var(--red-accent)');
+          let poolSub = readyCount > 0
+            ? `${readyCount}/${groqKeys.length} chave(s) prontas em ${formatModelShortName(activeGroqM)} • ${d.groq.deep_checked ? 'TPD verificado agora' : 'Ping + telemetria ativa'}`
+            : (anyReadyCount > 0
+              ? `Modelo ativo ${formatModelShortName(activeGroqM)} sem cota nas ${groqKeys.length} chave(s) • Fallback GPT-OSS livre`
+              : `Todas as ${groqKeys.length} chave(s) esgotadas/bloqueadas no momento`);
+
+          html += `
+            <div class="pool-summary-card">
+              <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
+                <span style="font-size: 1.4rem;">⚡</span>
+                <div style="min-width: 0;">
+                  <h4 style="font-size: 1rem; font-weight: 800; color: white;">Pool Groq Cloud • ${escapeHtml(formatModelShortName(activeGroqM))}</h4>
+                  <p style="font-size: 0.8rem; color: var(--text-subdued);">${escapeHtml(poolSub)}</p>
+                </div>
+              </div>
+              <div style="text-align: right;">
+                <div style="font-size: 1.25rem; font-weight: 800; color: ${poolTitleColor};">${readyCount > 0 ? `${actRem} / ${actLim || '?'}` : `0 / ${actLim || groqKeys.length * 1000}`}</div>
+                <div style="font-size: 0.75rem; color: var(--text-muted);">${readyCount > 0 ? 'Reqs Diárias Livres (RPD)' : 'Bloqueado p/ Tradução'}</div>
+              </div>
+            </div>
+          `;
+
+          if (readyCount > 0) {
+            updateHeaderAiPill(`Groq Cloud • ${formatModelShortName(activeGroqM)}`, 'ok');
+          } else if (anyReadyCount > 0) {
+            updateHeaderAiPill(`Groq Cloud • Fallback GPT-OSS`, 'warn');
+          } else {
+            updateHeaderAiPill(`Groq Cloud • Cotas Esgotadas`, 'err');
+          }
+        }
+
         groqKeys.forEach((gk) => {
           const gModels = gk.models || {};
-          const qwen = gModels['qwen/qwen3.8-27b'] || {};
-          const gpt120 = gModels['openai/gpt-oss-120b'] || {};
-          const isExhausted = qwen.rem_req === 0 || !qwen.ok;
+          const orderedModelNames = [];
+          [activeGroqM, fbGroqM, 'qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b', ...Object.keys(gModels)].forEach(mn => {
+            if (mn && gModels[mn] && !orderedModelNames.includes(mn)) orderedModelNames.push(mn);
+          });
+          const primaryM = gModels[activeGroqM] || {};
+          const keyAllOk = !!primaryM.ok && (primaryM.page_ready !== false);
+          const keyAnyOk = !!gk.ok;
+
+          let badgeText = 'Cota Esgotada';
+          let badgeStyle = 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);';
+          if (keyAllOk) {
+            badgeText = 'Pronta • Páginas Reais';
+            badgeStyle = '';
+          } else if (keyAnyOk) {
+            badgeText = 'Ativo Esgotado • Alt. Livre';
+            badgeStyle = 'background: rgba(255, 193, 7, 0.2); color: var(--yellow-accent);';
+          }
+
+          let modelsHtml = orderedModelNames.map((mName) => {
+            const mi = gModels[mName] || {};
+            const isPrimary = mName === activeGroqM;
+            const hasReq = mi.rem_req != null && mi.lim_req != null;
+            const hasTok = mi.rem_tok != null && mi.lim_tok != null;
+            const hasTpd = mi.tpd_limit != null && mi.tpd_remaining != null;
+            const mReady = !!mi.ok && mi.page_ready !== false;
+            const reqColor = mReady ? 'var(--spotify-green)' : (mi.is_daily_limit ? 'var(--red-accent)' : 'var(--yellow-accent)');
+            const rpdPct = (hasReq && mi.lim_req > 0) ? Math.max(0, Math.min(100, (mi.rem_req / mi.lim_req) * 100)) : 0;
+            const tpdPct = (hasTpd && mi.tpd_limit > 0) ? Math.max(0, Math.min(100, (mi.tpd_remaining / mi.tpd_limit) * 100)) : 0;
+
+            return `
+              <div class="meter-container" style="padding-top: 8px; border-top: ${isPrimary ? 'none' : '1px solid rgba(255,255,255,0.06)'};">
+                <div class="meter-label-row">
+                  <span><strong>${escapeHtml(formatModelShortName(mName))}</strong>${isPrimary ? ' (Ativo)' : ''}</span>
+                  <span style="font-weight: 700; color: ${reqColor};">
+                    ${hasReq ? `${mi.rem_req}/${mi.lim_req} RPD` : (mReady ? 'OK' : (mi.limit_type || 'Bloqueado'))}
+                  </span>
+                </div>
+                ${hasReq ? `
+                  <div class="meter-bar">
+                    <div class="meter-fill" style="width: ${rpdPct}%; background-color: ${reqColor};"></div>
+                  </div>
+                ` : ''}
+                ${hasTpd ? `
+                  <div style="margin-top: 6px;">
+                    <div class="meter-label-row" style="font-size: 0.74rem; color: var(--text-muted); margin-bottom: 3px;">
+                      <span>Cota Diária TPD ${d.groq.deep_checked ? '(Verificada)' : '(Estimada)'}</span>
+                      <span style="color: ${mi.tpd_exhausted ? 'var(--red-accent)' : 'var(--spotify-green)'}; font-weight: 700;">
+                        ${mi.tpd_remaining.toLocaleString('pt-BR')} / ${mi.tpd_limit.toLocaleString('pt-BR')} tok
+                      </span>
+                    </div>
+                    <div class="meter-bar" style="height: 5px;">
+                      <div class="meter-fill" style="width: ${tpdPct}%; background-color: ${mi.tpd_exhausted ? 'var(--red-accent)' : 'var(--spotify-green)'};"></div>
+                    </div>
+                  </div>
+                ` : ''}
+                <div style="font-size: 0.74rem; color: ${mReady ? 'var(--text-muted)' : (mi.is_daily_limit ? '#ff8a8a' : 'var(--yellow-accent)')}; margin-top: 4px; line-height: 1.35;">
+                  ${hasTok ? `TPM: ${mi.rem_tok}/${mi.lim_tok}` : 'TPM: —'}${mi.rst_tok ? ` (reset ${escapeHtml(mi.rst_tok)})` : ''}
+                  ${mi.tpd_exhausted && mi.tpd_reset_sec ? ` • Libera p/ pág em ~${formatDurationPt(mi.tpd_reset_sec)}` : ''}
+                  ${!mReady && mi.msg ? `<br>${escapeHtml(mi.msg)}` : ''}
+                </div>
+              </div>
+            `;
+          }).join('');
 
           html += `
             <div class="quota-card">
               <div class="quota-card-header">
                 <h3>⚡ Groq Cloud • Chave #${gk.index || 1}</h3>
-                <span class="meta-badge ${isExhausted ? '' : 'highlight'}" style="${isExhausted ? 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);' : ''}">
-                  ${isExhausted ? 'Cota Esgotada' : 'Nuvem • Ativa'}
+                <span class="meta-badge ${keyAllOk ? 'highlight' : ''}" style="${badgeStyle}">
+                  ${escapeHtml(badgeText)}
                 </span>
               </div>
-              
-              <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 14px;">
+              <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 10px;">
                 Chave: <code>${escapeHtml(gk.masked_key || 'Configurada')}</code>
               </div>
-
-              <div class="meter-container">
-                <div class="meter-label-row">
-                  <span>Qwen 2.5 (27B) - Requisições Hoje</span>
-                  <span style="font-weight: 700; color: ${qwen.rem_req > 0 ? 'var(--spotify-green)' : 'var(--red-accent)'};">
-                    ${qwen.rem_req !== undefined ? qwen.rem_req : '1000'}/1000
-                  </span>
-                </div>
-                <div class="meter-bar">
-                  <div class="meter-fill" style="width: ${((qwen.rem_req !== undefined ? qwen.rem_req : 1000)/1000)*100}%; background-color: ${qwen.rem_req > 0 ? 'var(--spotify-green)' : 'var(--red-accent)'};"></div>
-                </div>
-                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
-                  Tokens livres no minuto: ${qwen.rem_tok || 8000}/8000 • Reseta em ${qwen.rst_req || '0s'}
-                </div>
-              </div>
-
-              <div class="meter-container">
-                <div class="meter-label-row">
-                  <span>GPT-OSS 120B - Status Diário</span>
-                  <span style="font-weight: 700; color: ${gpt120.ok ? 'var(--spotify-green)' : 'var(--yellow-accent)'};">
-                    ${gpt120.ok ? 'Liberado / Pronto' : (gpt120.msg || 'Aguardando')}
-                  </span>
-                </div>
-              </div>
+              ${modelsHtml}
             </div>
           `;
         });
@@ -3510,40 +3625,79 @@
             <div class="quota-card">
               <div class="quota-card-header">
                 <h3>🌐 OpenRouter Cloud</h3>
-                <span class="meta-badge">Offline</span>
+                <span class="meta-badge">Não Configurada</span>
               </div>
               <p style="font-size: 0.85rem; color: var(--text-subdued);">Nenhuma chave OpenRouter cadastrada.</p>
             </div>
           `;
         } else {
           orKeys.forEach((ork, idx) => {
+            const credits = Number(ork.credits || 0);
+            const hasPaid = credits > 0.01;
+            const dailyExh = !!ork.daily_exhausted;
+            const hasFreeDetails = !!ork.has_free_quota_details;
+
+            let badgeLabel = 'Free Tier';
+            let badgeStyle = '';
+            if (ork.err && !ork.ok) {
+              badgeLabel = 'Erro de Chave';
+              badgeStyle = 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);';
+            } else if (dailyExh) {
+              badgeLabel = 'Cota Diária Esgotada';
+              badgeStyle = 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);';
+            } else if (hasPaid) {
+              badgeLabel = 'Com Créditos';
+            } else if (ork.upstream_limited_model) {
+              badgeLabel = 'Free Tier (Fila Busy)';
+              badgeStyle = 'background: rgba(255, 193, 7, 0.2); color: var(--yellow-accent);';
+            }
+
+            let quotaSection = '';
+            if (hasFreeDetails) {
+              const fLim = ork.free_limit || 50;
+              const fUsed = ork.free_used || 0;
+              const fRem = ork.free_rem != null ? ork.free_rem : Math.max(0, fLim - fUsed);
+              const fPct = Math.max(0, Math.min(100, (fRem / fLim) * 100));
+              quotaSection = `
+                <div class="meter-container">
+                  <div class="meter-label-row">
+                    <span>Modelos :free (${fLim}/dia)</span>
+                    <span style="font-weight: 700; color: ${fRem > 0 ? 'var(--spotify-green)' : 'var(--red-accent)'};">
+                      ${fUsed} de ${fLim} usadas
+                    </span>
+                  </div>
+                  <div class="meter-bar">
+                    <div class="meter-fill" style="width: ${fPct}%; background-color: ${fRem > 0 ? 'var(--spotify-green)' : 'var(--red-accent)'};"></div>
+                  </div>
+                  <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                    ${fRem === 0 ? 'Cota :free esgotada hoje. Renova às 21:00 BRT (00:00 UTC).' : `${fRem} requisições :free restantes hoje`}
+                  </div>
+                </div>
+              `;
+            } else {
+              quotaSection = `
+                <div style="font-size: 0.78rem; color: var(--text-subdued); margin-bottom: 10px; line-height: 1.4;">
+                  ${hasPaid
+                    ? 'Conta com créditos pagos ativos (acesso liberado a modelos pagos sem fila :free).'
+                    : 'Conta gratuita (~50 reqs/dia em modelos <code>:free</code>; sujeita a filas/429 compartilhados).'}
+                </div>
+              `;
+            }
+
             html += `
               <div class="quota-card">
                 <div class="quota-card-header">
                   <h3>🌐 OpenRouter • Chave #${ork.index || (idx + 1)}</h3>
-                  <span class="meta-badge">${ork.free_rem > 0 ? 'Free Tier' : 'Limite Atingido'}</span>
+                  <span class="meta-badge ${(!dailyExh && ork.ok) ? 'highlight' : ''}" style="${badgeStyle}">${escapeHtml(badgeLabel)}</span>
                 </div>
-                <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 14px;">
+                <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 12px;">
                   Chave: <code>${escapeHtml(ork.key || 'sk-or-v1...')}</code>
                 </div>
-
-                <div class="meter-container">
-                  <div class="meter-label-row">
-                    <span>Modelos Gratuitos (50/dia)</span>
-                    <span style="font-weight: 700; color: ${ork.free_rem > 0 ? 'var(--spotify-green)' : 'var(--yellow-accent)'};">
-                      ${ork.free_used || 0} de ${ork.free_limit || 50} usados
-                    </span>
-                  </div>
-                  <div class="meter-bar">
-                    <div class="meter-fill" style="width: ${((ork.free_rem || 0)/(ork.free_limit || 50))*100}%; background-color: ${ork.free_rem > 0 ? 'var(--spotify-green)' : 'var(--yellow-accent)'};"></div>
-                  </div>
-                  <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
-                    ${ork.free_rem === 0 ? 'Renovação às 21:00 BRT (00:00 UTC)' : `${ork.free_rem} requisições livres hoje`}
-                  </div>
-                </div>
-
-                <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-subtle); font-size: 0.85rem;">
-                  Saldo Pago: <strong style="color: white;">$${(ork.credits || 0).toFixed(2)} USD</strong> (R$ ${((ork.credits || 0)*5.8).toFixed(2)})
+                ${quotaSection}
+                ${ork.runtime_warning ? `<div style="font-size: 0.76rem; color: #ffb74d; margin-bottom: 8px;">⚠️ ${escapeHtml(ork.runtime_warning)}</div>` : ''}
+                ${ork.err && !ork.ok ? `<div style="font-size: 0.76rem; color: var(--red-accent); margin-bottom: 8px;">❌ ${escapeHtml(ork.err)}</div>` : ''}
+                <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); font-size: 0.85rem;">
+                  Saldo Líquido: <strong style="color: ${hasPaid ? 'var(--spotify-green)' : 'white'};">$${credits.toFixed(2)} USD</strong> (R$ ${(credits * 5.8).toFixed(2)})
                 </div>
               </div>
             `;
@@ -3561,25 +3715,31 @@
                 <span class="meta-badge">Opcional</span>
               </div>
               <p style="font-size: 0.84rem; color: var(--text-subdued); line-height: 1.45;">
-                Nenhuma chave Gemini cadastrada. O modo <strong>IA Vision</strong> funciona mesmo assim usando suas chaves OpenRouter ou Ollama Vision!
+                Nenhuma chave Gemini cadastrada. O modo <strong>IA Vision</strong> usa Groq/OpenRouter/Ollama Vision automaticamente.
               </p>
             </div>
           `;
         } else {
           gemKeys.forEach((gk, idx) => {
+            const isQExh = !!gk.quota_exhausted;
+            const badgeTxt = isQExh ? 'Cota 429 Atingida' : (gk.ok ? 'Pronta' : 'Erro');
+            const badgeSt = isQExh
+              ? 'background: rgba(255, 193, 7, 0.2); color: var(--yellow-accent);'
+              : (gk.ok ? '' : 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);');
+            const rstHint = (isQExh && gk.quota_reset_sec > 0) ? ` • Libera em ~${formatDurationPt(gk.quota_reset_sec)}` : '';
             html += `
               <div class="quota-card">
                 <div class="quota-card-header">
                   <h3>👁️ Gemini Vision • Chave #${gk.index || (idx + 1)}</h3>
-                  <span class="meta-badge ${gk.ok ? 'highlight' : ''}" style="${gk.ok ? '' : 'background: rgba(226, 33, 52, 0.2); color: var(--red-accent);'}">
-                    ${gk.ok ? 'Pronta' : 'Erro'}
+                  <span class="meta-badge ${gk.ok && !isQExh ? 'highlight' : ''}" style="${badgeSt}">
+                    ${escapeHtml(badgeTxt)}
                   </span>
                 </div>
                 <div style="font-size: 0.82rem; color: var(--text-subdued); margin-bottom: 10px;">
                   Chave: <code>${escapeHtml(gk.key || 'AIza...')}</code>
                 </div>
-                <div style="font-size: 0.82rem; color: var(--text-subdued);">
-                  Modelo: <strong style="color: white;">${escapeHtml(gemData.active_model || 'gemini-2.5-flash')}</strong> • ${escapeHtml(gk.msg || (gk.ok ? 'Operacional' : 'Verifique a chave'))}
+                <div style="font-size: 0.82rem; color: ${isQExh ? '#ffb74d' : 'var(--text-subdued)'}; line-height: 1.4;">
+                  Modelo: <strong style="color: white;">${escapeHtml(gemData.active_model || 'gemini-2.5-flash')}</strong> • ${escapeHtml((gk.msg || (gk.ok ? 'Operacional' : 'Verifique a chave')) + rstHint)}
                 </div>
               </div>
             `;
@@ -3593,7 +3753,7 @@
             <div class="quota-card-header">
               <h3>🦙 Ollama (Local / Colab)</h3>
               <span class="meta-badge" style="color: ${d.ollama.status === 'online' ? 'var(--spotify-green)' : 'var(--text-muted)'};">
-                ${d.ollama.status.toUpperCase()}
+                ${escapeHtml(String(d.ollama.status || 'offline').toUpperCase())}
               </span>
             </div>
             <p style="font-size: 0.85rem; color: var(--text-subdued); margin-bottom: 8px;">
@@ -3719,6 +3879,7 @@
         }
 
         renderKeyLists();
+        updateHeaderAiPill(`Groq Cloud • ${formatModelShortName(currentConfig.groq_model || 'qwen/qwen3.8-27b')}`, 'ok');
         setSelectValueSafe('cfg-groq-model', currentConfig.groq_model, 'qwen/qwen3.8-27b');
         setSelectValueSafe('cfg-openrouter-model', currentConfig.openrouter_model, 'nvidia/nemotron-3.5-lightning:free');
         setSelectValueSafe('cfg-vision-provider', currentConfig.vision_provider, 'auto');
@@ -3965,16 +4126,26 @@
 
     async function testKey(provider, key, btnEl) {
       const origText = btnEl.innerText;
-      btnEl.innerText = "Testando...";
+      btnEl.innerText = "Sondando...";
       btnEl.disabled = true;
       try {
+        let targetModel = '';
+        if (provider === 'groq') {
+          targetModel = document.getElementById('cfg-groq-model')?.value || currentConfig.groq_model || 'qwen/qwen3.8-27b';
+        } else if (provider === 'gemini') {
+          targetModel = document.getElementById('cfg-gemini-model')?.value || currentConfig.gemini_model || 'gemini-2.5-flash';
+        }
         const res = await fetch('/api/test_key', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: provider, key: key })
+          body: JSON.stringify({ provider: provider, key: key, model: targetModel, deep: true })
         });
         const data = await res.json();
-        alert((data.valid ? "✅ " : "❌ ") + data.msg);
+        const icon = data.valid ? (data.rate_limited ? "⚠️ " : "✅ ") : "❌ ";
+        alert(icon + data.msg);
+        if (document.getElementById('tab-quotas')?.classList.contains('active')) {
+          loadStatus(false);
+        }
       } catch (e) {
         alert("Erro ao testar chave.");
       } finally {
@@ -4343,6 +4514,7 @@
 
     // INIT
     window.addEventListener('DOMContentLoaded', () => {
+      loadConfig();
       loadLibrary();
       checkActiveJob();
     });

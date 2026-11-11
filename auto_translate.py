@@ -20,6 +20,8 @@ import time
 import io
 import base64
 import json
+import hashlib
+import threading
 import cv2
 import shutil
 import subprocess
@@ -621,52 +623,123 @@ def load_project_glossary(manga_dir):
 LEARNED_RULES_TXT = os.path.join(SCRIPT_DIR, "aprendizado.txt")
 GLOBAL_TRANSLATION_MEMORY = os.path.join(SCRIPT_DIR, "memoria_traducoes.json")
 
-def _filter_learning_rules_for_lang(lines, src_lang="auto"):
+def _normalize_src_lang_tag(src_lang):
+    """Normaliza códigos de idioma (ex: 'en' -> 'en-US', 'ja' -> 'ja-JP') para seleção de regras e prompts."""
+    s = str(src_lang or "auto").strip().lower()
+    if s in ("", "auto"):
+        return "auto"
+    if s.startswith("ko"):
+        return "ko-KR"
+    if s.startswith("ja"):
+        return "ja-JP"
+    if s.startswith("zh"):
+        return "zh-CN"
+    if s.startswith("es"):
+        return "es-ES"
+    if s.startswith("en"):
+        return "en-US"
+    return src_lang
+
+_WORK_SPECIFIC_HEADERS = (
+    "boku no toshiue",
+    "misaki (buta)",
+    "slave is ravaged",
+    "butachang",
+    "kireinabuta",
+    "奴隶姐姐",
+)
+
+_WORK_SPECIFIC_LATIN_MARKERS = (
+    "yu-kun",
+    "gyaru tatuada",
+    "split tongue",
+    "nuhaha",
+    "scaaary",
+    "come on in",
+    "welcome, yu-kun",
+    "gymshorts",
+    "are you staring at my boobs",
+    "tiny dick / small cock",
+    "cold~",
+    "this is what summer is really all about",
+    "slave is",
+)
+
+def _work_header_matches_hint(header_low, work_low):
+    if not work_low:
+        return False
+    if any(k in header_low for k in ("boku no", "misaki", "older friend")):
+        return any(w in work_low for w in ("boku no", "misaki", "yu-kun", "older friend"))
+    if any(k in header_low for k in ("slave", "奴隶", "butachang", "kireinabuta")):
+        return any(w in work_low for w in ("slave", "奴隶", "butachang", "kireinabuta"))
+    return False
+
+def _filter_learning_rules_for_lang(lines, src_lang="auto", active_work_hint=""):
     """Filtra regras de aprendizado específicas de outros idiomas/obras para economizar tokens em cotas TPM sem perder regras gerais."""
-    if not src_lang or src_lang == "auto":
+    norm_lang = _normalize_src_lang_tag(src_lang)
+    if not norm_lang or norm_lang == "auto":
         return lines
 
-    is_asian_ko = (src_lang == "ko-KR")
-    is_asian_zh_ja = src_lang in ("zh-CN", "ja-JP")
-    is_latin = src_lang in ("en-US", "es-ES")
+    is_asian_ko = (norm_lang == "ko-KR")
+    is_asian_zh_ja = norm_lang in ("zh-CN", "ja-JP")
+    is_latin = norm_lang in ("en-US", "es-ES")
+    work_low = str(active_work_hint or "").lower()
 
     filtered = []
     skip_work_block = False
+    current_work_allowed = False
     for line in lines:
         s = line.strip()
-        if "DIRETRIZES ESPECÍFICAS DE OBRAS" in s or "DIRETRIZES ESPECIFICAS DE OBRAS" in s:
+        s_low = s.lower()
+        if "nomes de personagens e termos fixos" in s_low and s_low.rstrip(":").endswith("nomes de personagens e termos fixos"):
+            continue
+        if "diretrizes específicas de obras" in s_low or "diretrizes especificas de obras" in s_low:
             skip_work_block = True
+            current_work_allowed = False
             continue
         if skip_work_block:
-            if not s.startswith("*") and not s.startswith("- "):
-                skip_work_block = False
-            elif s.startswith("- ") and not any(k in s for k in ("Boku no", "Slave Is", "奴隶", "Yu-kun")):
-                skip_work_block = False
-            else:
-                if is_latin and ("Boku no Toshiue" in s or "Yu-kun" in s):
-                    pass
-                elif is_asian_zh_ja and ("Slave Is" in s or "奴隶" in s):
-                    pass
-                else:
+            if s.startswith("*"):
+                current_work_allowed = _work_header_matches_hint(s_low, work_low)
+                if not current_work_allowed:
                     continue
+            elif s.startswith("-") and (
+                any(h in s_low for h in _WORK_SPECIFIC_LATIN_MARKERS)
+                or re.search(r'[\u4e00-\u9fff\u3040-\u30ff]', s)
+            ):
+                if not current_work_allowed:
+                    continue
+            else:
+                skip_work_block = False
+                current_work_allowed = False
+
+        if s.startswith("*") and any(h in s_low for h in _WORK_SPECIFIC_HEADERS):
+            if not _work_header_matches_hint(s_low, work_low):
+                continue
 
         if is_asian_ko:
             if re.search(r'[\u4e00-\u9fff]', s) and not re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', s):
                 continue
             if re.match(r'^[*•-]\s*[a-zA-Z0-9\s\'/\-~!?,]+->', s) and not re.search(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]', s):
                 continue
-            if any(marker in s for marker in ("Boku no Toshiue", "Slave Is", "Come hang out:", "It's hard (", "Fr I END (", "MARCAS D'ÁGUA DE SCANS CHINESES")):
+            if any(m in s_low for m in ("boku no toshiue", "slave is", "come hang out:", "it's hard (", "fr i end (", "marcas d'água de scans chineses", "pee-pee", "yu-kun / yuk-un")):
                 continue
         elif is_latin:
-            if re.search(r'[\u4e00-\u9fff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f\u3040-\u30ff]', s) and "-> " in s:
+            # Remove mapeamentos individuais em CJK/Hangul e exemplos de uma obra específica alheia
+            if re.search(r'[\u4e00-\u9fff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f\u3040-\u30ff]', s):
+                if "->" in s or "·" in s or "：" in s or s.startswith("*"):
+                    continue
+            if any(m in s_low for m in ("marcas d'água de scans chineses", "888 / 8888888", "danmaku de aplausos")):
                 continue
-            if any(marker in s for marker in ("Slave Is", "MARCAS D'ÁGUA DE SCANS CHINESES", "888 / 8888888")):
+            if any(m in s_low for m in _WORK_SPECIFIC_LATIN_MARKERS) and not _work_header_matches_hint("boku no misaki", work_low):
+                continue
+        elif is_asian_zh_ja:
+            if any(m in s_low for m in _WORK_SPECIFIC_LATIN_MARKERS) and not _work_header_matches_hint("boku no misaki", work_low):
                 continue
 
         filtered.append(line)
     return filtered
 
-def load_learning_rules(src_lang="auto"):
+def load_learning_rules(src_lang="auto", active_work_hint=""):
     """Lê as diretrizes de aprendizado humano de aprendizado.txt para injetar nos prompts da IA."""
     if not os.path.exists(LEARNED_RULES_TXT):
         initial_content = """# =====================================================================
@@ -704,7 +777,13 @@ def load_learning_rules(src_lang="auto"):
             with open(LEARNED_RULES_TXT, "r", encoding="utf-8") as f:
                 for line in f:
                     line_str = line.strip()
-                    if not line_str or line_str.startswith("#") or line_str.startswith("="):
+                    if not line_str:
+                        continue
+                    if line_str.startswith("#"):
+                        if "REGRAS APRENDIDAS" in line_str.upper():
+                            current_sec = "do"
+                        continue
+                    if line_str.startswith("="):
                         continue
                     if "[O QUE FAZER" in line_str.upper():
                         current_sec = "do"
@@ -714,15 +793,18 @@ def load_learning_rules(src_lang="auto"):
                         continue
                     
                     if current_sec == "do":
-                        dos.append(line_str)
+                        if line_str.upper().startswith(("- NUNCA ", "NUNCA ", "- PROIBIDO")):
+                            donts.append(line_str)
+                        else:
+                            dos.append(line_str)
                     elif current_sec == "dont":
                         donts.append(line_str)
         except Exception:
             pass
 
     if src_lang and src_lang != "auto":
-        dos = _filter_learning_rules_for_lang(dos, src_lang=src_lang)
-        donts = _filter_learning_rules_for_lang(donts, src_lang=src_lang)
+        dos = _filter_learning_rules_for_lang(dos, src_lang=src_lang, active_work_hint=active_work_hint)
+        donts = _filter_learning_rules_for_lang(donts, src_lang=src_lang, active_work_hint=active_work_hint)
 
     return dos, donts
 
@@ -2233,14 +2315,721 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path, stroke_width=1, shape_t
     )
     return font, lines
 
+QUOTA_STATE_FILE = os.path.join(SCRIPT_DIR, ".temp", "quota_state.json")
+GROQ_MIN_PAGE_TOKENS = 2200
+_QUOTA_LOCK = threading.RLock()
+
+def _parse_ratelimit_duration(raw_val, default=15.0):
+    """Converte strings de reset/retry-after da API (ex: '18.15s', '1m12.4s', '13m39.9s', '350ms') em segundos."""
+    if raw_val is None:
+        return default
+    s = str(raw_val).strip().lower()
+    if not s:
+        return default
+    try:
+        return float(s)
+    except Exception:
+        pass
+    total = 0.0
+    matched = False
+    for pattern, mult in ((r'(\d+(?:\.\d+)?)\s*h', 3600.0), (r'(\d+(?:\.\d+)?)\s*m(?!s)', 60.0), (r'(\d+(?:\.\d+)?)\s*ms', 0.001), (r'(\d+(?:\.\d+)?)\s*s', 1.0)):
+        m = re.search(pattern, s)
+        if m:
+            total += float(m.group(1)) * mult
+            matched = True
+    return total if matched and total > 0.0 else default
+
+def _format_duration_pt(seconds):
+    """Formata segundos em duração legível em português (ex: '13m 40s', '1h 12m')."""
+    try:
+        sec = max(0, int(round(float(seconds))))
+    except Exception:
+        return "0s"
+    if sec < 60:
+        return f"{sec}s"
+    mins, rem_s = divmod(sec, 60)
+    if mins < 60:
+        return f"{mins}m {rem_s:02d}s" if rem_s else f"{mins}m"
+    hrs, rem_m = divmod(mins, 60)
+    return f"{hrs}h {rem_m:02d}m"
+
+def _quota_key_fp(api_key):
+    """Gera identificador não-reversível (SHA-256 curto) para persistir telemetria sem expor segredos."""
+    clean = str(api_key or "").strip()
+    if not clean:
+        return ""
+    return hashlib.sha256(clean.encode("utf-8")).hexdigest()[:16]
+
+def _quota_mask_key(api_key):
+    k = str(api_key or "").strip()
+    return (k[:8] + "..." + k[-4:]) if len(k) > 12 else "***"
+
+def _hdr_get(headers, name, default=None):
+    """Obtém header HTTP de forma case-insensitive (suporta urllib HTTPMessage e dicts comuns)."""
+    if not headers:
+        return default
+    try:
+        if hasattr(headers, "get"):
+            val = headers.get(name)
+            if val is not None:
+                return val
+        low_target = name.lower()
+        items = headers.items() if hasattr(headers, "items") else []
+        for hk, hv in items:
+            if str(hk).lower() == low_target:
+                return hv
+    except Exception:
+        pass
+    return default
+
+def _load_quota_state_unlocked():
+    state_path = QUOTA_STATE_FILE
+    base = {"groq": {}, "openrouter": {}, "gemini": {}, "events": []}
+    if not state_path or not os.path.exists(state_path):
+        return base
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for k in ("groq", "openrouter", "gemini"):
+                if isinstance(data.get(k), dict):
+                    base[k] = data[k]
+            if isinstance(data.get("events"), list):
+                base["events"] = data["events"]
+    except Exception:
+        pass
+    return base
+
+def _save_quota_state_unlocked(state):
+    state_path = QUOTA_STATE_FILE
+    if not state_path:
+        return
+    try:
+        parent = os.path.dirname(os.path.abspath(state_path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp_path = f"{state_path}.{threading.get_ident()}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, state_path)
+    except Exception:
+        pass
+
+def _append_quota_event_unlocked(state, provider, level, msg, key_masked="", model=""):
+    events = state.setdefault("events", [])
+    now = time.time()
+    # Evita spam idêntico em menos de 15 segundos
+    if events:
+        last = events[-1]
+        if last.get("provider") == provider and last.get("msg") == msg and (now - float(last.get("ts", 0))) < 15.0:
+            last["ts"] = now
+            return
+    events.append({
+        "ts": now,
+        "provider": provider,
+        "level": level,
+        "key": key_masked,
+        "model": model,
+        "msg": msg
+    })
+    if len(events) > 25:
+        del events[:-25]
+
+def parse_groq_rate_limit_details(err_body, headers=None, http_code=429):
+    """Analisa corpo e cabeçalhos de erro HTTP 429/413 do Groq diferenciando TPD, RPD, TPM, RPM e OVERSIZE."""
+    body_str = str(err_body or "")
+    low = body_str.lower()
+    code_int = int(http_code or 429)
+
+    limit_type = "UNKNOWN"
+    if "tokens per day" in low or "(tpd)" in low or re.search(r'\btpd\b', low):
+        limit_type = "TPD"
+    elif "requests per day" in low or "(rpd)" in low or re.search(r'\brpd\b', low):
+        limit_type = "RPD"
+    elif "tokens per minute" in low or "(tpm)" in low or re.search(r'\btpm\b', low):
+        limit_type = "TPM"
+    elif "requests per minute" in low or "(rpm)" in low or re.search(r'\brpm\b', low):
+        limit_type = "RPM"
+
+    m_lim = re.search(r'\blimit\s*:?\s*(\d+)', low)
+    m_used = re.search(r'\bused\s*:?\s*(\d+)', low)
+    m_req = re.search(r'\brequested\s*:?\s*(\d+)', low)
+
+    limit_val = int(m_lim.group(1)) if m_lim else None
+    used_val = int(m_used.group(1)) if m_used else None
+    requested_val = int(m_req.group(1)) if m_req else None
+
+    if limit_val is None and limit_type == "TPM":
+        h_lim = _hdr_get(headers, "x-ratelimit-limit-tokens")
+        if h_lim is not None:
+            try:
+                limit_val = int(h_lim)
+            except Exception:
+                pass
+    elif limit_val is None and limit_type == "RPD":
+        h_lim = _hdr_get(headers, "x-ratelimit-limit-requests")
+        if h_lim is not None:
+            try:
+                limit_val = int(h_lim)
+            except Exception:
+                pass
+
+    rem_val = max(0, limit_val - used_val) if (limit_val is not None and used_val is not None) else None
+
+    retry_after = 0.0
+    m_retry = re.search(r'try again in\s*((?:\d+\s*h\s*)?(?:\d+\s*m(?!s)\s*)?[\d.]+\s*(?:ms|s))', low)
+    if m_retry:
+        retry_after = _parse_ratelimit_duration(m_retry.group(1), 0.0)
+    if retry_after <= 0.0:
+        h_retry = _hdr_get(headers, "retry-after")
+        if h_retry is not None:
+            retry_after = _parse_ratelimit_duration(h_retry, 0.0)
+    if retry_after <= 0.0 and limit_type == "TPM":
+        h_rst = _hdr_get(headers, "x-ratelimit-reset-tokens")
+        if h_rst is not None:
+            retry_after = _parse_ratelimit_duration(h_rst, 0.0)
+    if retry_after <= 0.0 and limit_type == "RPD":
+        h_rst = _hdr_get(headers, "x-ratelimit-reset-requests")
+        if h_rst is not None:
+            retry_after = _parse_ratelimit_duration(h_rst, 0.0)
+    if retry_after <= 0.0:
+        retry_after = 900.0 if limit_type in ("TPD", "RPD") else 12.0
+
+    is_oversize = bool(
+        code_int == 413
+        or "request entity too large" in low
+        or "payload too large" in low
+        or "reduce your message" in low
+        or (limit_type == "TPM" and limit_val is not None and requested_val is not None and requested_val > limit_val)
+    )
+    if is_oversize and limit_type == "UNKNOWN":
+        limit_type = "OVERSIZE"
+
+    is_daily = bool(not is_oversize and limit_type in ("TPD", "RPD"))
+    is_tpm = bool(is_oversize or limit_type in ("TPM", "RPM") or (code_int == 429 and not is_daily))
+
+    return {
+        "http_code": code_int,
+        "limit_type": limit_type,
+        "limit": limit_val,
+        "used": used_val,
+        "requested": requested_val,
+        "remaining": rem_val,
+        "retry_after": float(retry_after),
+        "is_oversize": is_oversize,
+        "is_daily": is_daily,
+        "is_tpm": is_tpm,
+        "raw_excerpt": body_str.strip()[:260],
+    }
+
+def record_groq_response_headers(api_key, model_name, headers, used_tokens=0, source="chat", probe_ok=False):
+    """Registra cabeçalhos de rate-limit do Groq (RPD/TPM) e deduz tokens reais consumidos do saldo TPD conhecido."""
+    fp = _quota_key_fp(api_key)
+    if not fp or not model_name:
+        return
+    now = time.time()
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        k_rec = state["groq"].setdefault(fp, {"masked": _quota_mask_key(api_key), "models": {}})
+        k_rec["masked"] = _quota_mask_key(api_key)
+        entry = k_rec["models"].setdefault(model_name, {})
+
+        def _parse_int_hdr(h_name):
+            v = _hdr_get(headers, h_name)
+            if v is None:
+                return None
+            try:
+                return int(float(v))
+            except Exception:
+                return None
+
+        rem_req = _parse_int_hdr("x-ratelimit-remaining-requests")
+        lim_req = _parse_int_hdr("x-ratelimit-limit-requests")
+        rem_tok = _parse_int_hdr("x-ratelimit-remaining-tokens")
+        lim_tok = _parse_int_hdr("x-ratelimit-limit-tokens")
+        rst_req = _hdr_get(headers, "x-ratelimit-reset-requests")
+        rst_tok = _hdr_get(headers, "x-ratelimit-reset-tokens")
+
+        if rem_req is not None:
+            entry["rem_req"] = rem_req
+        if lim_req is not None:
+            entry["lim_req"] = lim_req
+        if rst_req is not None:
+            entry["rst_req"] = str(rst_req)
+        if rem_tok is not None:
+            entry["rem_tok"] = rem_tok
+        if lim_tok is not None:
+            entry["lim_tok"] = lim_tok
+        if rst_tok is not None:
+            entry["rst_tok"] = str(rst_tok)
+
+        if lim_tok and rem_tok is not None and rem_tok < GROQ_MIN_PAGE_TOKENS and rst_tok:
+            entry["tpm_retry_until"] = now + _parse_ratelimit_duration(rst_tok, 8.0)
+        elif rem_tok is not None and rem_tok >= GROQ_MIN_PAGE_TOKENS:
+            entry["tpm_retry_until"] = 0.0
+
+        if rem_req is not None and rem_req > 0 and float(entry.get("rpd_retry_until") or 0.0) <= now:
+            entry["rpd_retry_until"] = 0.0
+
+        # Deduz tokens gastos do balde diário (TPD) já conhecido com decaimento
+        used_tok_int = max(0, int(used_tokens or 0))
+        prev_tpd_rem = entry.get("tpd_remaining")
+        if prev_tpd_rem is not None:
+            tpd_lim = int(entry.get("tpd_limit") or 200000)
+            prev_ts = float(entry.get("tpd_updated_at") or entry.get("last_updated") or now)
+            elapsed = max(0.0, now - prev_ts)
+            decayed = min(float(tpd_lim), float(prev_tpd_rem) + (float(tpd_lim) / 86400.0) * elapsed)
+            new_rem = max(0.0, decayed - used_tok_int)
+            entry["tpd_remaining"] = int(round(new_rem))
+            entry["tpd_used"] = max(0, tpd_lim - entry["tpd_remaining"])
+            entry["tpd_updated_at"] = now
+
+        entry["auth_error"] = False
+        entry["last_http_error"] = 200
+        entry["last_ok_at"] = now
+        entry["last_updated"] = now
+
+        if probe_ok:
+            entry["last_probe_at"] = now
+            entry["last_probe_ok"] = True
+            entry["tpd_retry_until"] = 0.0
+            entry["last_error"] = None
+            if entry.get("tpd_remaining") is not None and int(entry["tpd_remaining"]) < GROQ_MIN_PAGE_TOKENS:
+                # Se uma sondagem real (~2k tokens) passou na Groq, estimativa anterior estava desatualizada
+                tpd_lim = int(entry.get("tpd_limit") or 200000)
+                entry["tpd_remaining"] = GROQ_MIN_PAGE_TOKENS + 500
+                entry["tpd_used"] = max(0, tpd_lim - entry["tpd_remaining"])
+                entry["tpd_updated_at"] = now
+        elif source in ("chat", "vision") and used_tok_int >= 400:
+            entry["last_error"] = None
+            entry["tpd_retry_until"] = 0.0
+
+        _save_quota_state_unlocked(state)
+
+def record_groq_error(api_key, model_name, http_code, err_body="", headers=None, details=None):
+    """Persiste diagnóstico preciso de erro Groq (TPD, RPD, TPM, OVERSIZE, AUTH) na telemetria."""
+    fp = _quota_key_fp(api_key)
+    if not fp or not model_name:
+        return None
+    if details is None:
+        details = parse_groq_rate_limit_details(err_body, headers=headers, http_code=http_code)
+    now = time.time()
+    masked = _quota_mask_key(api_key)
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        k_rec = state["groq"].setdefault(fp, {"masked": masked, "models": {}})
+        k_rec["masked"] = masked
+        entry = k_rec["models"].setdefault(model_name, {})
+        entry["last_http_error"] = int(http_code or 0)
+        entry["last_updated"] = now
+
+        code_int = int(http_code or 0)
+        if code_int in (401, 403):
+            entry["auth_error"] = True
+            entry["last_error"] = f"Chave inválida ou sem autorização (HTTP {code_int})"
+            _append_quota_event_unlocked(state, "groq", "error", entry["last_error"], masked, model_name)
+        elif code_int == 404 or (code_int == 400 and "model" in str(err_body or "").lower()):
+            entry["last_error"] = f"Modelo indisponível no Groq (HTTP {code_int})"
+        elif details.get("is_oversize"):
+            entry["last_oversize_at"] = now
+            entry["last_oversize_requested"] = details.get("requested")
+            entry["last_error"] = f"Requisição muito grande ({details.get('requested') or '?'} tokens > limite TPM por chamada)"
+            _append_quota_event_unlocked(state, "groq", "warn", entry["last_error"], masked, model_name)
+        elif details.get("is_daily"):
+            ltype = details.get("limit_type")
+            retry_s = float(details.get("retry_after") or 60.0)
+            if ltype == "TPD":
+                lim = details.get("limit") or int(entry.get("tpd_limit") or 200000)
+                rem = details.get("remaining")
+                if rem is None:
+                    rem = max(0, lim - int(details.get("used") or lim))
+                entry["tpd_limit"] = int(lim)
+                entry["tpd_remaining"] = int(rem)
+                entry["tpd_used"] = max(0, int(lim) - int(rem))
+                entry["tpd_requested"] = details.get("requested")
+                entry["tpd_updated_at"] = now
+                entry["tpd_retry_until"] = now + retry_s
+                msg = f"Cota TPD esgotada p/ página ({entry['tpd_used']}/{lim} usados, restam {rem} tokens; libera em ~{_format_duration_pt(retry_s)})"
+                entry["last_error"] = msg
+                _append_quota_event_unlocked(state, "groq", "error", msg, masked, model_name)
+            else:
+                lim_r = details.get("limit") or int(entry.get("lim_req") or 1000)
+                entry["lim_req"] = int(lim_r)
+                entry["rem_req"] = 0
+                entry["rpd_retry_until"] = now + retry_s
+                msg = f"Cota diária de requisições (RPD {lim_r}/{lim_r}) atingida; libera em ~{_format_duration_pt(retry_s)}"
+                entry["last_error"] = msg
+                _append_quota_event_unlocked(state, "groq", "error", msg, masked, model_name)
+        elif details.get("is_tpm"):
+            retry_s = float(details.get("retry_after") or 12.0)
+            entry["tpm_retry_until"] = now + retry_s
+            if details.get("remaining") is not None and details.get("limit_type") == "TPM":
+                entry["rem_tok"] = int(details["remaining"])
+                if details.get("limit"):
+                    entry["lim_tok"] = int(details["limit"])
+            entry["last_error"] = f"Pausa temporária {details.get('limit_type', 'TPM')} ({_format_duration_pt(retry_s)})"
+            _append_quota_event_unlocked(state, "groq", "warn", entry["last_error"], masked, model_name)
+
+        _save_quota_state_unlocked(state)
+    return details
+
+def get_groq_quota_snapshot(api_key, model_name, min_page_tokens=GROQ_MIN_PAGE_TOKENS, now_ts=None):
+    """Retorna retrato consolidado em tempo real de RPD, TPM e TPD (com decaimento leaky-bucket) para chave:modelo."""
+    fp = _quota_key_fp(api_key)
+    now = float(now_ts) if now_ts is not None else time.time()
+    snap = {
+        "model": model_name,
+        "rem_req": None,
+        "lim_req": None,
+        "rst_req": None,
+        "rem_tok": None,
+        "lim_tok": None,
+        "rst_tok": None,
+        "tpd_limit": None,
+        "tpd_used": None,
+        "tpd_remaining": None,
+        "tpd_reset_sec": 0.0,
+        "tpd_exhausted": False,
+        "rpd_exhausted": False,
+        "tpm_limited": False,
+        "tpm_reset_sec": 0.0,
+        "auth_error": False,
+        "page_ready": True,
+        "last_error": None,
+        "status_reason": "Pronta",
+        "last_probe_at": None,
+        "last_updated": None,
+    }
+    if not fp or not model_name:
+        return snap
+
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        entry = (state.get("groq", {}).get(fp, {}).get("models", {}) or {}).get(model_name, {})
+
+    if not entry:
+        return snap
+
+    snap["rem_req"] = entry.get("rem_req")
+    snap["lim_req"] = entry.get("lim_req")
+    snap["rst_req"] = entry.get("rst_req")
+    snap["rem_tok"] = entry.get("rem_tok")
+    snap["lim_tok"] = entry.get("lim_tok")
+    snap["rst_tok"] = entry.get("rst_tok")
+    snap["auth_error"] = bool(entry.get("auth_error", False))
+    snap["last_probe_at"] = entry.get("last_probe_at")
+    snap["last_updated"] = entry.get("last_updated")
+    snap["last_error"] = entry.get("last_error")
+
+    # 1. RPD check
+    rpd_until = float(entry.get("rpd_retry_until") or 0.0)
+    if entry.get("rem_req") == 0 or (rpd_until > now):
+        snap["rpd_exhausted"] = True
+        snap["rem_req"] = 0
+
+    # 2. TPM window check
+    tpm_until = float(entry.get("tpm_retry_until") or 0.0)
+    if tpm_until > now:
+        snap["tpm_limited"] = True
+        snap["tpm_reset_sec"] = round(tpm_until - now, 1)
+    elif snap["rem_tok"] is not None and snap["lim_tok"] and snap["rem_tok"] < min_page_tokens:
+        # Só considera TPM limitado se o ping acabou de ocorrer (< 60s)
+        last_ok = float(entry.get("last_ok_at") or 0.0)
+        if (now - last_ok) < 60.0:
+            snap["tpm_limited"] = True
+            snap["tpm_reset_sec"] = max(1.0, round(_parse_ratelimit_duration(snap["rst_tok"], 10.0) - (now - last_ok), 1))
+
+    # 3. TPD leaky-bucket decay check
+    tpd_lim = entry.get("tpd_limit")
+    tpd_rem_raw = entry.get("tpd_remaining")
+    tpd_until = float(entry.get("tpd_retry_until") or 0.0)
+    if tpd_lim and tpd_rem_raw is not None:
+        tpd_lim = int(tpd_lim)
+        ref_ts = float(entry.get("tpd_updated_at") or entry.get("last_updated") or now)
+        elapsed = max(0.0, now - ref_ts)
+        drain_rate = float(tpd_lim) / 86400.0
+        decayed_rem = min(float(tpd_lim), float(tpd_rem_raw) + drain_rate * elapsed)
+        decayed_rem_int = int(decayed_rem)
+        snap["tpd_limit"] = tpd_lim
+        snap["tpd_remaining"] = decayed_rem_int
+        snap["tpd_used"] = max(0, tpd_lim - decayed_rem_int)
+
+        req_hint = entry.get("tpd_requested")
+        needed_tokens = float(min_page_tokens)
+        if req_hint and int(req_hint) > min_page_tokens and now < tpd_until:
+            needed_tokens = float(min(max(min_page_tokens, int(req_hint)), 3200))
+
+        if decayed_rem < needed_tokens:
+            snap["tpd_exhausted"] = True
+            deficit = max(0.0, needed_tokens - decayed_rem)
+            wait_by_rate = deficit / drain_rate if drain_rate > 0 else 900.0
+            wait_retry = max(0.0, tpd_until - now) if tpd_until > now else wait_by_rate
+            # Usa estimativa coerente entre taxa leaky-bucket e retry-after informado
+            snap["tpd_reset_sec"] = round(max(wait_by_rate, min(wait_retry, wait_by_rate + 180.0)), 1)
+    elif tpd_until > now:
+        snap["tpd_exhausted"] = True
+        snap["tpd_reset_sec"] = round(tpd_until - now, 1)
+
+    model_unavail = bool(
+        entry.get("last_http_error") in (400, 404)
+        and "indispon" in str(entry.get("last_error") or "").lower()
+        and float(entry.get("last_updated") or 0) > float(entry.get("last_ok_at") or 0)
+    )
+
+    if snap["auth_error"]:
+        snap["page_ready"] = False
+        snap["status_reason"] = snap["last_error"] or "Chave inválida ou bloqueada"
+    elif snap["rpd_exhausted"]:
+        snap["page_ready"] = False
+        wait_s = max(0.0, rpd_until - now) if rpd_until > now else 0.0
+        snap["status_reason"] = f"Cota diária RPD esgotada" + (f" (libera em ~{_format_duration_pt(wait_s)})" if wait_s > 0 else "")
+    elif snap["tpd_exhausted"]:
+        snap["page_ready"] = False
+        snap["status_reason"] = f"Cota diária TPD insuficiente para páginas reais (~{snap['tpd_remaining'] if snap['tpd_remaining'] is not None else '?'} tokens; libera em ~{_format_duration_pt(snap['tpd_reset_sec'])})"
+    elif model_unavail:
+        snap["page_ready"] = False
+        snap["status_reason"] = snap["last_error"] or "Modelo indisponível"
+    elif snap["tpm_limited"]:
+        snap["page_ready"] = True
+        snap["status_reason"] = f"Pausa breve TPM (~{_format_duration_pt(snap['tpm_reset_sec'])})"
+    else:
+        snap["page_ready"] = True
+        snap["status_reason"] = "Pronta para páginas reais"
+
+    return snap
+
+def probe_groq_page_capacity(api_key, model_name="qwen/qwen3.8-27b", target_tokens=1950, force=False, cache_ttl=300, timeout=12):
+    """
+    Executa sondagem realista (~1.950 tokens) para confirmar se a chave realmente suporta
+    uma página de tradução no TPD do Groq (diferente do ping de 14 tokens que ignora TPD restante baixo).
+    Retorna: (page_ready: bool, msg: str, snapshot: dict)
+    """
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        return False, "Chave vazia", get_groq_quota_snapshot("", model_name)
+
+    snap_before = get_groq_quota_snapshot(api_key, model_name)
+    if snap_before["auth_error"]:
+        return False, snap_before["status_reason"], snap_before
+    if not force and snap_before["tpd_exhausted"] and snap_before["tpd_reset_sec"] > 30:
+        return False, f"Ping pode passar, mas cota diária TPD está esgotada ({snap_before['status_reason']})", snap_before
+    if not force and snap_before["last_probe_at"] and (time.time() - float(snap_before["last_probe_at"])) < cache_ttl:
+        if not snap_before["tpd_exhausted"] and not snap_before["rpd_exhausted"]:
+            return True, "Capacidade real TPD confirmada recentemente (~2k+ tokens OK)", snap_before
+
+    # Payload compacto de ~target_tokens (~1 token por palavra "ok ")
+    filler_count = max(1200, min(2600, int(target_tokens or 1950)))
+    probe_text = ("ok " * filler_count).strip()
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": probe_text}],
+        "max_tokens": 1,
+        "temperature": 0.0
+    }
+    m_low = (model_name or "").lower()
+    if "qwen3" in m_low:
+        payload["reasoning_effort"] = "none"
+    elif "gpt-oss" in m_low:
+        payload["reasoning_effort"] = "low"
+
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            res_body = json.loads(resp.read().decode("utf-8"))
+            used_tok = (res_body.get("usage") or {}).get("total_tokens", filler_count)
+            record_groq_response_headers(api_key, model_name, resp.headers, used_tokens=used_tok, source="probe", probe_ok=True)
+            snap_after = get_groq_quota_snapshot(api_key, model_name)
+            return True, f"Pronta para páginas reais! Sondagem (~{used_tok} tokens) aprovada no TPD e TPM.", snap_after
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        finally:
+            try:
+                e.close()
+            except Exception:
+                pass
+        details = parse_groq_rate_limit_details(err_body, e.headers, e.code)
+        record_groq_error(api_key, model_name, e.code, err_body, e.headers, details=details)
+        snap_after = get_groq_quota_snapshot(api_key, model_name)
+        if e.code in (401, 403):
+            return False, f"Chave inválida ou não autorizada (HTTP {e.code}).", snap_after
+        if details.get("is_daily"):
+            lim = details.get("limit") or "?"
+            used = details.get("used") or "?"
+            rem = details.get("remaining")
+            wait_txt = _format_duration_pt(details.get("retry_after") or 0)
+            return False, f"Ping passa, mas cota diária {details.get('limit_type')} esgotada ({used}/{lim} usados; restam {rem if rem is not None else '?'} tokens; libera em ~{wait_txt}).", snap_after
+        if details.get("is_tpm"):
+            wait_txt = _format_duration_pt(details.get("retry_after") or 10)
+            return False, f"Chave ativa, em pausa breve de {details.get('limit_type', 'TPM')} (~{wait_txt}).", snap_after
+        return False, f"Erro HTTP {e.code} ao sondar modelo '{model_name}'.", snap_after
+    except Exception as e:
+        return False, f"Erro de conexão na sondagem: {e}", get_groq_quota_snapshot(api_key, model_name)
+
+def record_openrouter_status(api_key, info_dict):
+    fp = _quota_key_fp(api_key)
+    if not fp:
+        return
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        k_rec = state["openrouter"].setdefault(fp, {"masked": _quota_mask_key(api_key)})
+        k_rec["masked"] = _quota_mask_key(api_key)
+        k_rec.update(info_dict or {})
+        k_rec["last_updated"] = time.time()
+        _save_quota_state_unlocked(state)
+
+def record_openrouter_error(api_key, model_name, http_code, err_body="", is_daily=False, is_upstream=False):
+    fp = _quota_key_fp(api_key)
+    if not fp:
+        return
+    now = time.time()
+    masked = _quota_mask_key(api_key)
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        k_rec = state["openrouter"].setdefault(fp, {"masked": masked})
+        k_rec["masked"] = masked
+        k_rec["last_updated"] = now
+        k_rec["last_http_error"] = int(http_code or 0)
+        if int(http_code or 0) in (401, 403):
+            k_rec["auth_error"] = True
+            k_rec["last_error"] = f"Autenticação OpenRouter falhou (HTTP {http_code})"
+            _append_quota_event_unlocked(state, "openrouter", "error", k_rec["last_error"], masked, model_name)
+        elif is_daily:
+            k_rec["daily_exhausted"] = True
+            k_rec["daily_exhausted_until"] = now + 3600.0
+            k_rec["last_error"] = "Cota diária OpenRouter (free-models-per-day / créditos) atingida"
+            _append_quota_event_unlocked(state, "openrouter", "error", k_rec["last_error"], masked, model_name)
+        elif is_upstream:
+            k_rec["upstream_429_model"] = model_name
+            k_rec["upstream_429_at"] = now
+            k_rec["last_error"] = f"Pool compartilhado :free ocupado no modelo '{model_name}'"
+            _append_quota_event_unlocked(state, "openrouter", "warn", k_rec["last_error"], masked, model_name)
+        else:
+            k_rec["last_error"] = f"Erro OpenRouter HTTP {http_code} ({model_name})"
+        _save_quota_state_unlocked(state)
+
+def get_openrouter_quota_snapshot(api_key, now_ts=None):
+    fp = _quota_key_fp(api_key)
+    now = float(now_ts) if now_ts is not None else time.time()
+    if not fp:
+        return {}
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        rec = dict(state.get("openrouter", {}).get(fp, {}) or {})
+    if not rec:
+        return {}
+    if rec.get("daily_exhausted") and float(rec.get("daily_exhausted_until") or 0) <= now:
+        rec["daily_exhausted"] = False
+    if rec.get("upstream_429_at") and (now - float(rec.get("upstream_429_at") or 0)) > 180.0:
+        rec["upstream_429_model"] = None
+    return rec
+
+def record_gemini_status(api_key, model_name="", ok=True, msg=""):
+    fp = _quota_key_fp(api_key)
+    if not fp:
+        return
+    now = time.time()
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        k_rec = state["gemini"].setdefault(fp, {"masked": _quota_mask_key(api_key)})
+        k_rec["masked"] = _quota_mask_key(api_key)
+        if ok:
+            k_rec["quota_exhausted"] = False
+            k_rec["auth_error"] = False
+            k_rec["quota_retry_until"] = 0.0
+            k_rec["last_ok_at"] = now
+        if msg:
+            k_rec["last_msg"] = msg
+        if model_name:
+            k_rec["last_model"] = model_name
+        k_rec["last_updated"] = now
+        _save_quota_state_unlocked(state)
+
+def record_gemini_error(api_key, model_name, http_code, err_body=""):
+    fp = _quota_key_fp(api_key)
+    if not fp:
+        return
+    now = time.time()
+    low = str(err_body or "").lower()
+    masked = _quota_mask_key(api_key)
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        k_rec = state["gemini"].setdefault(fp, {"masked": masked})
+        k_rec["masked"] = masked
+        k_rec["last_model"] = model_name
+        k_rec["last_http_error"] = int(http_code or 0)
+        k_rec["last_updated"] = now
+        if int(http_code or 0) in (401, 403):
+            k_rec["auth_error"] = True
+            k_rec["last_msg"] = f"Chave Gemini inválida/bloqueada (HTTP {http_code})"
+            _append_quota_event_unlocked(state, "gemini", "error", k_rec["last_msg"], masked, model_name)
+        elif int(http_code or 0) == 429:
+            is_daily_q = any(t in low for t in ("per_day", "per day", "daily", "free_tier", "quota_exceeded", "exceeded your current quota"))
+            wait_s = 3600.0 if is_daily_q else 65.0
+            m_retry = re.search(r'retry in\s*([\d.]+)s', low)
+            if m_retry and not is_daily_q:
+                try:
+                    wait_s = max(15.0, float(m_retry.group(1)) + 1.0)
+                except Exception:
+                    pass
+            k_rec["quota_exhausted"] = True
+            k_rec["quota_is_daily"] = is_daily_q
+            k_rec["quota_retry_until"] = now + wait_s
+            k_rec["last_msg"] = f"Cota Gemini Vision atingida em '{model_name}' (HTTP 429" + (" diária" if is_daily_q else " RPM/TPM") + ")"
+            _append_quota_event_unlocked(state, "gemini", "warn" if not is_daily_q else "error", k_rec["last_msg"], masked, model_name)
+        _save_quota_state_unlocked(state)
+
+def get_gemini_quota_snapshot(api_key, now_ts=None):
+    fp = _quota_key_fp(api_key)
+    now = float(now_ts) if now_ts is not None else time.time()
+    if not fp:
+        return {}
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        rec = dict(state.get("gemini", {}).get(fp, {}) or {})
+    if not rec:
+        return {}
+    until = float(rec.get("quota_retry_until") or 0.0)
+    if rec.get("quota_exhausted") and until > 0 and until <= now:
+        rec["quota_exhausted"] = False
+    rec["quota_reset_sec"] = max(0.0, round(until - now, 1)) if until > now else 0.0
+    return rec
+
+def record_quota_event(provider, level, msg, api_key="", model=""):
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        _append_quota_event_unlocked(state, provider, level, msg, _quota_mask_key(api_key) if api_key else "", model)
+        _save_quota_state_unlocked(state)
+
+def get_recent_quota_events(max_age_sec=7200, now_ts=None):
+    now = float(now_ts) if now_ts is not None else time.time()
+    with _QUOTA_LOCK:
+        state = _load_quota_state_unlocked()
+        events = list(state.get("events", []) or [])
+    recent = [ev for ev in events if (now - float(ev.get("ts", 0))) <= max_age_sec]
+    return recent[-10:][::-1]
+
 class GroqRateLimitError(RuntimeError):
-    """Exceção dedicada para diferenciar limite transitório de TPM/RPM vs esgotamento diário (TPD) no Groq."""
-    def __init__(self, message, is_tpm=False, is_daily=False, is_auth=False, retry_after=0.0):
+    """Exceção dedicada para diferenciar limite transitório de TPM/RPM, excesso por chamada (413) vs esgotamento diário (TPD) no Groq."""
+    def __init__(self, message, is_tpm=False, is_daily=False, is_auth=False, retry_after=0.0, is_oversize=False, details=None):
         super().__init__(message)
         self.is_tpm = is_tpm
         self.is_daily = is_daily
         self.is_auth = is_auth
         self.retry_after = retry_after
+        self.is_oversize = is_oversize
+        self.details = details or {}
 
 def _strip_think_tags(text):
     """Remove blocos <think>...</think> de modelos de raciocínio para não vazar na tradução ou quebrar JSON."""
@@ -2251,19 +3040,29 @@ def _strip_think_tags(text):
         cleaned = re.sub(r'<think>[\s\S]*$', '', cleaned, flags=re.IGNORECASE).strip()
     return cleaned
 
-def check_groq_available(api_key, model_name="qwen/qwen3.8-27b"):
-    """Verifica se a chave da API do Groq é válida e se o modelo responde."""
+def check_groq_available(api_key, model_name="qwen/qwen3.8-27b", check_telemetry=True):
+    """Verifica se a chave da API do Groq é válida, responde e não está bloqueada no TPD/RPD para páginas reais."""
     if not api_key or not str(api_key).strip():
         return False, "Chave vazia"
     api_key = str(api_key).strip()
+    if check_telemetry:
+        snap = get_groq_quota_snapshot(api_key, model_name)
+        if snap.get("auth_error"):
+            return False, snap.get("status_reason") or "Chave inválida ou bloqueada"
+        if snap.get("rpd_exhausted") or snap.get("tpd_exhausted"):
+            return False, snap.get("status_reason") or "Cota diária TPD/RPD esgotada"
+
     url = "https://api.groq.com/openai/v1/chat/completions"
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": "ping"}],
         "max_tokens": 5
     }
-    if "qwen3" in (model_name or "").lower():
+    m_low = (model_name or "").lower()
+    if "qwen3" in m_low:
         payload["reasoning_effort"] = "none"
+    elif "gpt-oss" in m_low:
+        payload["reasoning_effort"] = "low"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode('utf-8'),
@@ -2276,28 +3075,41 @@ def check_groq_available(api_key, model_name="qwen/qwen3.8-27b"):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             if resp.status == 200:
+                try:
+                    raw = json.loads(resp.read().decode("utf-8"))
+                    used_tok = (raw.get("usage") or {}).get("total_tokens", 15)
+                except Exception:
+                    used_tok = 15
+                record_groq_response_headers(api_key, model_name, resp.headers, used_tokens=used_tok, source="ping")
+                if check_telemetry:
+                    snap_after = get_groq_quota_snapshot(api_key, model_name)
+                    if snap_after.get("tpd_exhausted") or snap_after.get("rpd_exhausted"):
+                        return False, snap_after.get("status_reason") or "Cota diária TPD/RPD esgotada"
                 return True, "Chave válida e pronta"
     except urllib.error.HTTPError as e:
         err_body = ""
         try:
-            err_body = e.read().decode("utf-8", errors="ignore").lower()
+            err_body = e.read().decode("utf-8", errors="ignore")
         except Exception:
             pass
+        details = record_groq_error(api_key, model_name, e.code, err_body, e.headers) or parse_groq_rate_limit_details(err_body, e.headers, e.code)
         if e.code == 404:
             for alt_m in ("qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"):
                 if alt_m != model_name:
-                    ok_alt, msg_alt = check_groq_available(api_key, model_name=alt_m)
+                    ok_alt, msg_alt = check_groq_available(api_key, model_name=alt_m, check_telemetry=check_telemetry)
                     if ok_alt:
                         return True, msg_alt
-        if e.code == 429 and not any(t in err_body for t in ("tokens per day", "requests per day", "tpd", "rpd")):
-            return True, "Chave válida (em pausa breve TPM)"
+        if e.code == 429 and not details.get("is_daily"):
+            return True, f"Chave válida (em pausa breve {details.get('limit_type', 'TPM')})"
+        if details.get("is_daily"):
+            return False, f"Cota diária {details.get('limit_type', 'TPD')} esgotada (libera em ~{_format_duration_pt(details.get('retry_after', 0))})"
         return False, f"Erro HTTP {e.code}"
     except Exception as e:
         return False, f"Erro de conexão: {e}"
     return False, "Sem resposta"
 
 def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=600, timeout=45, fallback_model="openai/gpt-oss-120b", max_retries=2, engine_opts=None, allow_tpm_wait=True):
-    """Executa requisição à API ultra-rápida do Groq Cloud com resiliência a picos de tokens (TPM) e rotação inteligente de modelos."""
+    """Executa requisição à API ultra-rápida do Groq Cloud com isolamento por chave:modelo, resiliência a TPM e tratamento de 413/oversize."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     api_key_clean = str(api_key or "").strip()
     if not api_key_clean:
@@ -2306,23 +3118,35 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
 
     exhausted_groq = engine_opts.setdefault("exhausted_groq_models", set()) if engine_opts is not None else set()
     cooldown_map = engine_opts.setdefault("groq_model_cooldowns", {}) if engine_opts is not None else {}
+    active_by_key = engine_opts.setdefault("active_model_by_key", {}) if engine_opts is not None else {}
 
-    # Se o modelo ativo já foi alterado pelo fallback, prioriza o ativo (se não estiver em cooldown ou esgotado)
-    if engine_opts and engine_opts.get("active_model") and engine_opts["active_model"] not in exhausted_groq:
-        act_m = engine_opts["active_model"]
-        if cooldown_map.get(f"{key_sig}:{act_m}", 0) <= time.time():
-            model_name = act_m
+    def _is_model_exhausted(m_cand):
+        return (f"{key_sig}:{m_cand}" in exhausted_groq) or (m_cand in exhausted_groq)
+
+    def _mark_model_exhausted(m_cand):
+        exhausted_groq.add(f"{key_sig}:{m_cand}")
+
+    # Preserva preferência por chave (nunca deixa falha da Chave #1 forçar downgrade na Chave #2)
+    preferred_m = (engine_opts.get("preferred_model") if engine_opts else None) or model_name
+    key_act_m = active_by_key.get(key_sig)
+    if key_act_m and not _is_model_exhausted(key_act_m) and cooldown_map.get(f"{key_sig}:{key_act_m}", 0) <= time.time():
+        primary_m = key_act_m
+    elif not _is_model_exhausted(preferred_m) and cooldown_map.get(f"{key_sig}:{preferred_m}", 0) <= time.time():
+        primary_m = preferred_m
+    else:
+        primary_m = model_name
 
     target_models = []
     cand_list = [
-        model_name,
+        primary_m,
+        preferred_m,
         fallback_model,
         "qwen/qwen3.8-27b",
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b"
     ]
     for cand in cand_list:
-        if cand and cand not in target_models and cand not in exhausted_groq:
+        if cand and cand not in target_models and not _is_model_exhausted(cand):
             target_models.append(cand)
 
     if not target_models:
@@ -2331,17 +3155,16 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
     now = time.time()
     ready_models = [m for m in target_models if cooldown_map.get(f"{key_sig}:{m}", 0) <= now]
     if not ready_models:
-        # Todos os modelos estão apenas em janela curta de TPM (não esgotados definitivamente)
         soonest_m = min(target_models, key=lambda m: cooldown_map.get(f"{key_sig}:{m}", 0))
         rem_wait = max(0.5, cooldown_map.get(f"{key_sig}:{soonest_m}", now) - now)
-        if not allow_tpm_wait or rem_wait > 40.0:
+        if not allow_tpm_wait or rem_wait > 65.0:
             raise GroqRateLimitError(
                 f"Modelos Groq em pausa TPM ({rem_wait:.1f}s).",
                 is_tpm=True,
                 retry_after=rem_wait
             )
         print(f"\n[*] Groq TPM: aguardando {rem_wait:.1f}s para liberar janela de '{soonest_m}'...")
-        time.sleep(min(rem_wait + 0.3, 40.0))
+        time.sleep(min(rem_wait + 0.3, 65.0))
         cooldown_map.pop(f"{key_sig}:{soonest_m}", None)
         ready_models = [soonest_m] + [m for m in target_models if m != soonest_m]
 
@@ -2374,7 +3197,10 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     res = json.loads(resp.read().decode('utf-8'))
+                    used_tok = (res.get("usage") or {}).get("total_tokens", 0)
+                    record_groq_response_headers(api_key_clean, m, resp.headers, used_tokens=used_tok, source="chat")
                     if engine_opts is not None:
+                        active_by_key[key_sig] = m
                         engine_opts["active_model"] = m
                         cooldown_map.pop(f"{key_sig}:{m}", None)
                     raw_out = res.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
@@ -2388,29 +3214,27 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     pass
                 err_low = err_body.lower()
 
-                if e.code == 429:
-                    wait_sec = 4.0
-                    try:
-                        retry_h = e.headers.get("retry-after")
-                        if retry_h:
-                            wait_sec = float(retry_h) + 0.5
-                        else:
-                            m_retry = re.search(r'try again in\s*(?:(\d+)m)?([\d.]+)s', err_low)
-                            if m_retry:
-                                mins = float(m_retry.group(1) or 0)
-                                secs = float(m_retry.group(2) or 0)
-                                wait_sec = mins * 60.0 + secs + 0.5
-                    except Exception:
-                        pass
+                if e.code in (413, 429):
+                    details = parse_groq_rate_limit_details(err_body, e.headers, e.code)
+                    record_groq_error(api_key_clean, m, e.code, err_body, e.headers, details=details)
 
-                    is_daily = any(tok in err_low for tok in ("tokens per day", "requests per day", " tpd", " rpd"))
-                    if is_daily:
-                        print(f"\n[!] Modelo '{m}' atingiu cota diária (TPD/RPD) no Groq. Alternando modelo...")
-                        exhausted_groq.add(m)
+                    if details.get("is_oversize"):
+                        raise GroqRateLimitError(
+                            f"Lote excede limite TPM por chamada no Groq ({details.get('requested') or '?'} tokens).",
+                            is_tpm=True,
+                            is_oversize=True,
+                            details=details
+                        )
+
+                    if details.get("is_daily"):
+                        ltype = details.get("limit_type", "TPD")
+                        rem_tpd = details.get("remaining")
+                        print(f"\n[!] Chave ({_quota_mask_key(api_key_clean)}) / '{m}' atingiu {ltype} (restam {rem_tpd if rem_tpd is not None else '?'} tokens; libera em ~{_format_duration_pt(details.get('retry_after', 0))}). Alternando...")
+                        _mark_model_exhausted(m)
                         break
 
-                    # Limite transitório TPM/RPM: se rápido, espera e retenta; caso contrário põe cooldown curto e alterna sem banir o modelo
-                    if wait_sec <= 9.0 and attempt < max_retries - 1:
+                    wait_sec = float(details.get("retry_after") or 8.0)
+                    if wait_sec <= 10.0 and attempt < max_retries - 1:
                         print(f"\n[*] Groq em pausa breve TPM ({wait_sec:.1f}s) no modelo '{m}'...")
                         time.sleep(wait_sec)
                         continue
@@ -2422,13 +3246,15 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                         print(f"\n[*] Pico TPM em '{m}' (~{cd_sec:.0f}s). Alternando para próximo modelo Groq...")
                         break
                 elif e.code in (401, 403):
+                    record_groq_error(api_key_clean, m, e.code, err_body, e.headers)
                     raise GroqRateLimitError(f"Chave Groq não autorizada (HTTP {e.code}).", is_auth=True)
                 elif e.code in (400, 404):
                     if "reasoning_effort" in err_low and "reasoning_effort" in payload:
                         payload.pop("reasoning_effort", None)
                         continue
+                    record_groq_error(api_key_clean, m, e.code, err_body, e.headers)
                     print(f"\n[!] Modelo '{m}' indisponível no Groq (HTTP {e.code}). Alternando...")
-                    exhausted_groq.add(m)
+                    _mark_model_exhausted(m)
                     break
                 elif e.code in (500, 502, 503, 504):
                     if attempt < max_retries - 1:
@@ -2437,8 +3263,10 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     cooldown_map[f"{key_sig}:{m}"] = time.time() + 15.0
                     break
                 else:
-                    exhausted_groq.add(m)
+                    _mark_model_exhausted(m)
                     break
+            except GroqRateLimitError:
+                raise
             except Exception as e:
                 last_err = e
                 if attempt < max_retries - 1:
@@ -2448,11 +3276,11 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                     cooldown_map[f"{key_sig}:{m}"] = time.time() + 12.0
                     break
 
-    # Se todos os modelos só bateram TPM momentâneo na única chave, faz 1 espera breve se permitido
-    if saw_tpm_wait is not None and len(exhausted_groq) < len(target_models):
-        rem_cd = max(1.0, min(cooldown_map.get(f"{key_sig}:{m}", time.time()) - time.time() for m in target_models if m not in exhausted_groq))
-        if allow_tpm_wait and rem_cd <= 35.0:
-            soonest_m = min([m for m in target_models if m not in exhausted_groq], key=lambda m: cooldown_map.get(f"{key_sig}:{m}", 0))
+    rem_candidates = [m for m in target_models if not _is_model_exhausted(m)]
+    if saw_tpm_wait is not None and rem_candidates:
+        rem_cd = max(1.0, min(cooldown_map.get(f"{key_sig}:{m}", time.time()) - time.time() for m in rem_candidates))
+        if allow_tpm_wait and rem_cd <= 65.0:
+            soonest_m = min(rem_candidates, key=lambda m: cooldown_map.get(f"{key_sig}:{m}", 0))
             print(f"\n[*] Pausando {rem_cd:.1f}s para liberar tokens TPM no Groq ({soonest_m})...")
             time.sleep(rem_cd + 0.3)
             cooldown_map.pop(f"{key_sig}:{soonest_m}", None)
@@ -2463,49 +3291,93 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
             )
         raise GroqRateLimitError(f"Pico TPM temporário em todos os modelos Groq ({rem_cd:.1f}s).", is_tpm=True, retry_after=rem_cd)
 
+    if not rem_candidates:
+        raise GroqRateLimitError("Todos os modelos Groq para esta chave atingiram a cota diária.", is_daily=True)
+
     if last_err:
         raise last_err
     raise RuntimeError("Falha na consulta ao Groq.")
 
 def check_openrouter_key_status(api_key, model_name=None):
     """
-    Verifica se a chave OpenRouter é válida e se possui saldo/limite diário restante.
+    Verifica se a chave OpenRouter é válida e consulta saldo líquido (/credits) + cota diária real (:free).
     Retorna: (is_valid: bool, remaining_requests: int or None, status_message: str)
     """
     if not api_key or not str(api_key).strip():
         return False, 0, "Chave vazia"
     api_key = str(api_key).strip()
+    headers_or = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+        "X-Title": "Manga Translator PT-BR"
+    }
     try:
-        url = "https://openrouter.ai/api/v1/auth/key"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
-                "X-Title": "Manga Translator PT-BR"
-            }
-        )
+        req = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers=headers_or)
         with urllib.request.urlopen(req, timeout=8) as response:
-            if response.status == 200:
-                body = json.loads(response.read().decode('utf-8'))
-                data = body.get("data", {})
-                free_reqs = data.get("free_model_daily_requests", {})
-                if free_reqs:
-                    rem = free_reqs.get("remaining")
-                    limit = free_reqs.get("limit", 50)
-                    used = free_reqs.get("used", 0)
-                    if rem is not None and rem <= 0:
-                        return False, 0, f"Limite diário atingido ({used}/{limit} reqs usadas)"
-                    return True, rem, f"{used}/{limit} reqs usadas (restam {rem})"
+            if response.status != 200:
+                return False, 0, f"Erro HTTP {response.status}"
+            body = json.loads(response.read().decode('utf-8'))
+            data = body.get("data", {}) or {}
 
-                limit_rem = data.get("limit_remaining")
-                if limit_rem is not None and limit_rem <= 0:
-                    return False, 0, "Orçamento/Crédito esgotado"
-                return True, 9999, "Conta com créditos / Ilimitada"
+        # Consulta saldo líquido real (total_credits - total_usage)
+        net_credits = 0.0
+        total_credits = 0.0
+        total_usage = 0.0
+        try:
+            req_c = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers=headers_or)
+            with urllib.request.urlopen(req_c, timeout=5) as rc:
+                cdata = json.loads(rc.read().decode('utf-8')).get("data", {}) or {}
+                total_credits = float(cdata.get("total_credits", 0) or 0)
+                total_usage = float(cdata.get("total_usage", 0) or 0)
+                net_credits = max(0.0, total_credits - total_usage)
+        except Exception:
+            pass
+
+        free_reqs = data.get("free_model_daily_requests") or {}
+        is_free_tier = bool(data.get("is_free_tier", False)) or (net_credits <= 0.01)
+        limit_rem = data.get("limit_remaining")
+        snap_or = get_openrouter_quota_snapshot(api_key)
+
+        record_openrouter_status(api_key, {
+            "total_credits": round(total_credits, 4),
+            "total_usage": round(total_usage, 4),
+            "credits": round(net_credits, 4),
+            "is_free_tier": is_free_tier,
+            "free_used": free_reqs.get("used"),
+            "free_limit": free_reqs.get("limit"),
+            "free_rem": free_reqs.get("remaining"),
+            "auth_error": False
+        })
+
+        if free_reqs and ("remaining" in free_reqs or "used" in free_reqs):
+            rem = free_reqs.get("remaining")
+            limit = free_reqs.get("limit", 50)
+            used = free_reqs.get("used", 0)
+            if rem is not None and rem <= 0:
+                if net_credits > 0.01:
+                    return True, 9999, f"Free diário esgotado, saldo pago ${net_credits:.2f} USD disponível"
+                return False, 0, f"Cota diária gratuita esgotada ({used}/{limit} reqs usadas)"
+            return True, rem, f"{used}/{limit} reqs gratuitas usadas (restam {rem})"
+
+        if limit_rem is not None and float(limit_rem) <= 0 and net_credits <= 0.01:
+            return False, 0, "Orçamento/Limite da chave esgotado"
+
+        if net_credits > 0.01:
+            return True, 9999, f"Saldo pago disponível: ${net_credits:.2f} USD"
+
+        # Conta gratuita ($0.00) sem objeto free_model_daily_requests exposto no /auth/key
+        if snap_or.get("daily_exhausted"):
+            return False, 0, "Cota diária gratuita esgotada (detectado em execução)"
+        if is_free_tier:
+            up_warn = f" (pool :free ocupado em {snap_or.get('upstream_429_model')})" if snap_or.get("upstream_429_model") else ""
+            return True, 50, f"Conta Gratuita Free Tier (50 reqs/dia em :free; saldo $0.00){up_warn}"
+        return True, None, "Chave ativa (saldo $0.00 USD)"
     except urllib.error.HTTPError as e:
         if e.code == 429:
+            record_openrouter_error(api_key, model_name or "", 429, "HTTP 429", is_daily=True)
             return False, 0, "Limite diário atingido (HTTP 429)"
         elif e.code in (401, 403):
+            record_openrouter_error(api_key, model_name or "", e.code, "HTTP Auth")
             return False, 0, f"Chave inválida ou não autorizada (HTTP {e.code})"
         return False, 0, f"Erro HTTP {e.code}"
     except Exception as e:
@@ -2518,12 +3390,7 @@ def check_openrouter_key_status(api_key, model_name=None):
                         "messages": [{"role": "user", "content": "ping"}],
                         "max_tokens": 5
                     }).encode('utf-8'),
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
-                        "X-Title": "Manga Translator PT-BR"
-                    }
+                    headers={**headers_or, "Content-Type": "application/json"}
                 )
                 with urllib.request.urlopen(test_req, timeout=10) as resp:
                     if resp.status == 200:
@@ -2543,9 +3410,8 @@ def check_openrouter_available(api_key, model_name):
 
 def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, max_tokens=1024, timeout=75, engine_opts=None, api_keys=None):
     """
-    Executa requisição à API do OpenRouter com suporte a Pool de Chaves e Auto-Failover/Rotação imediata.
-    Se a chave atual atingir o limite (HTTP 429 / 50 reqs/dia), rotaciona automaticamente para a próxima chave
-    cadastrada em 'openrouter_api_keys' no config.json sem interromper a tradução do mangá.
+    Executa requisição à API do OpenRouter com Pool de Chaves, rotação em cota diária/auth
+    e fallback automático de modelo quando houver 429 do pool compartilhado (:free upstream).
     """
     engine_opts = engine_opts if engine_opts is not None else {}
     cfg_or_keys = (engine_opts.get("cfg") or {}).get("openrouter_api_keys", [])
@@ -2577,108 +3443,166 @@ def query_openrouter_chat(messages, model_name, api_key=None, temperature=0.0, m
         engine_opts.setdefault("exhausted_engines", set()).add("openrouter")
         raise RuntimeError("Todas as chaves OpenRouter cadastradas atingiram o limite diário.")
 
+    fb_cfg = (
+        engine_opts.get("openrouter_fallback_model")
+        or (engine_opts.get("cfg") or {}).get("openrouter_fallback_model")
+        or (engine_opts.get("fallback_model") if engine_opts.get("active_engine") == "openrouter" else None)
+    )
+    cand_models = []
+    for cm in [model_name, fb_cfg, "google/gemma-4-31b-it:free", "meta-llama/llama-3.3-70b-instruct:free"]:
+        cm_s = str(cm or "").strip()
+        if cm_s and cm_s not in cand_models:
+            cand_models.append(cm_s)
+
     tried_count = 0
+    last_err = None
 
     while tried_count < total_keys:
-        # Pula chaves que já sabemos que estão esgotadas
         if curr_idx in exhausted:
             tried_count += 1
             curr_idx = (curr_idx + 1) % total_keys
             continue
 
         active_key = key_pool[curr_idx]
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        payload = {
-            "model": model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode('utf-8'),
-            headers={
-                "Authorization": f"Bearer {active_key.strip()}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
-                "X-Title": "Manga Translator PT-BR"
-            }
-        )
+        masked = _quota_mask_key(active_key)
+        tried_count += 1
+        key_exhausted_here = False
 
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                # Alerta amigável se a chave atual estiver prestes a bater o limite diário
-                rem_header = resp.headers.get("X-RateLimit-Remaining") or resp.headers.get("x-ratelimit-remaining")
-                if rem_header is not None:
+        for cand_m in cand_models:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            payload = {
+                "model": cand_m,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers={
+                    "Authorization": f"Bearer {active_key.strip()}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/Jos9011/SKILL-TRADUCAO-MANGA",
+                    "X-Title": "Manga Translator PT-BR"
+                }
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    rem_header = _hdr_get(resp.headers, "X-RateLimit-Remaining")
+                    rem_val = None
+                    if rem_header is not None:
+                        try:
+                            rem_val = int(rem_header)
+                            if 0 < rem_val <= 3:
+                                print(f"\n[*] Aviso: Chave OpenRouter #{curr_idx + 1} quase no limite ({rem_val} requisições restantes).")
+                        except Exception:
+                            rem_val = None
+
+                    res = json.loads(resp.read().decode('utf-8'))
+                    prev_or_snap = get_openrouter_quota_snapshot(active_key)
+                    prev_up_m = prev_or_snap.get("upstream_429_model")
+                    status_upd = {
+                        "daily_exhausted": False,
+                        "auth_error": False,
+                        "last_ok_at": time.time(),
+                        "last_ok_model": cand_m,
+                    }
+                    if not prev_up_m or prev_up_m == cand_m:
+                        status_upd["upstream_429_model"] = None
+                        status_upd["last_error"] = None
+                    if rem_val is not None:
+                        status_upd["free_rem"] = rem_val
+                    record_openrouter_status(active_key, status_upd)
+
+                    engine_opts["openrouter_current_key_idx"] = curr_idx
+                    engine_opts["openrouter_api_key"] = active_key
+                    if engine_opts.get("active_engine") == "openrouter":
+                        engine_opts["current_key_idx"] = curr_idx
+                        engine_opts["api_key"] = active_key
+                    raw_out = res.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                    return _strip_think_tags(raw_out)
+
+            except urllib.error.HTTPError as e:
+                last_err = e
+                err_body = ""
+                try:
+                    err_body = e.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    pass
+                finally:
                     try:
-                        rem_val = int(rem_header)
-                        if 0 < rem_val <= 3:
-                            print(f"\n[*] Aviso: Chave OpenRouter #{curr_idx + 1} quase no limite ({rem_val} requisições restantes).")
+                        e.close()
                     except Exception:
                         pass
+                err_low = err_body.lower()
 
-                res = json.loads(resp.read().decode('utf-8'))
-                engine_opts["openrouter_current_key_idx"] = curr_idx
-                engine_opts["openrouter_api_key"] = active_key
-                if engine_opts.get("active_engine") == "openrouter":
-                    engine_opts["current_key_idx"] = curr_idx
-                    engine_opts["api_key"] = active_key
-                raw_out = res.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-                return _strip_think_tags(raw_out)
+                if e.code in (401, 403):
+                    record_openrouter_error(active_key, cand_m, e.code, err_body)
+                    exhausted.add(curr_idx)
+                    key_exhausted_here = True
+                    print(f"\n[!] Chave OpenRouter #{curr_idx + 1} ({masked}): Autenticação falhou (HTTP {e.code}).")
+                    break
 
-        except urllib.error.HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode('utf-8', errors='ignore')
-            except Exception:
-                pass
+                if e.code == 402:
+                    # Sem créditos pagos para modelo pago: tenta fallback gratuito se existir
+                    if any(cm.endswith(":free") for cm in cand_models if cm != cand_m):
+                        print(f"\n[*] OpenRouter '{cand_m}' exige saldo pago (HTTP 402). Tentando modelo gratuito...")
+                        continue
+                    record_openrouter_error(active_key, cand_m, e.code, err_body, is_daily=True)
+                    exhausted.add(curr_idx)
+                    key_exhausted_here = True
+                    break
 
-            is_rate_limit = (e.code == 429) or ("rate limit" in err_body.lower()) or ("free-models-per-day" in err_body.lower())
-            is_auth_error = (e.code in (401, 403))
+                if e.code == 429:
+                    is_key_daily = (
+                        "free-models-per-day" in err_low
+                        or "daily limit" in err_low
+                        or "requests per day" in err_low
+                    )
+                    is_upstream_429 = (not is_key_daily) and any(
+                        tok in err_low for tok in ("upstream", "temporarily rate-limited", "provider", "retry shortly")
+                    )
+                    if is_upstream_429:
+                        record_openrouter_error(active_key, cand_m, e.code, err_body, is_upstream=True)
+                        print(f"\n[*] OpenRouter pool compartilhado ocupado em '{cand_m}' (429 upstream). Tentando próximo modelo...")
+                        time.sleep(0.8)
+                        continue
+                    # Limite diário da própria chave
+                    record_openrouter_error(active_key, cand_m, e.code, err_body, is_daily=True)
+                    exhausted.add(curr_idx)
+                    key_exhausted_here = True
+                    print(f"\n[!] Chave OpenRouter #{curr_idx + 1} ({masked}): Limite diário atingido (HTTP 429).")
+                    break
 
-            if is_rate_limit or is_auth_error:
-                exhausted.add(curr_idx)
-                tried_count += 1
-                masked = active_key[:8] + "..." + active_key[-4:] if len(active_key) > 12 else "***"
-                motivo = "Limite diário (50 reqs/dia) atingido" if is_rate_limit else f"Autenticação falhou ({e.code})"
-
-                # Procura a próxima chave disponível que ainda não foi esgotada
-                next_idx = None
-                for candidate in range(total_keys):
-                    if candidate not in exhausted:
-                        next_idx = candidate
-                        break
-
-                if next_idx is not None:
-                    next_masked = key_pool[next_idx][:8] + "..." + key_pool[next_idx][-4:] if len(key_pool[next_idx]) > 12 else "***"
-                    print(f"\n[!] Chave OpenRouter #{curr_idx + 1} ({masked}): {motivo}.")
-                    print(f"[+] ROTACIONANDO CHAVE AUTOMATICAMENTE -> Ativando Chave Reserva #{next_idx + 1} ({next_masked})...")
-                    curr_idx = next_idx
-                    engine_opts["openrouter_current_key_idx"] = curr_idx
-                    engine_opts["openrouter_api_key"] = key_pool[curr_idx]
-                    time.sleep(1.0)
+                if e.code in (400, 404, 500, 502, 503, 504):
+                    print(f"\n[*] Modelo OpenRouter '{cand_m}' indisponível/instável (HTTP {e.code}). Tentando fallback...")
+                    time.sleep(0.8)
                     continue
-                else:
-                    engine_opts.setdefault("exhausted_engines", set()).add("openrouter")
-                    print(f"\n[!] TODAS as {total_keys} chaves OpenRouter cadastradas atingiram o limite diário.")
-                    raise e
-            else:
-                # Se for indisponibilidade temporária de modelo (404, 500, 502, 503), tenta o modelo fallback específico do OpenRouter
-                fallback_m = (
-                    engine_opts.get("openrouter_fallback_model")
-                    or (engine_opts.get("cfg") or {}).get("openrouter_fallback_model")
-                    or (engine_opts.get("fallback_model") if engine_opts.get("active_engine") == "openrouter" else None)
-                )
-                if fallback_m and fallback_m != model_name and e.code in (404, 500, 502, 503):
-                    print(f"\n[*] Modelo OpenRouter '{model_name}' instável (HTTP {e.code}). Tentando fallback: '{fallback_m}'...")
-                    model_name = fallback_m
-                    time.sleep(1.0)
-                    continue
+
                 raise e
-        except Exception as e:
-            raise e
+            except Exception as e:
+                last_err = e
+                raise e
 
-    raise RuntimeError("Todas as chaves OpenRouter configuradas estão esgotadas.")
+        # Avança para próxima chave (se esta esgotou ou falhou em todos os modelos)
+        if key_exhausted_here:
+            next_idx = next((c for c in range(total_keys) if c not in exhausted), None)
+            if next_idx is not None:
+                print(f"[+] ROTACIONANDO OPENROUTER -> Ativando Chave Reserva #{next_idx + 1} ({_quota_mask_key(key_pool[next_idx])})...")
+                curr_idx = next_idx
+                engine_opts["openrouter_current_key_idx"] = curr_idx
+                engine_opts["openrouter_api_key"] = key_pool[curr_idx]
+                time.sleep(0.6)
+                continue
+        else:
+            # Todas as opções de modelo falharam por upstream nesta chave; testa próxima chave se existir
+            curr_idx = (curr_idx + 1) % total_keys
+
+    if len(exhausted) >= total_keys:
+        engine_opts.setdefault("exhausted_engines", set()).add("openrouter")
+    if last_err:
+        raise last_err
+    raise RuntimeError("Todas as chaves OpenRouter configuradas falharam ou atingiram o limite.")
 
 def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434", custom_model=None):
     """Verifica se o servidor Ollama (local ou remoto) está ativo e seleciona o modelo ideal priorizando Dolphin 2.9 em modo sem censura."""
@@ -2790,17 +3714,36 @@ def query_ollama_chat(messages, model_name, host="http://localhost:11434", tempe
         res = json.loads(resp.read().decode('utf-8'))
         return res.get("message", {}).get("content", "").strip()
 
+def _pick_ready_groq_key_and_model(groq_keys, primary_model, fallback_model):
+    """Seleciona a melhor combinação (chave, modelo) Groq verificando modelo principal primeiro e fallbacks de 200k TPD separados depois."""
+    cand_models = []
+    for m in (primary_model, fallback_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"):
+        if m and m not in cand_models:
+            cand_models.append(m)
+
+    pre_exhausted = set()
+    last_msg = "Sem chave válida"
+    for cand_m in cand_models:
+        for gk in groq_keys:
+            ok_g, msg_g = check_groq_available(gk, cand_m, check_telemetry=True)
+            last_msg = msg_g
+            if ok_g:
+                return gk, cand_m, pre_exhausted, msg_g
+            if any(tok in str(msg_g).lower() for tok in ("esgotad", "atingid", "insuficiente", "401", "403", "indispon")):
+                pre_exhausted.add(f"{str(gk).strip()[:12]}:{cand_m}")
+    return None, None, pre_exhausted, last_msg
+
 def init_ai_translation_engine(cfg, is_adult=True):
     """
     Inicializa o melhor motor de IA disponível com base em config.json.
-    Suporta Pool de Chaves OpenRouter com rotação e failover automático de cota diária.
-    Retorna: (engine_type, model_name, engine_opts)
-    engine_type pode ser: 'openrouter', 'ollama', ou None (fallback)
+    Suporta Pool de Chaves Groq/OpenRouter com verificação real de cota TPD por modelo e failover automático.
     """
     provider = cfg.get("provider", "auto").lower()
     keys = cfg.get("openrouter_api_keys", [])
     model = cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free")
     fallback_model = cfg.get("openrouter_fallback_model", "google/gemma-4-31b-it:free")
+    init_exhausted = set()
+    init_reasons = []
 
     # 1. Groq Cloud (Ultra-Rápido, 100% Nuvem, Zero Censura)
     groq_keys = list(cfg.get("groq_api_keys", []) or [])
@@ -2812,36 +3755,38 @@ def init_ai_translation_engine(cfg, is_adult=True):
 
     if provider in ("groq", "fast") or (provider == "auto" and groq_keys):
         if groq_keys:
-            active_groq_key = None
-            last_g_msg = ""
             print(f"[*] Verificando conexão com Groq Cloud ({len(groq_keys)} chave(s) | Modelo: {groq_model})...")
-            for gk in groq_keys:
-                g_ok, g_msg = check_groq_available(gk, groq_model)
-                last_g_msg = g_msg
-                if g_ok:
-                    active_groq_key = gk
-                    break
-            if active_groq_key:
-                masked_g = active_groq_key[:8] + "..." + active_groq_key[-4:] if len(active_groq_key) > 12 else "***"
-                print(f"[+] Motor Groq Cloud Ativo com Chave ({masked_g}) | Modelo: '{groq_model}' (Zero Censura | Nuvem)")
+            active_groq_key, selected_groq_model, pre_exh, last_g_msg = _pick_ready_groq_key_and_model(
+                groq_keys, groq_model, groq_fallback
+            )
+            if active_groq_key and selected_groq_model:
+                masked_g = _quota_mask_key(active_groq_key)
+                if selected_groq_model != groq_model:
+                    print(f"[*] Modelo principal '{groq_model}' sem cota TPD no momento -> alternado automaticamente para '{selected_groq_model}'.")
+                print(f"[+] Motor Groq Cloud Ativo com Chave ({masked_g}) | Modelo: '{selected_groq_model}' (Zero Censura | Nuvem)")
                 engine_opts = {
                     "api_key": active_groq_key,
                     "groq_api_keys": groq_keys,
                     "openrouter_api_keys": keys,
                     "openrouter_fallback_model": fallback_model,
                     "fallback_model": groq_fallback,
+                    "preferred_model": groq_model,
                     "temperature": cfg.get("temperature", 0.0),
                     "cfg": cfg,
-                    "active_model": groq_model,
+                    "active_model": selected_groq_model,
+                    "active_model_by_key": {active_groq_key[:12]: selected_groq_model},
                     "active_engine": "groq",
                     "exhausted_engines": set(),
-                    "exhausted_groq_models": set(),
+                    "exhausted_groq_models": pre_exh,
                     "groq_model_cooldowns": {}
                 }
-                return "groq", groq_model, engine_opts
+                return "groq", selected_groq_model, engine_opts
             else:
-                print(f"[!] Groq Cloud indisponível [{last_g_msg}]. Tentando próximo motor...")
+                init_exhausted.add("groq")
+                init_reasons.append(f"Groq: {last_g_msg}")
+                print(f"[!] Groq Cloud indisponível em todos os modelos [{last_g_msg}]. Tentando próximo motor...")
         elif provider in ("groq", "fast"):
+            init_exhausted.add("groq")
             print(f"[!] Erro: Provedor configurado como 'groq', mas 'groq_api_key' está vazia em config.json.")
 
     # 2. OpenRouter (100% Nuvem - Sem usar recursos do PC)
@@ -2853,7 +3798,7 @@ def init_ai_translation_engine(cfg, is_adult=True):
             exhausted_keys = set()
 
             for idx, k in enumerate(keys):
-                masked = k[:8] + "..." + k[-4:] if len(k) > 12 else "***"
+                masked = _quota_mask_key(k)
                 ok, rem, msg = check_openrouter_key_status(k, model)
                 if ok:
                     print(f"  [+] Chave #{idx + 1} ({masked}): PRONTA [{msg}]")
@@ -2865,7 +3810,7 @@ def init_ai_translation_engine(cfg, is_adult=True):
                     exhausted_keys.add(idx)
 
             if active_key is not None:
-                masked_act = active_key[:8] + "..." + active_key[-4:] if len(active_key) > 12 else "***"
+                masked_act = _quota_mask_key(active_key)
                 print(f"[+] Motor OpenRouter Nuvem ativado com Chave #{active_idx + 1} ({masked_act}) | Modelo: {model}")
                 engine_opts = {
                     "api_key": active_key,
@@ -2880,12 +3825,18 @@ def init_ai_translation_engine(cfg, is_adult=True):
                     "fallback_model": fallback_model,
                     "openrouter_fallback_model": fallback_model,
                     "temperature": cfg.get("temperature", 0.0),
-                    "cfg": cfg
+                    "cfg": cfg,
+                    "groq_api_keys": groq_keys,
+                    "exhausted_engines": set(init_exhausted),
+                    "_fallback_reasons": list(init_reasons)
                 }
                 return "openrouter", model, engine_opts
             else:
+                init_exhausted.add("openrouter")
+                init_reasons.append("OpenRouter: todas as chaves indisponíveis")
                 print(f"[!] Todas as chaves OpenRouter configuradas estão esgotadas no momento.")
         elif provider in ("openrouter", "cloud"):
+            init_exhausted.add("openrouter")
             print(f"[!] Erro: Provedor configurado como 'openrouter', mas 'openrouter_api_keys'/'openrouter_api_key' está vazia em config.json.")
 
     # 3. Ollama (Remoto na Nuvem / Colab ou Local)
@@ -2901,37 +3852,43 @@ def init_ai_translation_engine(cfg, is_adult=True):
             "active_engine": "ollama",
             "groq_api_keys": groq_keys,
             "openrouter_api_keys": keys,
-            "openrouter_fallback_model": fallback_model
+            "openrouter_fallback_model": fallback_model,
+            "exhausted_engines": set(init_exhausted),
+            "_fallback_reasons": list(init_reasons)
         }
     else:
+        init_exhausted.add("ollama")
         print(f"[!] Aviso: Ollama não disponível no host '{host}' (ambiente sem GPU ou servidor offline).")
-        # Fallback de alta fidelidade para Groq Cloud se disponível
-        if groq_keys:
-            active_groq_key = None
-            for gk in groq_keys:
-                g_ok, _ = check_groq_available(gk, groq_model)
-                if g_ok:
-                    active_groq_key = gk
-                    break
-            if active_groq_key:
-                masked_g = active_groq_key[:8] + "..." + active_groq_key[-4:] if len(active_groq_key) > 12 else "***"
-                print(f"[+] Fallback Inteligente: Ativando Groq Cloud com Chave ({masked_g}) | Modelo: '{groq_model}'")
-                return "groq", groq_model, {
+        # Fallback de alta fidelidade para Groq Cloud se disponível e ainda não descartado
+        if groq_keys and "groq" not in init_exhausted:
+            active_groq_key, selected_groq_model, pre_exh, _ = _pick_ready_groq_key_and_model(
+                groq_keys, groq_model, groq_fallback
+            )
+            if active_groq_key and selected_groq_model:
+                masked_g = _quota_mask_key(active_groq_key)
+                print(f"[+] Fallback Inteligente: Ativando Groq Cloud com Chave ({masked_g}) | Modelo: '{selected_groq_model}'")
+                return "groq", selected_groq_model, {
                     "api_key": active_groq_key,
                     "groq_api_keys": groq_keys,
                     "openrouter_api_keys": keys,
                     "openrouter_fallback_model": fallback_model,
                     "fallback_model": groq_fallback,
+                    "preferred_model": groq_model,
                     "temperature": cfg.get("temperature", 0.0),
                     "cfg": cfg,
-                    "active_model": groq_model,
+                    "active_model": selected_groq_model,
+                    "active_model_by_key": {active_groq_key[:12]: selected_groq_model},
                     "active_engine": "groq",
                     "exhausted_engines": {"ollama"},
-                    "exhausted_groq_models": set(),
+                    "exhausted_groq_models": pre_exh,
                     "groq_model_cooldowns": {}
                 }
 
-    return None, None, {"cfg": cfg}
+    return None, None, {
+        "cfg": cfg,
+        "exhausted_engines": init_exhausted | {"groq", "openrouter", "ollama"},
+        "_fallback_reasons": list(init_reasons)
+    }
 
 def collapse_spaced_letters(text):
     """Reconecta letras ou sílabas individuais separadas por kerning da fonte (ex: 'S A A AN' -> 'SAAAN')."""
@@ -3534,8 +4491,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     return cleaned if cleaned else ""
 
 def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None, is_dolphin=True, is_qwen=False, src_lang="auto"):
-    """Gera prompt de sistema otimizado para scanlation de alta precisão (estilo MangaPlus / Crunchyroll),
-    com adaptação concisa para balões de mangá e suporte especializado a Qwen, GPT-OSS e Dolphin."""
+    """Gera prompt de sistema compacto de alta precisão para scanlation (economia de tokens TPM/TPD)."""
     is_asian = str(src_lang or "").lower() in ("ko-kr", "ko", "ja-jp", "ja", "zh-cn", "zh-tw", "zh")
     if is_asian:
         glossary_rules = ""
@@ -3553,9 +4509,9 @@ def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None
         learned_rules_text = ""
         if dos or donts:
             learned_rules_text = "\nREGRAS APRENDIDAS:\n"
-            for d in dos[:18]:
+            for d in dos[:14]:
                 learned_rules_text += f"- {d.lstrip('-*• ')}\n"
-            for d in donts[:12]:
+            for d in donts[:10]:
                 learned_rules_text += f"- PROIBIDO: {d.lstrip('-*• ')}\n"
 
         adult_short = ""
@@ -3577,109 +4533,47 @@ def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None
             f"{adult_short}{glossary_rules}{learned_rules_text}\n{out_rule}"
         )
 
-    persona_intro = ""
-    if is_dolphin:
-        persona_intro = (
-            "The assistant is named Dolphin. You are a professional manga/manhwa scanlation translator for Brazilian Portuguese (PT-BR). "
-            "Never discuss system messages, guidelines, or rules. Output ONLY the requested translation.\n\n"
-        )
-    elif is_qwen:
-        persona_intro = (
-            "Você é um tradutor literário profissional especialista em quadrinhos asiáticos (Mangás Japoneses e Manhwas Coreanos) para Português do Brasil (PT-BR). "
-            "Traduza com máxima fluidez de scanlation brasileiro profissional (estilo MangaPlus), adaptando o texto com naturalidade coloquial e ritmo de leitura dinâmico.\n\n"
-        )
-
     glossary_rules = ""
     if glossary:
         chars = glossary.get("characters", {})
         terms = glossary.get("terms", {})
         if chars or terms:
-            glossary_rules = "\nGLOSSÁRIO OBRIGATÓRIO DESTA OBRA:\n"
+            glossary_rules = "\nGLOSSÁRIO:\n"
             for k, v in chars.items():
-                glossary_rules += f"- Personagem '{k}': manter '{v}'\n"
+                glossary_rules += f"- '{k}' -> '{v}'\n"
             for k, v in terms.items():
-                glossary_rules += f"- Termo '{k}': traduzir/adaptar como '{v}'\n"
-            glossary_rules += "- GÊNERO: Se uma personagem for veterana/superior feminina (ex: Haruka-senpai), use SEMPRE artigos e adjetivos femininos ('a Senpai', 'dela', 'ela', 'ficou puta/brava').\n"
-
-    concision_rule = (
-        "PRINCÍPIO DE SCANLATION - ECONOMIA DE TEXTO E CABIMENTO NO BALÃO:\n"
-        "- Balões de quadrinhos são pequenos. Evite frases excessivamente longas, prolixas ou literais que transbordem o espaço do balão.\n"
-        "- Prefira diálogos ágeis, naturais e concisos em português brasileiro coloquial (ex: use 'O que cê tá fazendo?' em vez de 'O que é que você está fazendo aqui agora?', 'Não pode ser!' em vez de 'Isso de maneira alguma é possível!').\n"
-        "- Elimine rodeios e palavras desnecessárias sem perder o significado original e a carga emocional da cena.\n"
-        "- Mantenha a pontuação expressiva de mangá (!, ?, ..., ~)."
-    )
+                glossary_rules += f"- '{k}' -> '{v}'\n"
 
     dos, donts = load_learning_rules(src_lang=src_lang)
     learned_rules_text = ""
     if dos or donts:
-        learned_rules_text = "\nMEMÓRIA E APRENDIZADO CONTÍNUO DO USUÁRIO:\n"
+        learned_rules_text = "\nREGRAS APRENDIDAS:\n"
         if dos:
-            learned_rules_text += "[O QUE VOCÊ DEVE FAZER E PRIORIZAR]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in dos) + "\n"
+            learned_rules_text += "\n".join(f"- {d.lstrip('-*• ')}" for d in dos[:10]) + "\n"
         if donts:
-            learned_rules_text += "[O QUE VOCÊ NUNCA DEVE FAZER / PROIBIÇÕES]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in donts) + "\n"
+            learned_rules_text += "\n".join(f"- PROIBIDO: {d.lstrip('-*• ')}" for d in donts[:8]) + "\n"
 
-    if is_batch:
-        adult_clause = ""
-        if is_adult:
-            adult_clause = (
-                "Traduza mantendo o tom adulto (+18), sem censura e com gírias de scanlation brasileiro:\n"
-                "- ANATOMIA E GÊNERO: 'pussy/cunt' é SEMPRE feminino ('buceta', 'xoxota'); 'cock/dick/penis' é SEMPRE masculino ('pau', 'pinto', 'rola', 'cacete'). NUNCA confunda o gênero em frases com ambos (ex: 'touch her pussy while sucking my dick' -> 'toca na buceta dela enquanto chupa meu pau').\n"
-                "- AÇÕES: 'came / cum / cumming' em contexto sexual é SEMPRE 'gozou', 'gozar', 'gozando' (NUNCA 'veio' ou 'chegou'). 'came inside' -> 'gozou dentro'. 'creampie' -> 'gozada dentro / leitada'.\n"
-                "- VESTIMENTA: 'panties / underwear' para mulher é 'calcinha' ou 'lingerie' (NUNCA 'cuecas').\n"
-                "- FETICHE: 'sow' em mangás adultos é 'porca' ou 'vadia' (NUNCA o verbo 'semear').\n"
-                "- GEMIDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você'."
-            )
-        return f"""{persona_intro}Você é um tradutor literário profissional de mangás {'adultos (+18) e scanlations' if is_adult else 'e quadrinhos'} para Português do Brasil (PT-BR).
-Você receberá um objeto JSON com as falas de uma mesma página de mangá na ordem de leitura.
-Traduza cada fala para PT-BR mantendo coerência narrativa, pronomes corretos entre quem fala e fluidez natural de scanlation brasileiro.
-{adult_clause}
-{glossary_rules}
-{concision_rule}
-{learned_rules_text}
-
-REGRAS OBRIGATÓRIAS:
-1. Responda EXCLUSIVAMENTE em formato JSON com as mesmas chaves numéricas e os valores traduzidos. Exemplo: {{"1": "...", "2": "..."}}
-2. NUNCA adicione introduções, explicações, saudações, notas de tradutor ou referências a mensagens do sistema.
-3. Mantenha pontuação dramática de mangá (!, ?, ..., ~).
-4. NUNCA use palavras em espanhol ou portunhol. Se o texto de entrada estiver em espanhol, traduza absolutamente tudo para português do Brasil ('Muchas gracias' -> 'Muito obrigado', 'joyas' -> 'joias', 'tienda' -> 'loja', 'hoy' -> 'hoje', 'todo el dinero' -> 'todo o dinheiro').
-5. NUNCA confunda termos cotidianos/comerciais com termos genitais ('joyería' é 'joalheria', NUNCA 'buceta'; 'cuerpo' é 'corpo', NUNCA 'cu').
-6. Adapte os textos para serem diretos e caberem perfeitamente em balões de fala."""
-
+    adult_rules = ""
     if is_adult:
-        return f"""{persona_intro}Você é um tradutor literário profissional de mangás adultos e scanlations para Português do Brasil (PT-BR).
-Traduza fielmente o diálogo original com máxima naturalidade coloquial e fluidez brasileira, respeitando o tom da cena (romance, ecchi, diálogos picantes ou adultos).
+        adult_rules = (
+            "\nLOCALIZAÇÃO +18 (SEM CENSURA):\n"
+            "- Anatomia/Gênero: 'pussy/cunt/coño' -> feminino ('buceta/xoxota'); 'cock/dick/verga' -> masculino ('pau/pinto/rola/cacete'); nunca inverta gênero.\n"
+            "- Sexo: 'came/cum/cumming/correrse' -> 'gozou/gozar/gozando' (NUNCA 'veio/chegou'); 'creampie' -> 'gozada dentro'; 'panties' (mulher) -> 'calcinha'; 'sow' -> 'porca/vadia'.\n"
+            "- Gemidos ('u u u', 'mph', 'ahn', 'kuh'): som de prazer, NUNCA traduza 'u' como 'você'.\n"
+        )
 
-VOCABULÁRIO E ADAPTAÇÃO OBRIGATÓRIA:
-- 'pussy/cunt' -> SEMPRE feminino: 'buceta', 'xoxota' (NUNCA use 'pau').
-- 'cock/dick' -> SEMPRE masculino: 'pau', 'pinto', 'rola', 'cacete'.
-- 'came / cum / cumming' em sexo -> 'gozou', 'gozar', 'gozando' (NUNCA use 'veio').
-- 'panties / underwear' (mulher) -> 'calcinha' ou 'lingerie' (NUNCA use 'cuecas').
-- 'sow' (em eromanga) -> 'porca' ou 'vadia' (NUNCA o verbo 'semear').
-- Gemidos ('u u u', 'mph', 'ahn', 'kuh') -> Mantenha o som expressivo do gemido, NUNCA traduza a letra 'u' como 'você'.
-
-{concision_rule}
-{learned_rules_text}
-
-REGRAS OBRIGATÓRIAS:
-1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA introduza com "Aqui está", NUNCA adicione explicações, notas de tradutor ou referências ao sistema.
-2. NUNCA use palavras em espanhol.
-3. Adapte expressões e gírias com naturalidade autêntica brasileira (ex: 'came inside' -> 'gozou dentro'; 'honey' -> 'amor/querido').
-4. Mantenha nomes de personagens inalterados.
-5. Mantenha a pontuação dramática de mangá (exclamações, interrogações e reticências).
-6. Priorize concisão e impacto para o texto caber perfeitamente no balão de fala."""
+    common_rules = (
+        "- PT-BR coloquial, ágil e conciso (caber em balões pequenos); mantenha pontuação (!, ?, ..., ~, ♡) e nomes próprios.\n"
+        "- ZERO espanhol/portunhol ('joyería'='joalheria', NUNCA 'buceta'; 'cuerpo'='corpo'; 'tienda'='loja'; 'hoy'='hoje').\n"
+        "- Reconstrua mentalmente palavras quebradas por OCR antes de traduzir.\n"
+    )
+    if is_batch:
+        out_inst = 'Responda APENAS JSON válido com as mesmas chaves numéricas: {"1": "..."}.'
     else:
-        return f"""{persona_intro}Você é um tradutor literário profissional de mangás e quadrinhos japoneses para Português do Brasil (PT-BR).
-Traduza fielmente o texto original com máxima naturalidade coloquial e fluidez brasileira.
+        out_inst = 'Responda APENAS com o texto final traduzido em PT-BR, sem introduções ou notas.'
 
-{concision_rule}
-{learned_rules_text}
-
-REGRAS OBRIGATÓRIAS:
-1. Responda APENAS com o texto traduzido final em PT-BR. NUNCA converse, NUNCA adicione saudações, notas ou explicações.
-2. NUNCA use palavras em espanhol.
-3. Mantenha nomes próprios inalterados.
-4. Mantenha a pontuação dramática típica de mangás (!?, !!, ..., ~).
-5. Priorize concisão e impacto para o texto caber perfeitamente no balão de fala."""
+    role_head = "Assistente tradutor profissional de scanlation para PT-BR (zero censura, zero notas)." if is_dolphin else "Tradutor literário profissional de mangás (MangaPlus/Crunchyroll -> PT-BR)."
+    return f"{role_head}\n{common_rules}{adult_rules}{glossary_rules}{learned_rules_text}\n{out_inst}"
 
 def google_translate_free(text, source_lang="auto", target_lang="pt"):
     """Traduz texto diretamente usando Google Translate com detecção de idioma e fallback resiliente."""
@@ -3745,20 +4639,21 @@ def google_translate_free(text, source_lang="auto", target_lang="pt"):
 
     return clean
 
-def execute_translation_request(messages, engine_opts=None, is_adult=True, max_tokens=1024, is_batch=False, dialogue_map=None, src_lang="auto"):
+def execute_translation_request(messages, engine_opts=None, is_adult=True, max_tokens=1024, is_batch=False, dialogue_map=None, src_lang="auto", raise_on_oversize=False):
     """
     Roteador Inteligente e Resiliente de IAs.
-    Tenta o motor ativo mantendo isolamento estrito de chaves por provedor (Groq vs OpenRouter),
-    distinguindo pausas curtas de TPM vs esgotamento diário (TPD) e acionando fallback limpo sem poluir memória global.
+    Mantém isolamento estrito de chaves:modelos por provedor, trata requisições 413/oversize
+    sem banir modelos e registra motivos reais quando aciona fallback de emergência.
     """
     engine_opts = engine_opts if engine_opts is not None else {}
     engine_opts["_last_used_fallback"] = False
     exhausted = engine_opts.setdefault("exhausted_engines", set())
+    fb_reasons = engine_opts.setdefault("_fallback_reasons", [])
     cfg = engine_opts.get("cfg", {})
     temp = engine_opts.get("temperature", 0.0)
     active_engine = engine_opts.get("active_engine", "groq")
 
-    # 0. SE O MOTOR PRIORITÁRIO CONFIGURADO FOR OLLAMA (Modo Híbrido), TENTA OLLAMA PRIMEIRO
+    # 0. SE O MOTOR PRIORITÁRIO CONFIGURADO FOR OLLAMA OU OPENROUTER EXPLÍCITO, RESPEITA ESSA PRIORIDADE PRIMEIRO
     if active_engine == "ollama" and "ollama" not in exhausted:
         host = engine_opts.get("host") or cfg.get("ollama_host", "http://localhost:11434")
         ollama_ok, o_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=cfg.get("ollama_model"))
@@ -3766,14 +4661,49 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
             try:
                 resp = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=max_tokens)
                 if resp:
+                    engine_opts["_last_provider_used"] = f"ollama:{o_model}"
                     return resp
             except Exception as o_err:
                 exhausted.add("ollama")
+                fb_reasons.append(f"Ollama falhou: {o_err}")
                 print(f"\n[!] Ollama indisponível ({o_err}).")
                 print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Acionando Groq Cloud Nuvem...")
         else:
             exhausted.add("ollama")
+            fb_reasons.append("Ollama offline/indisponível")
             print(f"\n[!] Servidor Ollama offline ou sem GPU. Ativando fallback para Groq Cloud Nuvem...")
+
+    if active_engine == "openrouter" and "openrouter" not in exhausted:
+        raw_or_pool = (
+            engine_opts.get("openrouter_api_keys")
+            or cfg.get("openrouter_api_keys", [])
+            or ([cfg.get("openrouter_api_key")] if cfg.get("openrouter_api_key") else [])
+        )
+        or_keys = [
+            str(k).strip() for k in raw_or_pool
+            if str(k or "").strip() and not str(k).strip().startswith("gsk_")
+        ]
+        if or_keys:
+            or_model = cfg.get("openrouter_model", "nvidia/nemotron-3.5-lightning:free")
+            try:
+                resp = query_openrouter_chat(
+                    messages,
+                    or_model,
+                    api_key=or_keys[0],
+                    api_keys=or_keys,
+                    temperature=temp,
+                    max_tokens=max_tokens,
+                    engine_opts=engine_opts
+                )
+                if resp:
+                    engine_opts["_last_provider_used"] = f"openrouter:{or_model}"
+                    return resp
+            except Exception as or_err:
+                exhausted.add("openrouter")
+                fb_reasons.append(f"OpenRouter: {or_err}")
+                print(f"\n[!] OpenRouter indisponível ({or_err}). Tentando próximo motor...")
+        else:
+            exhausted.add("openrouter")
 
     # 1. TENTA GROQ SE AINDA NÃO ESGOTADO (COM ROTAÇÃO ENTRE CHAVES E RESILIÊNCIA A TPM)
     if "groq" not in exhausted:
@@ -3788,14 +4718,18 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
         avail_keys = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
 
         if avail_keys:
+            pref_model = engine_opts.get("preferred_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
+            fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+            active_by_key = engine_opts.setdefault("active_model_by_key", {})
             tried_tpm_keys = []
+            saw_oversize_err = None
+
             for idx_k, groq_k in enumerate(avail_keys):
-                model_name = engine_opts.get("active_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
-                fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+                model_for_key = active_by_key.get(groq_k[:12]) or pref_model
                 try:
                     resp = query_groq_chat(
                         messages,
-                        model_name,
+                        model_for_key,
                         groq_k,
                         temperature=temp,
                         max_tokens=max_tokens,
@@ -3804,26 +4738,35 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                         allow_tpm_wait=(len(avail_keys) == 1)
                     )
                     if resp:
+                        engine_opts["_last_provider_used"] = f"groq:{active_by_key.get(groq_k[:12], model_for_key)}"
                         return resp
                 except GroqRateLimitError as g_err:
-                    masked_k = groq_k[:8] + "..." + groq_k[-4:] if len(groq_k) > 12 else "***"
+                    masked_k = _quota_mask_key(groq_k)
+                    if g_err.is_oversize:
+                        saw_oversize_err = g_err
+                        if raise_on_oversize:
+                            raise g_err
+                        break
                     if g_err.is_tpm and not g_err.is_daily and not g_err.is_auth:
                         tried_tpm_keys.append((groq_k, g_err.retry_after or 12.0))
                         if idx_k + 1 < len(avail_keys):
                             print(f"\n[*] Chave Groq ({masked_k}) em pausa momentânea de TPM. Tentando próxima chave Groq...")
                         continue
                     exhausted_keys.add(groq_k)
-                    engine_opts["exhausted_groq_models"] = set()
+                    fb_reasons.append(f"Groq ({masked_k}): {g_err}")
                     print(f"\n[!] Chave Groq ({masked_k}) esgotada/indisponível ({g_err}).")
                 except Exception as g_err:
                     exhausted_keys.add(groq_k)
-                    engine_opts["exhausted_groq_models"] = set()
-                    masked_k = groq_k[:8] + "..." + groq_k[-4:] if len(groq_k) > 12 else "***"
+                    masked_k = _quota_mask_key(groq_k)
+                    fb_reasons.append(f"Groq ({masked_k}): {g_err}")
                     print(f"\n[!] Chave Groq ({masked_k}) falhou ({g_err}).")
 
-            if tried_tpm_keys:
+            if saw_oversize_err is not None and raise_on_oversize:
+                raise saw_oversize_err
+
+            if tried_tpm_keys and saw_oversize_err is None:
                 best_k, wait_s = min(tried_tpm_keys, key=lambda it: it[1])
-                sleep_s = min(max(wait_s + 0.5, 2.0), 38.0)
+                sleep_s = min(max(wait_s + 0.5, 2.0), 65.0)
                 print(f"\n[*] Todas as chaves Groq atingiram pico breve de TPM. Aguardando {sleep_s:.1f}s para liberar tokens...")
                 time.sleep(sleep_s)
                 cd_map = engine_opts.get("groq_model_cooldowns", {})
@@ -3833,11 +4776,10 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                     if ck.startswith(key_sig + ":") and cd_map[ck] <= now_t + 1.0:
                         cd_map.pop(ck, None)
                 try:
-                    model_name = engine_opts.get("active_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
-                    fb_model = engine_opts.get("fallback_model") or cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+                    model_for_key = active_by_key.get(key_sig) or pref_model
                     resp = query_groq_chat(
                         messages,
-                        model_name,
+                        model_for_key,
                         best_k,
                         temperature=temp,
                         max_tokens=max_tokens,
@@ -3846,13 +4788,17 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                         allow_tpm_wait=False
                     )
                     if resp:
+                        engine_opts["_last_provider_used"] = f"groq:{active_by_key.get(key_sig, model_for_key)}"
                         return resp
                 except GroqRateLimitError as g2:
+                    if g2.is_oversize and raise_on_oversize:
+                        raise g2
                     if g2.is_daily or g2.is_auth:
                         exhausted_keys.add(best_k)
+                        fb_reasons.append(f"Groq ({_quota_mask_key(best_k)}): {g2}")
                 except Exception:
                     pass
-            else:
+            elif saw_oversize_err is None:
                 rem_after = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
                 if not rem_after:
                     exhausted.add("groq")
@@ -3885,9 +4831,11 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                     engine_opts=engine_opts
                 )
                 if resp:
+                    engine_opts["_last_provider_used"] = f"openrouter:{or_model}"
                     return resp
             except Exception as or_err:
                 exhausted.add("openrouter")
+                fb_reasons.append(f"OpenRouter: {or_err}")
                 print(f"\n[!] OpenRouter indisponível ({or_err}).")
                 print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando Ollama / Google...")
         else:
@@ -3901,17 +4849,22 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
             try:
                 resp = query_ollama_chat(messages, o_model, host=host, temperature=temp, num_predict=max_tokens)
                 if resp:
+                    engine_opts["_last_provider_used"] = f"ollama:{o_model}"
                     return resp
             except Exception as o_err:
                 exhausted.add("ollama")
+                fb_reasons.append(f"Ollama: {o_err}")
                 print(f"\n[!] Ollama indisponível ({o_err}).")
         else:
             exhausted.add("ollama")
 
     # 4. FALLBACK FINAL AUTOMÁTICO: GOOGLE TRANSLATOR (não grava em memoria_traducoes.json)
     engine_opts["_last_used_fallback"] = True
+    engine_opts["_last_provider_used"] = "google_fallback"
     if not engine_opts.get("_google_announced"):
-        print("\n[+] MOTOR DE EMERGÊNCIA ATIVADO: Traduzindo via Google Translator Direto (Alta velocidade, sem bloqueios)...")
+        motivo_str = " | ".join(fb_reasons[-2:]) if fb_reasons else "Cotas IA esgotadas"
+        print(f"\n[+] MOTOR DE EMERGÊNCIA ATIVADO ({motivo_str}): Traduzindo via Google Translator Direto...")
+        record_quota_event("system", "warn", f"Fallback Google ativado durante tradução: {motivo_str}")
         engine_opts["_google_announced"] = True
 
     if is_batch and dialogue_map:
@@ -4080,157 +5033,79 @@ def build_page_spatial_dossier(bubbles_to_trans, page_w=1200, page_h=1800, src_l
     }, dialogue_map
 
 def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto"):
-    """Gera o prompt do Agente 2 (Tradutor Literário & Contextualizador de Cena),
-    compactando automaticamente para obras asiáticas (Coreano/Japonês/Chinês) para respeitar limites TPM."""
+    """Gera o prompt enxuto e de alta precisão do Agente 2 (~70% menos tokens/página sem perder regras críticas)."""
     glossary_rules = ""
     if glossary:
         chars = glossary.get("characters", {})
         terms = glossary.get("terms", {})
         if chars or terms:
-            glossary_rules = "\nGLOSSÁRIO OBRIGATÓRIO DESTA OBRA:\n"
+            glossary_rules = "\nGLOSSÁRIO:\n"
             for k, v in chars.items():
-                glossary_rules += f"- Personagem '{k}': manter '{v}'\n"
+                glossary_rules += f"- '{k}' -> '{v}'\n"
             for k, v in terms.items():
-                glossary_rules += f"- Termo '{k}': traduzir/adaptar como '{v}'\n"
+                glossary_rules += f"- '{k}' -> '{v}'\n"
 
     dos, donts = load_learning_rules(src_lang=src_lang)
-    learned_rules_text = ""
-    if dos or donts:
-        learned_rules_text = "\nMEMÓRIA E APRENDIZADO CONTÍNUO DO USUÁRIO:\n"
-        if dos:
-            learned_rules_text += "[O QUE VOCÊ DEVE FAZER E PRIORIZAR]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in dos) + "\n"
-        if donts:
-            learned_rules_text += "[O QUE VOCÊ NUNCA DEVE FAZER / PROIBIÇÕES]:\n" + "\n".join(f"- {d.lstrip('-*• ')}" for d in donts) + "\n"
-
     is_asian = str(src_lang or "").lower() in ("ko-kr", "ko", "ja-jp", "ja", "zh-cn", "zh-tw", "zh")
+    do_cap, dont_cap = (14, 10) if is_asian else (10, 8)
+    learned_compact = ""
+    if dos or donts:
+        learned_compact = "\nREGRAS APRENDIDAS:\n"
+        for d in dos[:do_cap]:
+            learned_compact += f"- {d.lstrip('-*• ')}\n"
+        for d in donts[:dont_cap]:
+            learned_compact += f"- PROIBIDO: {d.lstrip('-*• ')}\n"
+
     if is_asian:
-        lang_tag = "COREANO (Hangul / Manhwa)" if "ko" in str(src_lang).lower() else (
-            "CHINÊS (Hanzi / Manhua)" if "zh" in str(src_lang).lower() else "JAPONÊS (Mangá)"
+        lang_tag = "COREANO (Hangul/Manhwa)" if "ko" in str(src_lang).lower() else (
+            "CHINÊS (Hanzi/Manhua)" if "zh" in str(src_lang).lower() else "JAPONÊS (Mangá)"
         )
         ko_hints = ""
         if "ko" in str(src_lang).lower():
             ko_hints = (
-                "- COREANO (+18 & GÍRIAS): '자지/고추' -> 'pau/pinto'; '보지' -> 'buceta'; '유두/젖꼭지' -> 'mamilo/biquinho'; '딸치다/딸치지' -> 'bater uma / se masturbar usando' (NUNCA apenas 'bater em'); '자위펫' -> 'pet de masturbação / brinquedo'.\n"
-                "- DESAMBIGUAÇÃO COREANA: '쓰고' com sexual/ferramenta é 'usar/usando/metendo' (NUNCA 'escrever/escrevendo/Escribendo'); '바둑이' é o nome próprio 'Baduki' (NUNCA traduza como 'Go'); '-님' após nome é '-sama' ou 'senhor(a)' (NUNCA '-sen'); '수인' é 'bestiais / homens-fera' (não deixe 'Suin'); '야옹/냥' -> 'miau'; '갈 것 같다/싸다/가버렷' -> 'vou gozar/gozei'; '따라 해봐' -> 'tenta repetir comigo/faz igual'.\n"
+                "- KO (+18): '자지/고추'->'pau/pinto'; '보지'->'buceta'; '유두/젖꼭지'->'mamilo/biquinho'; '딸치다'->'bater uma/masturbar'; '자위펫'->'brinquedo'.\n"
+                "- KO DESAMBIG.: '쓰고'(sexual/ferramenta)->'usar/metendo' (NUNCA 'escrever'); '바둑이'->'Baduki'; '-님'->'-sama/senhor(a)'; '수인'->'homens-fera'; '갈 것 같다/싸다'->'vou gozar/gozei'.\n"
             )
         adult_compact = ""
         if is_adult:
             adult_compact = (
-                "\nLOCALIZAÇÃO ADULTA (+18 - ZERO CENSURA):\n"
-                "- Use PT-BR coloquial explícito de scanlation brasileiro: 'buceta', 'xoxota', 'pau', 'pinto', 'gozar', 'gozando', 'calcinha', 'tesão'.\n"
+                "\nADULTO (+18 SEM CENSURA): PT-BR explícito ('buceta', 'xoxota', 'pau', 'pinto', 'gozar', 'gozando', 'calcinha', 'tesão').\n"
                 f"{ko_hints}"
-                "- Correspondência de gênero: concorde sempre pronomes/adjetivos com quem fala e com a cena.\n"
+                "- Concorde gênero/pronomes com quem fala e a cena.\n"
             )
-        learned_compact = ""
-        if dos or donts:
-            learned_compact = "\nREGRAS DO USUÁRIO:\n"
-            for d in dos[:18]:
-                learned_compact += f"- {d.lstrip('-*• ')}\n"
-            for d in donts[:12]:
-                learned_compact += f"- PROIBIDO: {d.lstrip('-*• ')}\n"
-        return f"""Você é o Agente 2: Tradutor Literário de scanlation ({lang_tag} -> Português do Brasil).
-O Agente 1 enviou os balões da página em ordem de leitura com limite recomendado de caracteres ('max_chars').
-
-REGRAS ESSENCIAIS:
-1. Estude a cena completa da página para manter continuidade, pronomes e gênero corretos entre personagens.
-2. Adapte para PT-BR coloquial, ágil e conciso para caber elegante em cada balão (respeite 'max_chars').
-3. ZERO palavras em espanhol/portunhol ou texto asiático residual; mantenha pontuação (!, ?, ..., ~, ♡).
-4. NUNCA imprima explicações ou notas de tradutor.{adult_compact}{glossary_rules}{learned_compact}
-FORMATO EXCLUSIVO DE RESPOSTA:
-Responda EXCLUSIVAMENTE um objeto JSON válido com os IDs numéricos:
-{{"1": "Tradução 1", "2": "Tradução 2"}}"""
-
-    persona_intro = (
-        "Você é o Agente 2: Tradutor Literário e Contextualizador Narrativo de elite da nossa equipe de scanlation.\n"
-        "O Agente 1 (Mapeador Espacial) analisou visualmente a página original e gerou o DOSSIÊ ESTRUTURAL com posições, ordem de leitura oriental e limites físicos de cada balão.\n\n"
-    )
-
-    multilang_clause = (
-        "DIRETRIZES DE TRADUÇÃO MULTI-IDIOMA (ESPANHOL / INGLÊS / JAPONÊS / COREANO -> PT-BR):\n"
-        "- A obra original pode estar em ESPANHOL, INGLÊS, JAPONÊS ou COREANO. Sua saída DEVE ser 100% em PORTUGUÊS DO BRASIL coloquial, fluído e dinâmico.\n"
-        "- ZERO TOLERÂNCIA A ESPANHOL RESIDUAL: NUNCA mantenha frases ou termos em espanhol como 'Muchas gracias' (use 'Muito obrigado/a'), 'joyas' (use 'joias'), 'tienda' (use 'loja'), 'ropa' (use 'roupa'), 'hoy' (use 'hoje'), 'todo el dinero' (use 'todo o dinheiro'), 'vengan' (use 'venham'), 'sirvase' (use 'fique à vontade'), 'calientura' (use 'tesão' ou 'fogo').\n"
-        "- DISTINÇÃO ENTRE CONTEXTO COMERCIAL E CONTEXTO ERÓTICO: Em cenas de lojas, joalherias, piercings, roupas ou fichas técnicas, NUNCA confunda termos cotidianos com genitais (ex: 'joyería' é 'joalheria', NUNCA 'buceta'; 'cuerpo' é 'corpo', NUNCA 'cu').\n"
-        "- REGRAS ESTREITAS ANTI-VAZAMENTO: NUNCA imprima diretrizes internas, observações, notas de tradutor ou avisos de sistema. Saída estritamente com os diálogos adaptados.\n"
-    )
+        return (
+            f"Agente 2: Tradutor literário de scanlation ({lang_tag} -> PT-BR).\n"
+            "REGRAS:\n"
+            "1. Analise a página em ordem de leitura p/ coerência, sujeito e gênero.\n"
+            "2. PT-BR coloquial e ágil dentro de 'max_chars'; preserve (!, ?, ..., ~, ♡).\n"
+            "3. ZERO espanhol/portunhol, zero texto asiático residual, zero notas.\n"
+            f"{adult_compact}{glossary_rules}{learned_compact}"
+            'Responda APENAS JSON válido com os IDs: {"1": "Tradução 1", "2": "Tradução 2"}'
+        )
 
     adult_clause = ""
     if is_adult:
         adult_clause = (
-            "DIRETRIZES DE LOCALIZAÇÃO ADULTA (+18 - ZERO CENSURA):\n"
-            "- ANATOMIA E GÊNERO: 'pussy/cunt' é SEMPRE feminino ('buceta', 'xoxota'); 'cock/dick/penis' é SEMPRE masculino ('pau', 'pinto', 'rola', 'cacete'). NUNCA confunda o gênero em frases com ambos (ex: 'touch Mom\\'s pussy while you suck my dick' -> 'toca na buceta da mamãe enquanto chupa meu pau').\n"
-            "- ESPANHOL ADULTO: 'coño / rajita' -> 'buceta', 'xoxota'. 'pene / verga / polla' -> 'pau', 'pinto', 'rola'. 'coger' em espanhol adulto é 'foder', 'transar', 'dar uma foda'. 'calentura' é 'tesão', 'fogo'. 'correrse / se vino / me vengo' -> 'gozar', 'gozou', 'estou gozando'.\n"
-            "- AÇÕES: 'came / cum / cumming' em contexto sexual é SEMPRE 'gozou', 'gozar', 'gozando' (NUNCA 'veio' ou 'chegou'). 'came inside' -> 'gozou dentro'. 'creampie' -> 'gozada dentro / leitada'.\n"
-            "- GRITOS E CLÍMAX: 'I'm cumming / CUMIN G / Cu MING' -> 'Estou gozando!'. 'I can't hold it anymore / CAN TH OLD' -> 'Não aguento mais segurar! / Não consigo mais segurar!'.\n"
-            "- DINÂMICAS ÍNTIMAS E GÊNERO: Ao falar com mulher, 'you're so wet / getting wet' é SEMPRE feminino ('você está tão molhada / ficando molhada'). Mulher falando: 'I'll be your partner' -> 'serei sua parceira'. Filho falando com a mãe sobre o pai ('Dad') diz 'O papai' ou 'Meu pai' (NUNCA 'Seu pai').\n"
-            "- MADRASTA E ENTEADO: Falando com a madrasta/mulher, 'you are a stranger' é SEMPRE feminino ('você é uma estranha para mim'). 'act all motherly' é 'agir como mãe' ou 'toda maternal' (NUNCA 'de forma material'). 'nuisance' é 'um estorvo' ou 'um incômodo' (NUNCA a palavra inexistente 'incomodável').\n"
-            "- NOMES E PRATOS JAPONESES: 'Oyakodon' é o prato de frango e ovo (NUNCA corte como 'oya kod'). Nomes de pessoas como 'Hatsuko' são nomes próprios (NUNCA traduza 'Hats' como 'chapéus').\n"
-            "- VESTIMENTA: 'panties / underwear' para mulher é 'calcinha' ou 'lingerie' (NUNCA 'cuecas').\n"
-            "- FETICHE: 'sow' em mangás adultos é 'porca' ou 'vadia' (NUNCA o verbo 'semear').\n"
-            "- GEMIDOS E RUÍDOS: 'u u u', 'mph', 'ahn', 'kuh' são sons de prazer; NUNCA traduza a letra 'u' como 'você' nem confunda 'Anh...!' com 'irmão mais velho'. Mantenha o som expressivo (ex: 'Ugh... uh... mmph...', 'Anh...!').\n"
+            "\nADULTO (+18 SEM CENSURA):\n"
+            "- Anatomia: 'pussy/cunt'/'coño/rajita'->'buceta/xoxota' (fem); 'cock/dick/penis'/'pene/verga/polla'->'pau/pinto/rola' (masc). Nunca troque o gênero na frase.\n"
+            "- Ações: 'came/cum/cumming'/'correrse/me vengo'->'gozou/gozar/gozando' (NUNCA 'veio/chegou'); 'came inside'->'gozou dentro'; 'creampie'->'leitada/gozada dentro'; 'I can't hold it'->'Não aguento mais!'; 'calentura'->'tesão'; 'coger'(ES +18)->'foder/transar'; 'sow'->'porca/vadia'; 'panties'->'calcinha'.\n"
+            "- Armadilhas & gênero: falante c/ mulher 'so wet/stranger'->'tão molhada/estranha'; filho falando do pai p/ mãe 'Dad'->'O papai/Meu pai' (NUNCA 'Seu pai'); 'act all motherly'->'agir como mãe' (NUNCA 'material'); 'nuisance'->'estorvo/incômodo'; 'come hang out'->'venha me visitar' (NUNCA 'pendurar'); 'it's hard'(erótico)->'tá duro'; 'pee-pee'->'pauzinho'; manter nomes/pratos JP ('Oyakodon', 'Hatsuko', 'Yu-kun' NUNCA 'ONU/Vamos').\n"
+            "- Gemidos ('u u u', 'mph', 'ahn', 'kuh'): mantenha som expressivo ('Ugh...', 'Anh...'); NUNCA 'u'->'você' ou 'Anh'->'irmão'.\n"
         )
 
-    ocr_reconstruction_clause = (
-        "DIRETRIZES DE RECONSTRUÇÃO DE OCR E PALAVRAS FRAGMENTADAS (MANGÁ & COMIC FONTS):\n"
-        "- Os textos fornecidos vêm de reconhecimento óptico (OCR) de balões de quadrinhos e contêm falhas frequentes de quebra e diagramação:\n"
-        "- PALAVRAS QUEBRADAS OU SEPARADAS INDEVIDAMENTE: Reconstrua mentalmente a palavra antes de traduzir:\n"
-        "  * 'CONS E- QUE N CES' / 'CONSEQUE N CES' -> 'consequences' -> 'consequências'\n"
-        "  * 'AC KNOWL-' -> 'acknowledge' -> 'reconhecer'\n"
-        "  * 'ARRANGE- MENT S' / 'ARRANGEMENT S' -> 'arrangements' -> 'preparativos'\n"
-        "  * 'SUP- PRESSED' -> 'suppressed' -> 'suprimidos'\n"
-        "  * 'Wit c H\'S' -> 'Witch\'s' -> 'da bruxa'\n"
-        "  * 'H app Y' -> 'happy' -> 'feliz'\n"
-        "  * 'IRU LY' -> 'truly' -> 'realmente'\n"
-        "  * 'mad or omi' -> 'Madoromi' (título da obra / nome próprio)\n"
-        "  * 'mi y obi' -> 'Miyobi' (autor / círculo)\n"
-        "  * 'FURY A' -> 'Furiya' (nome de personagem)\n"
-        "  * 'ROCHE -SAN' -> 'Roche-san'\n"
-        "  * 'ONEE SAM AS' -> 'Onee-sama\'s' ('da minha irmã mais velha')\n"
-        "- CARACTERES CONFUNDIDOS PELO SCAN ÓPTICO:\n"
-        "  * 'It, feels poo 6' -> 'It feels so good' -> 'É tão gostoso / É uma delícia'\n"
-        "  * 'LN ABLE TO SLEEP' -> 'UNABLE TO SLEEP' -> 'Incapaz de dormir / Sem conseguir dormir' (NUNCA inverta o sentido!)\n"
-        "  * 'what am T even s aging' -> 'what am I even saying' -> 'o que eu estou dizendo'\n"
-        "  * 'ARE YO LI OKAY' -> 'ARE YOU OKAY' -> 'você está bem?'\n"
-        "  * 'I-IS S IHL REAL LIFE' -> 'IS THIS REAL LIFE' -> 'isso é a vida real?'\n"
-        "  * 'SPITTING WAGE ... IS A WIN' -> 'SPITTING IMAGE ... I SAW IN' -> 'a cara/cópia da mulher que vi em um sonho'\n"
-        "  * 'OP THEIR HEART' -> 'OF THEIR HEART' -> 'do seu coração'\n"
-        "  * 'M LIST MEET' -> 'MUST MEET' -> 'tem que conhecer'\n"
-        "- CONTINUIDADE ENTRE BALÕES: Leia todos os balões da página para entender frases divididas entre dois balões adjacentes e traduza a narrativa com coerência fluida.\n"
-        "- REGRA FUNDAMENTAL: Reconstrua SEMPRE o diálogo real pretendido pelo autor no contexto da cena antes de gerar a tradução para PT-BR.\n"
+    return (
+        "Agente 2: Tradutor Literário de mangá/comic (EN/ES/JA/KO -> PT-BR coloquial, estilo scanlation).\n"
+        "REGRAS:\n"
+        "1. Leia todos os balões na ordem RTL p/ manter continuidade, sujeito e gênero (adjetivos/pronomes corretos).\n"
+        "2. Seja conciso p/ caber em 'max_chars'; preserve (!, ?, ..., ~, ♡). ZERO notas ou comentários.\n"
+        "3. ZERO espanhol residual ('Muchas gracias'->'Muito obrigado', 'joyas'->'joias', 'tienda'->'loja', 'ropa'->'roupa', 'hoy'->'hoje', 'vengan'->'venham'). Em cena comercial, nunca sexualize palavras comuns ('joyería'->'joalheria', 'cuerpo'->'corpo').\n"
+        "4. Reconstrua OCR fragmentado pelo contexto antes de traduzir (ex: 'Wit c H\\'S'->'da bruxa', 'LN ABLE'->'incapaz', 'CONS E-QUE N CES'->'consequências', 'ARE YO LI OKAY'->'você está bem?', 'Fr I END'->'amiga', 'Ch IL DISH'->'infantil').\n"
+        f"{adult_clause}{glossary_rules}{learned_compact}"
+        'SAÍDA EXCLUSIVA EM JSON VÁLIDO: {"1": "Tradução 1", "2": "Tradução 2"}'
     )
 
-    return f"""{persona_intro}Sua missão é realizar a tradução e adaptação contextual de excelência literária para Português do Brasil (PT-BR).
-
-SUAS TAREFAS OBRIGATÓRIAS:
-1. ESTUDO DE CENA E PERSONAGENS:
-   - Leia todas as falas na ordem de leitura fornecida (topo-direita -> base-esquerda).
-   - Identifique quem está conversando com quem (homem, mulher, mãe e filho, superior e subordinado, amantes, amigos).
-   - Garanta 100% de concordância de gênero nos pronomes, artigos e adjetivos (ex: 'cansada', 'ficou louca', 'meu amor', 'na buceta').
-
-2. ADAPTAÇÃO AO TAMANHO DO BALÃO (TYPESETTING MILIMÉTRICO):
-   - Cada balão possui uma recomendação de capacidade física ('max_chars').
-   - Adapte a tradução em PT-BR para caber com elegância dentro desse limite.
-   - Seja conciso e ágil como um verdadeiro diálogo de mangá brasileiro (ex: 'Nem pensar!' em vez de 'Isso de maneira alguma seria possível').
-
-3. VOCABULÁRIO E TOM:
-   - Use português do Brasil coloquial autêntico, fluido e expressivo (estilo MangaPlus / Crunchyroll).
-   - Mantenha a pontuação dramática de mangá (!, ?, ..., ~).
-   - NUNCA use palavras em espanhol ou portunhol.
-
-{ocr_reconstruction_clause}
-{multilang_clause}
-{adult_clause}
-{glossary_rules}
-{learned_rules_text}
-
-FORMATO EXCLUSIVO DE RESPOSTA:
-Responda EXCLUSIVAMENTE em formato JSON com os IDs numéricos de cada balão:
-{{
-  "1": "Tradução adaptada da fala 1",
-  "2": "Tradução adaptada da fala 2"
-}}"""
-
 def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None, engine_opts=None, is_adult=True, glossary=None, page_w=1200, page_h=1800, src_lang="auto", page_num=1):
-    """Traduz falas de uma página usando a cooperação entre Agente 1 (Cartógrafo Espacial) e Agente 2 (Contextualizador Literário)."""
+    """Traduz falas de uma página via Agente 1 + Agente 2 com chunking dinâmico para TPM e divisão automática contra HTTP 413."""
     if not bubbles_to_trans:
         return {}
 
@@ -4239,7 +5114,7 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
 
     # 1. Agente 1 constrói o dossiê estrutural e espacial
     dossier, dialogue_map = build_page_spatial_dossier(bubbles_to_trans, page_w=page_w, page_h=page_h, src_lang=src_lang)
-    
+
     needed_bubbles = []
     for b in dossier["baloes"]:
         orig = b["orig_raw"]
@@ -4256,60 +5131,97 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
     if not needed_bubbles:
         return results
 
-    # Prepara payload estruturado para o Agente 2
-    dossier_payload = {
-        "ordem_leitura": dossier["layout"],
-        "idioma_original": dossier["idioma_detectado"],
-        "baloes_da_pagina": [
-            {
-                "id": b["id"],
-                "posicao_espacial": b["pos"],
-                "formato_balao": b["formato"],
-                "max_chars": b["max_chars"],
-                "texto_original": b["texto_original"]
-            }
-            for b in needed_bubbles
-        ]
-    }
+    # Agrupamento dinâmico em chunks para manter TPM por chamada bem abaixo de 8k (e evitar HTTP 413 em páginas densas)
+    MAX_BUBBLES_PER_CHUNK = 10
+    MAX_CHARS_PER_CHUNK = 1600
+    initial_chunks = []
+    cur_chunk = []
+    cur_chars = 0
+    for b in needed_bubbles:
+        b_len = len(b["texto_original"]) + 40
+        if cur_chunk and (len(cur_chunk) >= MAX_BUBBLES_PER_CHUNK or (cur_chars + b_len) > MAX_CHARS_PER_CHUNK):
+            initial_chunks.append(cur_chunk)
+            cur_chunk = []
+            cur_chars = 0
+        cur_chunk.append(b)
+        cur_chars += b_len
+    if cur_chunk:
+        initial_chunks.append(cur_chunk)
 
-    print(f"[*] [Agente 1: Cartógrafo] Mapeou {len(needed_bubbles)} balões na pág {page_num} (Leitura RTL • Typesetting sob medida)")
+    n_chunks_hint = len(initial_chunks)
+    chunk_lbl = f" ({n_chunks_hint} lotes)" if n_chunks_hint > 1 else ""
+    print(f"[*] [Agente 1: Cartógrafo] Mapeou {len(needed_bubbles)} balões na pág {page_num}{chunk_lbl} (Leitura RTL • Payload enxuto)")
 
     sys_prompt = build_dual_engine_system_prompt(is_adult=is_adult, glossary=glossary, src_lang=src_lang)
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, separators=(",", ":"))}
-    ]
 
-    has_long_text = any(len(b["texto_original"]) > 60 for b in needed_bubbles)
-    batch_max_tokens = 1150 if has_long_text else 850
+    pending_queue = list(initial_chunks)
+    chunk_idx = 0
+    while pending_queue:
+        chunk = pending_queue.pop(0)
+        chunk_idx += 1
+        dossier_payload = {
+            "ordem": "RTL",
+            "idioma": dossier["idioma_detectado"],
+            "baloes": [
+                {
+                    "id": b["id"],
+                    "pos": b["pos"],
+                    "tipo": "V" if "vertical" in b["formato"] else ("H" if "retangular" in b["formato"] else "O"),
+                    "max_chars": b["max_chars"],
+                    "texto": b["texto_original"]
+                }
+                for b in chunk
+            ]
+        }
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, separators=(",", ":"))}
+        ]
 
-    resp_content = execute_translation_request(
-        messages,
-        engine_opts=engine_opts,
-        is_adult=is_adult,
-        max_tokens=batch_max_tokens,
-        is_batch=True,
-        dialogue_map={b["id"]: b["orig_raw"] for b in needed_bubbles},
-        src_lang=src_lang
-    )
+        has_long_text = any(len(b["texto_original"]) > 60 for b in chunk)
+        batch_max_tokens = min(900, max(280, len(chunk) * (110 if has_long_text else 75)))
+        chunk_dmap = {b["id"]: b["orig_raw"] for b in chunk}
 
-    used_fb_batch = bool(engine_opts.get("_last_used_fallback"))
-    resp_clean = _strip_think_tags(resp_content)
-    json_match = re.search(r'\{.*\}', resp_clean, flags=re.DOTALL)
-    if json_match:
         try:
-            parsed = json.loads(json_match.group(0))
-            for k, trans in parsed.items():
-                if k in dialogue_map:
-                    orig = dialogue_map[k]
-                    cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
-                    if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
-                        results[orig] = cleaned_trans
-                        if used_fb_batch:
-                            engine_opts.setdefault("_fallback_originals", set()).add(orig)
-            print(f"[+] [Agente 2: Contextualizador] Cena da pág {page_num} contextualizada e traduzida com sucesso.")
-        except Exception:
-            pass
+            resp_content = execute_translation_request(
+                messages,
+                engine_opts=engine_opts,
+                is_adult=is_adult,
+                max_tokens=batch_max_tokens,
+                is_batch=True,
+                dialogue_map=chunk_dmap,
+                src_lang=src_lang,
+                raise_on_oversize=(len(chunk) > 1)
+            )
+        except GroqRateLimitError as g_over:
+            if g_over.is_oversize and len(chunk) > 1:
+                mid = max(1, len(chunk) // 2)
+                print(f"[*] [Agente 2] Lote de {len(chunk)} balões excedeu limite TPM por chamada; dividindo em {mid} + {len(chunk) - mid}...")
+                pending_queue.insert(0, chunk[mid:])
+                pending_queue.insert(0, chunk[:mid])
+                continue
+            resp_content = ""
+
+        used_fb_batch = bool(engine_opts.get("_last_used_fallback"))
+        resp_clean = _strip_think_tags(resp_content)
+        json_match = re.search(r'\{.*\}', resp_clean, flags=re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(0))
+                chunk_ok = 0
+                for k, trans in parsed.items():
+                    if k in chunk_dmap:
+                        orig = chunk_dmap[k]
+                        cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                        if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
+                            results[orig] = cleaned_trans
+                            chunk_ok += 1
+                            if used_fb_batch:
+                                engine_opts.setdefault("_fallback_originals", set()).add(orig)
+                if chunk_ok > 0 and not pending_queue:
+                    print(f"[+] [Agente 2: Contextualizador] Cena da pág {page_num} contextualizada e traduzida com sucesso.")
+            except Exception:
+                pass
 
     # Fallback para qualquer balão ausente ou cortado
     for b in needed_bubbles:
@@ -6334,7 +7246,7 @@ class VisionSafetyBlockedError(RuntimeError):
     """Indica recusa por filtro de conteúdo sensível no provedor Vision."""
 
 def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
-    """Executa OCR via Google Gemini Vision REST API com rotação de chaves e segurança ajustada."""
+    """Executa OCR via Google Gemini Vision REST API com rotação de chaves e telemetria real de cota 429."""
     engine_opts = engine_opts if engine_opts is not None else {}
     raw_keys = list(cfg.get("gemini_api_keys") or [])
     if cfg.get("gemini_api_key") and cfg.get("gemini_api_key") not in raw_keys:
@@ -6348,6 +7260,7 @@ def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
 
     exhausted_gem_keys = engine_opts.setdefault("gemini_exhausted_keys", set())
     exhausted_gem_models = engine_opts.setdefault("gemini_exhausted_models", set())
+    exhausted_gem_pairs = engine_opts.setdefault("gemini_exhausted_pairs", set())
 
     cand_models = []
     for m in [cfg.get("gemini_model")] + GEMINI_DEFAULT_VISION_MODELS:
@@ -6371,6 +7284,9 @@ def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
             continue
         for m_name in cand_models:
             if m_name in exhausted_gem_models:
+                continue
+            pair_sig = f"{idx_k}:{m_name}"
+            if pair_sig in exhausted_gem_pairs:
                 continue
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key}"
             use_json_mime = True
@@ -6399,16 +7315,20 @@ def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
                         data = json.loads(resp.read().decode("utf-8"))
                     pfb = data.get("promptFeedback") or {}
                     if pfb.get("blockReason"):
+                        record_gemini_status(api_key, model_name=m_name, ok=True, msg="Ativa (bloqueio por segurança de conteúdo)")
                         raise VisionSafetyBlockedError(f"Gemini bloqueou a página ({pfb.get('blockReason')}).")
                     cands = data.get("candidates") or []
                     if not cands:
+                        record_gemini_status(api_key, model_name=m_name, ok=True, msg="Ativa (sem candidatos de segurança)")
                         raise VisionSafetyBlockedError("Gemini não retornou candidatos para esta página.")
                     fin_reason = str(cands[0].get("finishReason", "")).upper()
                     if fin_reason in ("SAFETY", "PROHIBITED_CONTENT", "IMAGE_SAFETY", "RECITATION"):
+                        record_gemini_status(api_key, model_name=m_name, ok=True, msg=f"Ativa (bloqueio {fin_reason})")
                         raise VisionSafetyBlockedError(f"Gemini bloqueou resposta ({fin_reason}).")
                     parts = (cands[0].get("content") or {}).get("parts") or []
                     txt_out = "".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
                     if txt_out:
+                        record_gemini_status(api_key, model_name=m_name, ok=True, msg=f"OCR Vision OK ({m_name})")
                         return txt_out
                     raise RuntimeError("Gemini retornou resposta vazia.")
                 except VisionSafetyBlockedError:
@@ -6419,13 +7339,21 @@ def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
                         err_body = e.read().decode("utf-8", errors="ignore")
                     except Exception:
                         pass
+                    finally:
+                        try:
+                            e.close()
+                        except Exception:
+                            pass
                     err_low = err_body.lower()
                     last_err = e
                     if e.code in (401, 403):
+                        record_gemini_error(api_key, m_name, e.code, err_body)
                         exhausted_gem_keys.add(idx_k)
                         break
                     if e.code == 429:
-                        if any(tok in err_low for tok in ("quota", "exceeded", "daily", "limit")):
+                        record_gemini_error(api_key, m_name, e.code, err_body)
+                        if any(tok in err_low for tok in ("quota", "exceeded", "daily", "limit", "per_day", "per day")):
+                            exhausted_gem_pairs.add(pair_sig)
                             break
                         time.sleep(1.5)
                         continue
@@ -6450,30 +7378,10 @@ def query_gemini_vision(b64_img, prompt, cfg, engine_opts=None, timeout=60):
         raise last_err
     raise RuntimeError("Falha ao consultar Google Gemini Vision.")
 
-def _parse_ratelimit_duration(raw_val, default=15.0):
-    """Converte strings de reset/retry-after da API (ex: '18.15s', '1m12.4s', '350ms') em segundos."""
-    if raw_val is None:
-        return default
-    s = str(raw_val).strip().lower()
-    if not s:
-        return default
-    try:
-        return float(s)
-    except Exception:
-        pass
-    total = 0.0
-    matched = False
-    for pattern, mult in ((r'(\d+(?:\.\d+)?)h', 3600.0), (r'(\d+(?:\.\d+)?)m(?!s)', 60.0), (r'(\d+(?:\.\d+)?)ms', 0.001), (r'(\d+(?:\.\d+)?)s', 1.0)):
-        m = re.search(pattern, s)
-        if m:
-            total += float(m.group(1)) * mult
-            matched = True
-    return total if matched and total > 0.0 else default
-
 def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, timeout=45):
     """
-    Executa OCR via Groq Vision (qwen/qwen3.8-27b) com rotação round-robin entre todas as chaves,
-    respeito estrito ao limite OTPM (<=850 tokens) e controle de janela TPM/RPM.
+    Executa OCR via Groq Vision com isolamento por chave:modelo, respeito a TPD/TPM/RPD,
+    telemetria em tempo real e rotação round-robin sem esperar reset de 13+ min.
     """
     engine_opts = engine_opts if engine_opts is not None else {}
     raw_pool = list(cfg.get("groq_api_keys") or [])
@@ -6488,6 +7396,7 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
 
     exhausted_keys = engine_opts.setdefault("groq_vision_exhausted_keys", set())
     exhausted_models = engine_opts.setdefault("groq_vision_exhausted_models", set())
+    exhausted_pairs = engine_opts.setdefault("groq_vision_exhausted_pairs", set())
     cooldown_map = engine_opts.setdefault("groq_vision_cooldowns", {})
 
     cfg_groq_m = str(cfg.get("groq_model", "") or "").strip()
@@ -6510,7 +7419,6 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
     n_keys = len(key_pool)
 
     for _round in range(3):
-        now = time.time()
         avail_indices = [i for i in range(n_keys) if i not in exhausted_keys]
         if not avail_indices:
             break
@@ -6525,7 +7433,17 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
             for m_name in vision_models:
                 if m_name in exhausted_models:
                     continue
-                cd_until = cooldown_map.get(f"{idx_k}:{m_name}", 0.0)
+                pair_sig = f"{idx_k}:{m_name}"
+                if pair_sig in exhausted_pairs:
+                    continue
+                snap = get_groq_quota_snapshot(api_key, m_name)
+                if snap.get("auth_error"):
+                    exhausted_keys.add(idx_k)
+                    break
+                if snap.get("rpd_exhausted") or snap.get("tpd_exhausted"):
+                    exhausted_pairs.add(pair_sig)
+                    continue
+                cd_until = cooldown_map.get(pair_sig, 0.0)
                 if cd_until > time.time():
                     continue
 
@@ -6559,15 +7477,17 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                     try:
                         with urllib.request.urlopen(req, timeout=timeout) as resp:
                             res = json.loads(resp.read().decode("utf-8"))
+                            used_tok = int((res.get("usage") or {}).get("total_tokens", 0) or 0)
+                            record_groq_response_headers(api_key, m_name, resp.headers, used_tokens=used_tok, source="vision")
                             rem_tok_h = resp.headers.get("x-ratelimit-remaining-tokens")
                             rst_tok_h = resp.headers.get("x-ratelimit-reset-tokens")
                         if rem_tok_h is not None:
                             try:
                                 if int(rem_tok_h) < 2800:
                                     cd_sec = min(max(_parse_ratelimit_duration(rst_tok_h, 15.0), 4.0), 62.0)
-                                    cooldown_map[f"{idx_k}:{m_name}"] = time.time() + cd_sec
+                                    cooldown_map[pair_sig] = time.time() + cd_sec
                                 else:
-                                    cooldown_map.pop(f"{idx_k}:{m_name}", None)
+                                    cooldown_map.pop(pair_sig, None)
                             except Exception:
                                 pass
                         choices = res.get("choices") or []
@@ -6593,64 +7513,62 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                         err_low = err_body.lower()
                         last_err = e
                         if e.code in (401, 403):
+                            record_groq_error(api_key, m_name, e.code, err_body, e.headers)
                             exhausted_keys.add(idx_k)
                             break
-                        if e.code == 429:
-                            is_rpd = any(tok in err_low for tok in ("requests per day", " rpd"))
-                            is_daily = is_rpd or any(tok in err_low for tok in ("tokens per day", " tpd"))
-                            wait_sec = 16.0
-                            try:
-                                retry_h = e.headers.get("retry-after") or e.headers.get("x-ratelimit-reset-tokens")
-                                if retry_h:
-                                    wait_sec = _parse_ratelimit_duration(retry_h, 16.0) + 0.5
-                                else:
-                                    m_retry = re.search(r'try again in\s*([^\s.,;]+)', err_low)
-                                    if m_retry:
-                                        wait_sec = _parse_ratelimit_duration(m_retry.group(1), 16.0) + 0.5
-                            except Exception:
-                                pass
-                            if is_rpd or (is_daily and wait_sec > 1800.0):
-                                exhausted_keys.add(idx_k)
+                        if e.code in (413, 429):
+                            details = parse_groq_rate_limit_details(err_body, e.headers, e.code)
+                            record_groq_error(api_key, m_name, e.code, err_body, e.headers, details=details)
+                            if details.get("is_oversize"):
+                                cooldown_map[pair_sig] = time.time() + 4.0
                                 break
-                            cd_sec = min(max(wait_sec, 4.0), 1800.0)
-                            cooldown_map[f"{idx_k}:{m_name}"] = time.time() + cd_sec
+                            if details.get("is_daily"):
+                                exhausted_pairs.add(pair_sig)
+                                break
+                            cd_sec = min(max(float(details.get("retry_after") or 12.0), 4.0), 62.0)
+                            cooldown_map[pair_sig] = time.time() + cd_sec
                             break
                         if e.code == 400:
                             if use_reasoning_effort and "reasoning_effort" in err_low:
                                 use_reasoning_effort = False
                                 continue
                             if any(tok in err_low for tok in ("safety", "policy", "prohibited", "nsfw")):
-                                raise VisionSafetyBlockedError(f"Groq Vision bloqueou imagem (HTTP 400).")
+                                raise VisionSafetyBlockedError("Groq Vision bloqueou imagem (HTTP 400).")
                             if any(tok in err_low for tok in ("model_not_found", "model not found", "does not support images", "not a multimodal", "invalid model")):
+                                record_groq_error(api_key, m_name, e.code, err_body, e.headers)
                                 exhausted_models.add(m_name)
                             break
                         if e.code == 404:
+                            record_groq_error(api_key, m_name, e.code, err_body, e.headers)
                             exhausted_models.add(m_name)
                             break
-                        cooldown_map[f"{idx_k}:{m_name}"] = time.time() + 8.0
+                        cooldown_map[pair_sig] = time.time() + 8.0
                         break
                     except Exception as e:
                         last_err = e
-                        cooldown_map[f"{idx_k}:{m_name}"] = time.time() + 6.0
+                        cooldown_map[pair_sig] = time.time() + 6.0
                         break
                 if idx_k in exhausted_keys:
                     break
 
         rem_keys = [i for i in range(n_keys) if i not in exhausted_keys]
-        if not rem_keys or not vision_models or all(m in exhausted_models for m in vision_models):
+        active_models = [m for m in vision_models if m not in exhausted_models]
+        if not rem_keys or not active_models:
+            break
+        if all(f"{ik}:{m}" in exhausted_pairs for ik in rem_keys for m in active_models):
             break
 
-        # Se todas as chaves restantes entraram em janela curta de TPM, aguarda a liberação da próxima janela
+        # Se todas as chaves/modelos restantes estão em pausa curta de TPM, aguarda o reset mais próximo
         soonest_until = None
         now = time.time()
         for idx_k in rem_keys:
-            for m_name in vision_models:
-                if m_name in exhausted_models:
+            for m_name in active_models:
+                if f"{idx_k}:{m_name}" in exhausted_pairs:
                     continue
                 t_cd = cooldown_map.get(f"{idx_k}:{m_name}", 0.0)
                 if soonest_until is None or t_cd < soonest_until:
                     soonest_until = t_cd
-        if soonest_until is not None:
+        if soonest_until is not None and soonest_until > now:
             wait_s = max(1.0, soonest_until - now) + 0.5
             if wait_s <= 64.0 and _round < 2:
                 print(f"[*] Groq Vision: janela TPM em pausa nas {len(rem_keys)} chave(s). Aguardando {wait_s:.1f}s...")
@@ -6668,7 +7586,7 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
     raise RuntimeError("Falha ao consultar Groq Vision.")
 
 def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
-    """Executa OCR via OpenRouter Vision com cascata de modelos :free e rotação de chaves (sem gsk_)."""
+    """Executa OCR via OpenRouter Vision com cascata de modelos :free, telemetria real e rotação de chaves (sem gsk_)."""
     engine_opts = engine_opts if engine_opts is not None else {}
     raw_pool = list(cfg.get("openrouter_api_keys") or [])
     if cfg.get("openrouter_api_key") and cfg.get("openrouter_api_key") not in raw_pool:
@@ -6733,6 +7651,7 @@ def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
                     msg = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
                     raw_out = _strip_think_tags(msg.get("content") or "")
                     if raw_out.strip():
+                        record_openrouter_status(api_key, {"auth_error": False, "daily_exhausted": False, "last_error": None, "last_ok_model": m_name})
                         return raw_out.strip()
                     last_err = RuntimeError(f"OpenRouter Vision '{m_name}' retornou conteúdo vazio.")
                     break
@@ -6742,10 +7661,21 @@ def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
                         err_body = e.read().decode("utf-8", errors="ignore")
                     except Exception:
                         pass
+                    finally:
+                        try:
+                            e.close()
+                        except Exception:
+                            pass
                     err_low = err_body.lower()
                     last_err = e
-                    if e.code in (401, 403) or "free-models-per-day" in err_low:
+                    if e.code in (401, 403):
+                        record_openrouter_error(api_key, m_name, e.code, err_body)
                         exhausted_or_keys.add(idx_k)
+                        break
+                    if e.code == 402 or "insufficient credits" in err_low:
+                        record_openrouter_error(api_key, m_name, e.code, err_body, is_daily=(":free" in m_low))
+                        if ":free" in m_low:
+                            exhausted_or_keys.add(idx_k)
                         break
                     if e.code == 400:
                         if use_reasoning_param and "reasoning" in err_low:
@@ -6757,8 +7687,12 @@ def query_openrouter_vision(b64_img, prompt, cfg, engine_opts=None, timeout=35):
                         exhausted_or_models.add(m_name)
                         break
                     if e.code == 429:
-                        # Upstream model rate-limit: tenta próximo modelo na mesma chave antes de descartar a chave
-                        if any(tok in err_low for tok in ("upstream", "temporarily rate-limited", "provider")):
+                        is_daily_or = "free-models-per-day" in err_low or "daily" in err_low
+                        is_upstream = (not is_daily_or) and any(
+                            tok in err_low for tok in ("upstream", "temporarily rate-limited", "provider")
+                        )
+                        record_openrouter_error(api_key, m_name, e.code, err_body, is_daily=is_daily_or, is_upstream=is_upstream)
+                        if is_upstream:
                             break
                         exhausted_or_keys.add(idx_k)
                         break
@@ -7902,8 +8836,19 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     print(f"[*] Gerando arquivo .CBZ para leitura em tablets e celulares...")
     create_cbz_archive(output_dir, cbz_dest_path)
 
+    fallback_bubbles_count = len((engine_opts or {}).get("_fallback_originals", set()))
+    exhausted_engines = sorted(list((engine_opts or {}).get("exhausted_engines", set())))
+    fallback_reasons = list((engine_opts or {}).get("_fallback_reasons", []))[-5:]
+    engine_used = (engine_opts or {}).get("_last_provider_used") or (
+        f"{engine_type}:{model_name}" if engine_type else "google_fallback"
+    )
+
     print("\n" + "=" * 60)
     print(f"[+] MANGA TRADUZIDO COM SUCESSO!")
+    print(f"[+] Motor Utilizado: {engine_used}")
+    if fallback_bubbles_count > 0:
+        motivo_fb = " | ".join(fallback_reasons) if fallback_reasons else "cota de IA esgotada"
+        print(f"[!] Aviso de Cota/Fallback: {fallback_bubbles_count} fala(s) usarão tradução emergencial ({motivo_fb}).")
     print(f"[+] Pasta salva: {output_dir}")
     print(f"[+] Leitor Web: {os.path.join(output_dir, 'leitor.html')}")
     print(f"[+] Arquivo CBZ: {cbz_dest_path}")
@@ -7943,13 +8888,23 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     except Exception:
         pass
         
+    result_payload = {
+        "output_dir": output_dir,
+        "cbz_path": cbz_dest_path,
+        "reader_path": os.path.join(output_dir, "leitor.html"),
+        "engine_used": engine_used,
+        "fallback_bubbles_count": fallback_bubbles_count,
+        "exhausted_engines": exhausted_engines,
+        "fallback_reasons": fallback_reasons,
+    }
     if progress_cb:
         try:
-            progress_cb("done", len(pages_data), len(pages_data), "Manga traduzido com sucesso!", result={"output_dir": output_dir, "cbz_path": cbz_dest_path, "reader_path": os.path.join(output_dir, "leitor.html")})
+            done_msg = "Manga traduzido com sucesso!" if fallback_bubbles_count == 0 else f"Concluído com fallback em {fallback_bubbles_count} fala(s) (cota/limite atingido)."
+            progress_cb("done", len(pages_data), len(pages_data), done_msg, result=result_payload)
         except Exception:
             pass
             
-    return {"success": True, "output_dir": output_dir, "cbz_path": cbz_dest_path, "reader_path": os.path.join(output_dir, "leitor.html")}
+    return {"success": True, **result_payload}
 
 def audit_manga_translation(manga_dir, rating=None, user_comment="", auto_heal=True):
     """
@@ -8262,7 +9217,7 @@ def retranslate_with_audit_fixes(manga_dir, progress_cb=None):
     return process_manga(manga_dir, ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=cfg, progress_cb=progress_cb)
 
 def show_credits_dashboard(cfg=None):
-    """Exibe painel ao vivo com créditos, cotas diárias e status dos motores de IA."""
+    """Exibe painel ao vivo com créditos, TPD/RPD/TPM reais e telemetria de cotas dos motores de IA."""
     try:
         if sys.stdout is not None and hasattr(sys.stdout, 'reconfigure'):
             sys.stdout.reconfigure(encoding='utf-8')
@@ -8270,95 +9225,139 @@ def show_credits_dashboard(cfg=None):
         pass
     if cfg is None:
         cfg = load_config()
-        
+
     print("=" * 68)
     print("      PAINEL AO VIVO DE CREDITOS E STATUS DAS IAs [PT-BR]")
     print("=" * 68)
-    
-    # 1. GROQ CLOUD
-    groq_key = cfg.get("groq_api_key", "").strip()
+
+    # 1. GROQ CLOUD (TODAS AS CHAVES CADASTRADAS)
+    groq_keys = list(cfg.get("groq_api_keys", []) or [])
+    single_g = str(cfg.get("groq_api_key", "") or "").strip()
+    if single_g and single_g not in groq_keys:
+        groq_keys.insert(0, single_g)
     active_groq_m = cfg.get("groq_model", "qwen/qwen3.8-27b")
+    fallback_groq_m = cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+    models_to_check = []
+    for cand_m in (active_groq_m, fallback_groq_m, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"):
+        if cand_m and cand_m not in models_to_check:
+            models_to_check.append(cand_m)
+
     print("\n[1] GROQ CLOUD (Ultra-Rapido / Zero Censura na Nuvem)")
-    if groq_key:
-        masked_g = groq_key[:8] + "..." + groq_key[-4:] if len(groq_key) > 12 else "***"
-        print(f"    Chave: {masked_g} | Modelo Padrao Configurado: {active_groq_m}")
-        models_to_check = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
-        for m in models_to_check:
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {groq_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            data = json.dumps({"model": m, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers=headers)
-            try:
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    rem_req = resp.headers.get("x-ratelimit-remaining-requests", "?")
-                    lim_req = resp.headers.get("x-ratelimit-limit-requests", "1000")
-                    rem_tok = resp.headers.get("x-ratelimit-remaining-tokens", "?")
-                    lim_tok = resp.headers.get("x-ratelimit-limit-tokens", "8000")
-                    rst_req = resp.headers.get("x-ratelimit-reset-requests", "?")
-                    rst_tok = resp.headers.get("x-ratelimit-reset-tokens", "?")
-                    star = " [ATIVO NO MOMENTO]" if m == active_groq_m else ""
+    if groq_keys:
+        for k_idx, groq_key in enumerate(groq_keys):
+            groq_key = str(groq_key or "").strip()
+            if not groq_key:
+                continue
+            masked_g = _quota_mask_key(groq_key)
+            print(f"    Chave #{k_idx + 1}: {masked_g} | Modelo Principal: {active_groq_m}")
+            for m in models_to_check:
+                url = "https://api.groq.com/openai/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }
+                req_body = {"model": m, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+                m_low = m.lower()
+                if "qwen3" in m_low:
+                    req_body["reasoning_effort"] = "none"
+                elif "gpt-oss" in m_low:
+                    req_body["reasoning_effort"] = "low"
+                req = urllib.request.Request(url, data=json.dumps(req_body).encode("utf-8"), headers=headers)
+                star = " [ATIVO]" if m == active_groq_m else ""
+                try:
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        try:
+                            r_json = json.loads(resp.read().decode("utf-8"))
+                            used_tok = (r_json.get("usage") or {}).get("total_tokens", 12)
+                        except Exception:
+                            used_tok = 12
+                        record_groq_response_headers(groq_key, m, resp.headers, used_tokens=used_tok, source="ping")
+                        snap = get_groq_quota_snapshot(groq_key, m)
+                        rem_req = snap.get("rem_req")
+                        lim_req = snap.get("lim_req")
+                        rem_tok = snap.get("rem_tok")
+                        lim_tok = snap.get("lim_tok")
+                        rst_req = snap.get("rst_req") or "?"
+                        rst_tok = snap.get("rst_tok") or "?"
+                        print(f"    * Modelo: {m}{star}")
+                        print(f"      - Requisicoes restantes:   {rem_req if rem_req is not None else '?'} / {lim_req if lim_req is not None else '?'} reqs/dia")
+                        print(f"      - Tokens por minuto (TPM): {rem_tok if rem_tok is not None else '?'} / {lim_tok if lim_tok is not None else '?'} (reset {rst_tok} | reqs {rst_req})")
+                        if snap.get("tpd_limit"):
+                            print(f"      - Cota Diaria TPD Est.:    {snap.get('tpd_remaining')} / {snap.get('tpd_limit')} tokens restantes")
+                        if not snap.get("page_ready", True):
+                            print(f"      - Status operacional:      BLOQUEADO PARA PAGINAS REAIS (Ping OK, {snap.get('status_reason')})")
+                        else:
+                            print("      - Status operacional:      100% PRONTO PARA PAGINAS REAIS")
+                except urllib.error.HTTPError as e:
+                    err_body = ""
+                    try:
+                        err_body = e.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                    details = record_groq_error(groq_key, m, e.code, err_body, e.headers) or parse_groq_rate_limit_details(err_body, e.headers, e.code)
                     print(f"    * Modelo: {m}{star}")
-                    print(f"      - Requisicoes restantes:   {rem_req} / {lim_req} reqs/dia")
-                    print(f"      - Tokens por minuto (TPM): {rem_tok} / {lim_tok} disponiveis")
-                    print(f"      - Renovacao automatica:    Reseta em {rst_req} (Tokens em {rst_tok})")
-                    print(f"      - Status operacional:      100% PRONTO E LIBERADO")
-            except urllib.error.HTTPError as e:
-                err_body = ""
-                try: err_body = e.read().decode("utf-8", errors="ignore")
-                except Exception: pass
-                print(f"    * Modelo: {m}")
-                if e.code == 429:
-                    if "TPD" in err_body or "tokens per day" in err_body.lower():
-                        print("      - Status: COTA DIARIA DE 200K ATINGIDA (Renova em breve)")
+                    if e.code == 429:
+                        wait_s = _format_duration_pt(details.get("retry_after") or 0)
+                        if details.get("is_daily"):
+                            print(f"      - Status: COTA DIARIA {details.get('limit_type', 'TPD')} ATINGIDA (usados {details.get('used') or '?'}/{details.get('limit') or '?'}; libera em ~{wait_s})")
+                        else:
+                            print(f"      - Status: PAUSA TEMPORARIA DE {details.get('limit_type', 'TPM')} (~{wait_s})")
                     else:
-                        print("      - Status: PAUSA TEMPORARIA DE TOKENS (Reset em segundos)")
-                else:
-                    print(f"      - Status: Erro HTTP {e.code}")
-            except Exception as e:
-                print(f"    * Modelo: {m} -> Nao respondeu ({e})")
+                        print(f"      - Status: Erro HTTP {e.code}")
+                except Exception as e:
+                    print(f"    * Modelo: {m}{star} -> Nao respondeu ({e})")
     else:
         print("    [!] Chave Groq nao configurada em config.json.")
 
     # 2. OPENROUTER CLOUD
-    or_keys = cfg.get("openrouter_api_keys", [])
+    or_keys = list(cfg.get("openrouter_api_keys", []) or [])
     if not or_keys and cfg.get("openrouter_api_key"):
         or_keys = [cfg.get("openrouter_api_key")]
-    print("\n[2] OPENROUTER CLOUD (Multi-Modelos: Nemotron, Dolphin, Hermes)")
+    print("\n[2] OPENROUTER CLOUD (Multi-Modelos: Nemotron, Gemma, Trinity)")
     if or_keys:
         for idx, k in enumerate(or_keys):
-            masked_o = k[:8] + "..." + k[-4:] if len(k) > 12 else "***"
-            print(f"    Chave #{idx+1}: {masked_o}")
-            try:
-                req_or = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {k}"})
-                with urllib.request.urlopen(req_or, timeout=8) as resp:
-                    kdata = json.loads(resp.read().decode("utf-8")).get("data", {})
-                    free_info = kdata.get("free_model_daily_requests", {})
-                    f_used = free_info.get("used", 0)
-                    f_limit = free_info.get("limit", 50)
-                    f_rem = free_info.get("remaining", 0)
-                    print("      - Categoria da Conta:     Gratuita (Free Tier)")
-                    print(f"      - Cota Modelos Gratuitos: {f_used} / {f_limit} usadas hoje ({f_rem} restantes)")
-                    if f_rem == 0:
-                        print("        * Cota diaria esgotada hoje. Renova as 21:00 BRT (00:00 UTC).")
-                    else:
-                        print("        * Cota gratuita disponivel para uso.")
-            except Exception as e:
-                print(f"      - Erro ao checar chave: {e}")
-                
+            masked_o = _quota_mask_key(k)
+            print(f"    Chave #{idx + 1}: {masked_o}")
+            net_creds = 0.0
             try:
                 req_cred = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers={"Authorization": f"Bearer {k}"})
                 with urllib.request.urlopen(req_cred, timeout=8) as resp:
                     cdata = json.loads(resp.read().decode("utf-8")).get("data", {})
-                    creds = float(cdata.get("total_credits", 0))
-                    print(f"      - Saldo Pago (Creditos):  ${creds:.2f} USD (R$ {creds*5.8:.2f})")
-                    if creds <= 0:
-                        print("        * Dica: R$ 50 (~$8.50 USD) rendem aprox. 3.500 a 4.000 paginas sem filas!")
+                    t_cred = float(cdata.get("total_credits", 0) or 0)
+                    t_use = float(cdata.get("total_usage", 0) or 0)
+                    net_creds = max(0.0, t_cred - t_use)
             except Exception:
                 pass
+            try:
+                req_or = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {k}"})
+                with urllib.request.urlopen(req_or, timeout=8) as resp:
+                    kdata = json.loads(resp.read().decode("utf-8")).get("data", {})
+                    free_info = kdata.get("free_model_daily_requests")
+                    is_free_tier = bool(kdata.get("is_free_tier", True))
+                    if isinstance(free_info, dict) and ("limit" in free_info or "remaining" in free_info):
+                        f_used = free_info.get("used", 0)
+                        f_limit = free_info.get("limit", 50)
+                        f_rem = free_info.get("remaining", max(0, f_limit - f_used))
+                        print("      - Categoria da Conta:     " + ("Gratuita (Free Tier)" if net_creds <= 0.01 else "Conta com Creditos"))
+                        print(f"      - Cota Modelos :free:     {f_used} / {f_limit} usadas hoje ({f_rem} restantes)")
+                    else:
+                        tier_lbl = "Gratuita (Free Tier - ~50 reqs/dia em :free)" if (is_free_tier and net_creds <= 0.01) else "Conta com Creditos"
+                        print(f"      - Categoria da Conta:     {tier_lbl}")
+                        if is_free_tier and net_creds <= 0.01:
+                            print("      - Nota: Contas Free possuem limite diario baixo e fila compartilhada (:free)")
+            except Exception as e:
+                print(f"      - Erro ao checar chave: {e}")
+
+            snap_or = get_openrouter_quota_snapshot(k)
+            if snap_or.get("daily_exhausted"):
+                print(f"      - Alerta em Execucao:     {snap_or.get('last_error')}")
+            elif snap_or.get("upstream_429_model"):
+                print(f"      - Alerta Upstream (:free): {snap_or.get('last_error')}")
+
+            print(f"      - Saldo Liquido (Creditos): ${net_creds:.2f} USD (R$ {net_creds * 5.8:.2f})")
+            if net_creds <= 0.01:
+                print("        * Dica: R$ 50 (~$8.50 USD) rendem aprox. 3.500 a 4.000 paginas sem filas!")
     else:
         print("    [!] Nenhuma chave OpenRouter cadastrada.")
 
@@ -8373,29 +9372,42 @@ def show_credits_dashboard(cfg=None):
                 odata = json.loads(resp.read().decode("utf-8"))
                 models = [m.get("name") for m in odata.get("models", [])]
                 v_models = [m for m in models if is_ollama_vision_model_name(m)]
-                print(f"    - Status: ONLINE (100% Operacional)")
+                print("    - Status: ONLINE (100% Operacional)")
                 print(f"    - Modelos instalados: {', '.join(models) if models else 'Nenhum'}")
                 print(f"    - Modelos Vision:     {', '.join(v_models) if v_models else 'Nenhum detectado'}")
     except Exception:
-        print(f"    - Status: OFFLINE (Nenhum servidor Ollama rodando nesta porta)")
+        print("    - Status: OFFLINE (Nenhum servidor Ollama rodando nesta porta)")
 
     # 4. GOOGLE GEMINI VISION (Opcional para OCR IA Vision Híbrido)
-    gem_keys = cfg.get("gemini_api_keys", [])
-    print(f"\n[4] GOOGLE GEMINI VISION (Opcional para OCR IA Vision Hibrido)")
+    gem_keys = list(cfg.get("gemini_api_keys", []) or [])
+    if not gem_keys and cfg.get("gemini_api_key"):
+        gem_keys = [cfg.get("gemini_api_key")]
+    print("\n[4] GOOGLE GEMINI VISION (Opcional para OCR IA Vision Hibrido)")
     if gem_keys:
         for idx, k in enumerate(gem_keys):
-            masked_gem = k[:8] + "..." + k[-4:] if len(k) > 12 else "***"
+            masked_gem = _quota_mask_key(k)
+            snap_gem = get_gemini_quota_snapshot(k)
             try:
-                req_gm = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?key={k}")
+                qs = urllib.parse.urlencode({"key": k})
+                req_gm = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?{qs}")
                 with urllib.request.urlopen(req_gm, timeout=5) as resp:
                     if resp.status == 200:
-                        print(f"    Chave #{idx+1}: {masked_gem} -> ATIVA (Modelo: {cfg.get('gemini_model', 'gemini-2.5-flash')})")
+                        if snap_gem.get("quota_exhausted"):
+                            print(f"    Chave #{idx + 1}: {masked_gem} -> COTA 429 ATINGIDA NA EXECUCAO ({snap_gem.get('last_msg')})")
+                        else:
+                            print(f"    Chave #{idx + 1}: {masked_gem} -> ATIVA (Modelo: {cfg.get('gemini_model', 'gemini-2.5-flash')})")
             except urllib.error.HTTPError as e:
-                print(f"    Chave #{idx+1}: {masked_gem} -> HTTP {e.code}")
+                print(f"    Chave #{idx + 1}: {masked_gem} -> HTTP {e.code}")
             except Exception as e:
-                print(f"    Chave #{idx+1}: {masked_gem} -> Erro ({e})")
+                print(f"    Chave #{idx + 1}: {masked_gem} -> Erro ({e})")
     else:
         print("    [i] Nenhuma chave Google Gemini cadastrada (Groq/OpenRouter/Ollama Vision funcionam mesmo assim).")
+
+    recent_ev = get_recent_quota_events()
+    if recent_ev:
+        print("\n[!] ALERTAS RECENTES DE COTA / FALLBACK NA EXECUCAO:")
+        for ev in recent_ev[:5]:
+            print(f"    - [{ev.get('provider', '?').upper()}] {ev.get('msg', '')}")
 
     print("\n" + "=" * 68)
 

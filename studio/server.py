@@ -347,55 +347,142 @@ def service_worker():
 def favicon():
     return send_from_directory(os.path.join(app.root_path, "static"), "favicon.ico", mimetype="image/x-icon")
 
-def check_single_groq_key(idx, key):
+def check_single_groq_key(idx, key, models_to_check=None, deep=False):
     key = str(key).strip()
     masked = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+    models = []
+    for m in (models_to_check or ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]):
+        m_s = str(m or "").strip()
+        if m_s and m_s not in models:
+            models.append(m_s)
+
     k_data = {
         "index": idx + 1,
         "masked_key": masked,
         "key": key,
-        "ok": True,
+        "ok": False,
         "models": {}
     }
-    for m in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
+
+    for m in models:
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0"
         }
-        data = json.dumps({"model": m, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers)
+        payload = {"model": m, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+        m_low = m.lower()
+        if "qwen3" in m_low:
+            payload["reasoning_effort"] = "none"
+        elif "gpt-oss" in m_low:
+            payload["reasoning_effort"] = "low"
+
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                k_data["models"][m] = {
-                    "ok": True,
-                    "rem_req": int(resp.headers.get("x-ratelimit-remaining-requests", 1000)),
-                    "lim_req": int(resp.headers.get("x-ratelimit-limit-requests", 1000)),
-                    "rem_tok": int(resp.headers.get("x-ratelimit-remaining-tokens", 8000)),
-                    "lim_tok": int(resp.headers.get("x-ratelimit-limit-tokens", 8000)),
-                    "rst_req": resp.headers.get("x-ratelimit-reset-requests", "0s"),
-                    "rst_tok": resp.headers.get("x-ratelimit-reset-tokens", "0s")
-                }
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                try:
+                    raw_res = json.loads(resp.read().decode("utf-8"))
+                    used_tok = int((raw_res.get("usage") or {}).get("total_tokens", 12) or 12)
+                except Exception:
+                    used_tok = 12
+                auto_translate.record_groq_response_headers(key, m, resp.headers, used_tokens=used_tok, source="ping")
+
+            probe_ok = True
+            probe_msg = None
+            if deep:
+                probe_ok, probe_msg, snap = auto_translate.probe_groq_page_capacity(
+                    key, m, target_tokens=1950, force=False, cache_ttl=180
+                )
+            else:
+                snap = auto_translate.get_groq_quota_snapshot(key, m)
+
+            is_daily = bool(snap.get("tpd_exhausted") or snap.get("rpd_exhausted"))
+            page_ready = bool(snap.get("page_ready", True)) and probe_ok and not is_daily
+            k_data["models"][m] = {
+                "ok": page_ready and not snap.get("auth_error"),
+                "ping_ok": True,
+                "page_ready": page_ready,
+                "rem_req": snap.get("rem_req"),
+                "lim_req": snap.get("lim_req"),
+                "rem_tok": snap.get("rem_tok"),
+                "lim_tok": snap.get("lim_tok"),
+                "rst_req": snap.get("rst_req"),
+                "rst_tok": snap.get("rst_tok"),
+                "tpd_limit": snap.get("tpd_limit"),
+                "tpd_used": snap.get("tpd_used"),
+                "tpd_remaining": snap.get("tpd_remaining"),
+                "tpd_reset_sec": snap.get("tpd_reset_sec", 0.0),
+                "tpd_exhausted": bool(snap.get("tpd_exhausted")),
+                "rpd_exhausted": bool(snap.get("rpd_exhausted")),
+                "tpm_limited": bool(snap.get("tpm_limited")),
+                "is_daily_limit": is_daily,
+                "limit_type": "TPD" if snap.get("tpd_exhausted") else ("RPD" if snap.get("rpd_exhausted") else None),
+                "msg": probe_msg if (deep and not probe_ok and probe_msg) else snap.get("status_reason", "Pronta")
+            }
         except urllib.error.HTTPError as e:
             err_text = ""
-            try: err_text = e.read().decode("utf-8", errors="ignore")
-            except Exception: pass
-            is_tpd = "TPD" in err_text or "tokens per day" in err_text.lower()
+            try:
+                err_text = e.read().decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+            details = auto_translate.record_groq_error(key, m, e.code, err_text, e.headers) or auto_translate.parse_groq_rate_limit_details(err_text, e.headers, e.code)
+            snap = auto_translate.get_groq_quota_snapshot(key, m)
+            is_daily = bool(details.get("is_daily") or snap.get("tpd_exhausted") or snap.get("rpd_exhausted"))
+            wait_str = auto_translate._format_duration_pt(details.get("retry_after") or 0)
+            err_msg = snap.get("status_reason")
+            if not err_msg or err_msg == "Pronta para páginas reais":
+                err_msg = f"Cota diária {details.get('limit_type', 'TPD')} atingida (~{wait_str})" if is_daily else f"HTTP {e.code}"
             k_data["models"][m] = {
                 "ok": False,
+                "ping_ok": False,
+                "page_ready": False,
                 "code": e.code,
-                "is_daily_limit": is_tpd,
-                "msg": "Cota diária de 200k tokens atingida" if is_tpd else f"HTTP {e.code}"
+                "auth_error": e.code in (401, 403),
+                "is_daily_limit": is_daily,
+                "limit_type": details.get("limit_type"),
+                "retry_after": details.get("retry_after", 0.0),
+                "rem_req": snap.get("rem_req"),
+                "lim_req": snap.get("lim_req"),
+                "rem_tok": snap.get("rem_tok"),
+                "lim_tok": snap.get("lim_tok"),
+                "tpd_limit": snap.get("tpd_limit") or details.get("limit"),
+                "tpd_used": snap.get("tpd_used") or details.get("used"),
+                "tpd_remaining": snap.get("tpd_remaining") if snap.get("tpd_remaining") is not None else details.get("remaining"),
+                "tpd_reset_sec": snap.get("tpd_reset_sec", 0.0),
+                "tpd_exhausted": bool(snap.get("tpd_exhausted") or details.get("limit_type") == "TPD"),
+                "rpd_exhausted": bool(snap.get("rpd_exhausted") or details.get("limit_type") == "RPD"),
+                "msg": err_msg
             }
         except Exception as e:
-            k_data["models"][m] = {"ok": False, "msg": str(e)}
+            k_data["models"][m] = {
+                "ok": False,
+                "ping_ok": False,
+                "page_ready": False,
+                "rem_req": None,
+                "lim_req": None,
+                "rem_tok": None,
+                "lim_tok": None,
+                "msg": f"Erro de conexão: {e}"
+            }
+
+    k_data["ok"] = any(md.get("ok") and md.get("page_ready", True) for md in k_data["models"].values())
+    if models:
+        k_data["active_model_ok"] = bool(k_data["models"].get(models[0], {}).get("ok"))
+    k_data["any_daily_limit"] = bool(k_data["models"]) and all(
+        md.get("is_daily_limit") for md in k_data["models"].values()
+    )
     return k_data
 
 @app.route("/api/status")
 def api_status():
-    """Consulta cotas ao vivo de TODAS as chaves cadastradas do Groq, OpenRouter e Ollama."""
+    """Consulta cotas reais (RPD, TPM, TPD estimado/verificado, créditos líquidos e erros 429 em runtime)."""
     cfg = auto_translate.load_config()
+    deep = str(request.args.get("deep", "")).strip().lower() in ("1", "true", "yes")
+    active_groq_model = cfg.get("groq_model", "qwen/qwen3.8-27b")
+    fb_groq_model = cfg.get("groq_fallback_model", "openai/gpt-oss-120b")
+    active_gem_model = cfg.get("gemini_model", "gemini-2.5-flash")
+
     res = {
         "groq": {
             "configured": False,
@@ -403,70 +490,170 @@ def api_status():
             "models": {},
             "total_qwen_remaining": 0,
             "total_qwen_limit": 0,
-            "active_model": cfg.get("groq_model", "qwen/qwen3.8-27b")
+            "total_active_remaining": 0,
+            "total_active_limit": 0,
+            "ready_keys_count": 0,
+            "any_model_ready_keys": 0,
+            "deep_checked": deep,
+            "active_model": active_groq_model,
+            "fallback_model": fb_groq_model
         },
         "openrouter": {"configured": False, "keys": []},
         "gemini": {
             "configured": False,
             "keys": [],
-            "active_model": cfg.get("gemini_model", "gemini-2.5-flash")
+            "active_model": active_gem_model,
+            "deep_checked": deep
         },
         "ollama": {"status": "offline", "models": [], "vision_models": []},
         "vision": {
             "provider": cfg.get("vision_provider", "auto"),
-            "gemini_model": cfg.get("gemini_model", "gemini-2.5-flash"),
+            "gemini_model": active_gem_model,
             "groq_vision_model": cfg.get("groq_vision_model", "qwen/qwen3.8-27b"),
             "openrouter_vision_model": cfg.get("openrouter_vision_model", auto_translate.OPENROUTER_DEFAULT_VISION_MODELS[0]),
             "ollama_vision_model": cfg.get("ollama_vision_model", "")
-        }
+        },
+        "runtime_warnings": []
     }
-    
+
     # 1. GROQ POOL (MULTI-CHAVES CONCORRENTES)
-    groq_keys = cfg.get("groq_api_keys", [])
+    groq_keys = list(cfg.get("groq_api_keys", []) or [])
     if not groq_keys and cfg.get("groq_api_key"):
         groq_keys = [cfg.get("groq_api_key")]
-    
+
     if groq_keys:
         res["groq"]["configured"] = True
+        models_to_check = []
+        for cm in (active_groq_model, fb_groq_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"):
+            if cm and cm not in models_to_check:
+                models_to_check.append(cm)
+
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(groq_keys), 6)) as executor:
-            groq_results = list(executor.map(lambda ik: check_single_groq_key(ik[0], ik[1]), enumerate(groq_keys)))
-        
+            groq_results = list(executor.map(
+                lambda ik: check_single_groq_key(ik[0], ik[1], models_to_check=models_to_check, deep=deep),
+                enumerate(groq_keys)
+            ))
+
         res["groq"]["keys"] = groq_results
         if groq_results:
             res["groq"]["models"] = groq_results[0].get("models", {})
             res["groq"]["masked_key"] = groq_results[0].get("masked_key", "***")
-            
-        total_rem = sum(k["models"].get("qwen/qwen3.8-27b", {}).get("rem_req", 0) for k in groq_results if k["models"].get("qwen/qwen3.8-27b", {}).get("ok"))
-        res["groq"]["total_qwen_remaining"] = total_rem
-        res["groq"]["total_qwen_limit"] = len(groq_results) * 1000
+
+        total_act_rem = 0
+        total_act_lim = 0
+        ready_act_keys = 0
+        any_ready_keys = 0
+        total_qwen_rem = 0
+        total_qwen_lim = 0
+
+        for k_item in groq_results:
+            if k_item.get("ok"):
+                any_ready_keys += 1
+            m_act = k_item.get("models", {}).get(active_groq_model, {})
+            if not m_act.get("auth_error"):
+                if m_act.get("lim_req") is not None:
+                    total_act_lim += int(m_act.get("lim_req") or 0)
+                elif m_act.get("ok") or m_act.get("is_daily_limit"):
+                    total_act_lim += 1000
+            if m_act.get("ok") and m_act.get("page_ready", True):
+                ready_act_keys += 1
+                if m_act.get("rem_req") is not None:
+                    total_act_rem += int(m_act.get("rem_req") or 0)
+
+            m_qw = k_item.get("models", {}).get("qwen/qwen3.8-27b") or m_act
+            if not m_qw.get("auth_error"):
+                if m_qw.get("lim_req") is not None:
+                    total_qwen_lim += int(m_qw.get("lim_req") or 0)
+                elif m_qw.get("ok") or m_qw.get("is_daily_limit"):
+                    total_qwen_lim += 1000
+            if m_qw.get("ok") and m_qw.get("page_ready", True) and m_qw.get("rem_req") is not None:
+                total_qwen_rem += int(m_qw.get("rem_req") or 0)
+
+        res["groq"]["total_active_remaining"] = total_act_rem
+        res["groq"]["total_active_limit"] = total_act_lim
+        res["groq"]["ready_keys_count"] = ready_act_keys
+        res["groq"]["any_model_ready_keys"] = any_ready_keys
+        res["groq"]["total_qwen_remaining"] = total_qwen_rem
+        res["groq"]["total_qwen_limit"] = total_qwen_lim
 
     # 2. OPENROUTER
-    or_keys = cfg.get("openrouter_api_keys", [])
+    or_keys = list(cfg.get("openrouter_api_keys", []) or [])
     if not or_keys and cfg.get("openrouter_api_key"):
         or_keys = [cfg.get("openrouter_api_key")]
     if or_keys:
         res["openrouter"]["configured"] = True
         for idx, k in enumerate(or_keys):
-            k_info = {"index": idx + 1, "key": k[:8] + "..." + k[-4:] if len(k) > 12 else "***", "ok": False}
+            k_s = str(k or "").strip()
+            k_info = {
+                "index": idx + 1,
+                "key": k_s[:8] + "..." + k_s[-4:] if len(k_s) > 12 else "***",
+                "ok": False,
+                "credits": 0.0,
+                "total_credits": 0.0,
+                "total_usage": 0.0,
+                "is_free_tier": True,
+                "has_free_quota_details": False,
+                "daily_exhausted": False,
+                "upstream_limited_model": None,
+                "runtime_warning": None
+            }
             try:
-                req_or = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {k}"})
+                req_or = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {k_s}"})
                 with urllib.request.urlopen(req_or, timeout=5) as resp:
                     kdata = json.loads(resp.read().decode("utf-8")).get("data", {})
-                    free_info = kdata.get("free_model_daily_requests", {})
                     k_info["ok"] = True
-                    k_info["free_used"] = free_info.get("used", 0)
-                    k_info["free_limit"] = free_info.get("limit", 50)
-                    k_info["free_rem"] = free_info.get("remaining", 0)
+                    k_info["is_free_tier"] = bool(kdata.get("is_free_tier", True))
+                    free_info = kdata.get("free_model_daily_requests")
+                    if isinstance(free_info, dict) and ("limit" in free_info or "remaining" in free_info):
+                        k_info["has_free_quota_details"] = True
+                        f_lim = int(free_info.get("limit", 50) or 50)
+                        f_used = int(free_info.get("used", 0) or 0)
+                        f_rem = int(free_info.get("remaining", max(0, f_lim - f_used)) or 0)
+                        k_info["free_used"] = f_used
+                        k_info["free_limit"] = f_lim
+                        k_info["free_rem"] = f_rem
+            except urllib.error.HTTPError as e:
+                k_info["err"] = f"HTTP {e.code}"
+                if e.code in (401, 403):
+                    auto_translate.record_openrouter_error(k_s, "", e.code, k_info["err"])
             except Exception as e:
                 k_info["err"] = str(e)
+
             try:
-                req_c = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers={"Authorization": f"Bearer {k}"})
+                req_c = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers={"Authorization": f"Bearer {k_s}"})
                 with urllib.request.urlopen(req_c, timeout=5) as resp:
                     cdata = json.loads(resp.read().decode("utf-8")).get("data", {})
-                    k_info["credits"] = float(cdata.get("total_credits", 0))
+                    t_cred = float(cdata.get("total_credits", 0) or 0)
+                    t_use = float(cdata.get("total_usage", 0) or 0)
+                    k_info["total_credits"] = t_cred
+                    k_info["total_usage"] = t_use
+                    k_info["credits"] = max(0.0, t_cred - t_use)
             except Exception:
-                k_info["credits"] = 0.0
+                pass
+
+            snap_or = auto_translate.get_openrouter_quota_snapshot(k_s)
+            if snap_or.get("daily_exhausted") or (
+                k_info["has_free_quota_details"] and k_info.get("free_rem", 1) <= 0 and k_info["credits"] <= 0.01
+            ):
+                k_info["daily_exhausted"] = True
+                k_info["ok"] = False
+                k_info["runtime_warning"] = snap_or.get("last_error") or "Cota diária :free esgotada hoje (sem saldo pago)"
+            elif snap_or.get("upstream_429_model"):
+                k_info["upstream_limited_model"] = snap_or.get("upstream_429_model")
+                k_info["runtime_warning"] = snap_or.get("last_error")
+            elif snap_or.get("auth_error"):
+                k_info["ok"] = False
+                k_info["runtime_warning"] = snap_or.get("last_error")
+
+            if k_info["ok"]:
+                auto_translate.record_openrouter_status(k_s, {
+                    "credits": k_info["credits"],
+                    "is_free_tier": k_info["is_free_tier"],
+                    "free_rem": k_info.get("free_rem"),
+                    "free_limit": k_info.get("free_limit"),
+                    "free_used": k_info.get("free_used")
+                })
             res["openrouter"]["keys"].append(k_info)
 
     # 3. GOOGLE GEMINI VISION
@@ -481,7 +668,14 @@ def api_status():
     if gem_keys:
         res["gemini"]["configured"] = True
         for idx, k in enumerate(gem_keys):
-            k_info = {"index": idx + 1, "key": k[:8] + "..." + k[-4:] if len(k) > 12 else "***", "ok": False}
+            k_info = {
+                "index": idx + 1,
+                "key": k[:8] + "..." + k[-4:] if len(k) > 12 else "***",
+                "ok": False,
+                "quota_exhausted": False,
+                "rate_limited": False,
+                "quota_reset_sec": 0.0
+            }
             try:
                 qs = urllib.parse.urlencode({"key": k})
                 req_gm = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models?{qs}")
@@ -493,14 +687,61 @@ def api_status():
                         k_info["models_count"] = len(gm_models)
                         k_info["msg"] = f"Ativa ({len(gm_models)} modelos Gemini disponíveis)"
             except urllib.error.HTTPError as e:
+                err_b = ""
+                try:
+                    err_b = e.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
                 if e.code == 429:
-                    k_info["ok"] = True
+                    auto_translate.record_gemini_error(k, active_gem_model, 429, err_b)
+                    k_info["ok"] = False
                     k_info["rate_limited"] = True
-                    k_info["msg"] = "Válida (em pausa breve RPM)"
+                    k_info["quota_exhausted"] = True
+                    k_info["msg"] = "Cota Gemini atingida (HTTP 429)"
                 else:
+                    if e.code in (401, 403):
+                        auto_translate.record_gemini_error(k, active_gem_model, e.code, err_b)
                     k_info["msg"] = f"Erro HTTP {e.code}"
             except Exception as e:
                 k_info["msg"] = str(e)
+
+            if deep and k_info["ok"] and active_gem_model:
+                qs = urllib.parse.urlencode({"key": k})
+                g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{active_gem_model}:generateContent?{qs}"
+                g_payload = json.dumps({
+                    "contents": [{"parts": [{"text": "ok"}]}],
+                    "generationConfig": {"maxOutputTokens": 1, "temperature": 0.0}
+                }).encode("utf-8")
+                g_req = urllib.request.Request(g_url, data=g_payload, headers={"Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(g_req, timeout=8) as g_resp:
+                        if g_resp.status == 200:
+                            auto_translate.record_gemini_status(k, model_name=active_gem_model, ok=True, msg=f"Sondagem Vision OK ({active_gem_model})")
+                except urllib.error.HTTPError as ge:
+                    g_body = ""
+                    try:
+                        g_body = ge.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                    if ge.code == 429:
+                        auto_translate.record_gemini_error(k, active_gem_model, 429, g_body)
+                    elif ge.code in (401, 403):
+                        auto_translate.record_gemini_error(k, active_gem_model, ge.code, g_body)
+                        k_info["ok"] = False
+                        k_info["msg"] = f"Chave sem autorização (HTTP {ge.code})"
+
+            snap_gem = auto_translate.get_gemini_quota_snapshot(k)
+            if snap_gem.get("quota_exhausted") and snap_gem.get("quota_reset_sec", 0.0) > 0:
+                k_info["ok"] = False
+                k_info["quota_exhausted"] = True
+                k_info["rate_limited"] = True
+                k_info["quota_is_daily"] = bool(snap_gem.get("quota_is_daily"))
+                k_info["quota_reset_sec"] = snap_gem.get("quota_reset_sec", 0.0)
+                k_info["msg"] = snap_gem.get("last_msg") or "Cota Gemini atingida na última execução (429)"
+            elif snap_gem.get("auth_error"):
+                k_info["ok"] = False
+                k_info["msg"] = snap_gem.get("last_msg") or k_info.get("msg", "Chave inválida")
+
             res["gemini"]["keys"].append(k_info)
 
     # 4. OLLAMA
@@ -517,6 +758,7 @@ def api_status():
     except Exception:
         res["ollama"]["status"] = "offline"
 
+    res["runtime_warnings"] = auto_translate.get_recent_quota_events()
     res["version"] = APP_VERSION
     res["version_name"] = APP_VERSION_NAME
     return jsonify(res)
@@ -1268,7 +1510,11 @@ def api_start_translation():
                 else:
                     job_state["status"] = "done"
                     job_state["percentage"] = 100
-                    job_state["message"] = "Mangá traduzido e salvo com sucesso!"
+                    fb_cnt = int(res.get("fallback_bubbles_count", 0) or 0) if isinstance(res, dict) else 0
+                    if fb_cnt > 0:
+                        job_state["message"] = f"Concluído com fallback em {fb_cnt} fala(s) (cota/limite de IA atingido)."
+                    else:
+                        job_state["message"] = "Mangá traduzido e salvo com sucesso!"
                     if isinstance(res, dict):
                         out_p = res.get("output_dir", "")
                         if out_p:
@@ -1352,30 +1598,100 @@ def api_open_cbz():
 
 @app.route("/api/test_key", methods=["POST"])
 def api_test_key():
-    """Valida chave de API ao vivo consultando a rota oficial da Groq ou OpenRouter."""
+    """Valida chave de API ao vivo com diagnóstico realista de TPD/RPD/TPM, saldo líquido e cota Gemini 429."""
     data = request.json or {}
     provider = data.get("provider", "groq").lower()
     key = data.get("key", "").strip()
     if not key:
         return jsonify({"valid": False, "msg": "Chave não informada."})
 
+    cfg = auto_translate.load_config()
+    deep = bool(data.get("deep", True))
+
     if provider == "groq":
+        test_model = str(data.get("model") or cfg.get("groq_model") or "qwen/qwen3.8-27b").strip()
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0"
         }
-        test_payload = json.dumps({"model": "qwen/qwen3.8-27b", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode("utf-8")
-        req = urllib.request.Request(url, data=test_payload, headers=headers)
+        ping_body = {"model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+        m_low = test_model.lower()
+        if "qwen3" in m_low:
+            ping_body["reasoning_effort"] = "none"
+        elif "gpt-oss" in m_low:
+            ping_body["reasoning_effort"] = "low"
+        req = urllib.request.Request(url, data=json.dumps(ping_body).encode("utf-8"), headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
-                rem_req = resp.headers.get("x-ratelimit-remaining-requests", "1000")
-                rem_tok = resp.headers.get("x-ratelimit-remaining-tokens", "8000")
-                return jsonify({"valid": True, "msg": f"Chave Groq 100% Válida! {rem_req}/1000 reqs e {rem_tok} tokens disponíveis."})
+                try:
+                    raw_res = json.loads(resp.read().decode("utf-8"))
+                    used_tok = int((raw_res.get("usage") or {}).get("total_tokens", 12) or 12)
+                except Exception:
+                    used_tok = 12
+                auto_translate.record_groq_response_headers(key, test_model, resp.headers, used_tokens=used_tok, source="ping")
+
+            if deep:
+                ok_probe, probe_msg, snap = auto_translate.probe_groq_page_capacity(
+                    key, test_model, target_tokens=1950, force=True
+                )
+            else:
+                snap = auto_translate.get_groq_quota_snapshot(key, test_model)
+                ok_probe = bool(snap.get("page_ready", True) and not snap.get("tpd_exhausted") and not snap.get("rpd_exhausted"))
+                probe_msg = snap.get("status_reason", "Chave pronta")
+
+            rem_req = snap.get("rem_req")
+            lim_req = snap.get("lim_req")
+            rem_tok = snap.get("rem_tok")
+            tpd_exhausted = bool(snap.get("tpd_exhausted"))
+            rpd_exhausted = bool(snap.get("rpd_exhausted"))
+            if not ok_probe or tpd_exhausted or rpd_exhausted:
+                return jsonify({
+                    "valid": False,
+                    "is_daily_limit": True,
+                    "tpd_exhausted": tpd_exhausted,
+                    "rpd_exhausted": rpd_exhausted,
+                    "snapshot": snap,
+                    "msg": f"Ping OK, porém BLOQUEADA para páginas reais no modelo '{test_model}': {probe_msg}"
+                })
+            r_str = f"{rem_req}/{lim_req}" if rem_req is not None and lim_req is not None else "OK"
+            t_str = f"{rem_tok}" if rem_tok is not None else "OK"
+            return jsonify({
+                "valid": True,
+                "snapshot": snap,
+                "msg": f"Chave Groq 100% Operacional ({test_model})! {r_str} reqs/dia | {t_str} TPM | {probe_msg}"
+            })
         except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+            finally:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+            details = auto_translate.record_groq_error(key, test_model, e.code, err_body, e.headers) or auto_translate.parse_groq_rate_limit_details(err_body, e.headers, e.code)
+            snap = auto_translate.get_groq_quota_snapshot(key, test_model)
             if e.code == 429:
-                return jsonify({"valid": True, "msg": "Chave Groq Válida! (Porém em limite temporário de tokens no momento)."})
+                wait_txt = auto_translate._format_duration_pt(details.get("retry_after") or 0)
+                if details.get("is_daily"):
+                    return jsonify({
+                        "valid": False,
+                        "is_daily_limit": True,
+                        "tpd_exhausted": details.get("limit_type") == "TPD",
+                        "rpd_exhausted": details.get("limit_type") == "RPD",
+                        "snapshot": snap,
+                        "msg": f"Chave válida, porém cota diária {details.get('limit_type', 'TPD')} ESGOTADA em '{test_model}' (usados {details.get('used') or '?'}/{details.get('limit') or '?'}; libera em ~{wait_txt})."
+                    })
+                return jsonify({
+                    "valid": True,
+                    "rate_limited": True,
+                    "snapshot": snap,
+                    "msg": f"Chave Groq Válida! (Em pausa breve de {details.get('limit_type', 'TPM')}: libera em ~{wait_txt})."
+                })
             return jsonify({"valid": False, "msg": f"Erro de autenticação Groq (HTTP {e.code}). Verifique a chave."})
         except Exception as e:
             return jsonify({"valid": False, "msg": f"Erro de conexão: {e}"})
@@ -1387,17 +1703,58 @@ def api_test_key():
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
                 kdata = json.loads(resp.read().decode("utf-8")).get("data", {})
-                free_info = kdata.get("free_model_daily_requests", {})
-                f_used = free_info.get("used", 0)
-                f_limit = free_info.get("limit", 50)
-                f_rem = free_info.get("remaining", 0)
-                return jsonify({"valid": True, "msg": f"Chave OpenRouter Válida! {f_rem} reqs gratuitas restantes ({f_used}/{f_limit} usadas hoje)."})
+            net_creds = 0.0
+            try:
+                req_c = urllib.request.Request("https://openrouter.ai/api/v1/credits", headers=headers)
+                with urllib.request.urlopen(req_c, timeout=6) as c_resp:
+                    cdata = json.loads(c_resp.read().decode("utf-8")).get("data", {})
+                    net_creds = max(0.0, float(cdata.get("total_credits", 0) or 0) - float(cdata.get("total_usage", 0) or 0))
+            except Exception:
+                pass
+
+            is_free_tier = bool(kdata.get("is_free_tier", True))
+            free_info = kdata.get("free_model_daily_requests")
+            snap_or = auto_translate.get_openrouter_quota_snapshot(key)
+
+            if isinstance(free_info, dict) and ("limit" in free_info or "remaining" in free_info):
+                f_lim = int(free_info.get("limit", 50) or 50)
+                f_used = int(free_info.get("used", 0) or 0)
+                f_rem = int(free_info.get("remaining", max(0, f_lim - f_used)) or 0)
+                if f_rem <= 0 and net_creds <= 0.01:
+                    return jsonify({
+                        "valid": False,
+                        "daily_exhausted": True,
+                        "msg": f"Chave OpenRouter Free esgotou a cota diária ({f_used}/{f_lim} reqs :free usadas hoje; saldo $0.00 USD)."
+                    })
+                return jsonify({
+                    "valid": True,
+                    "msg": f"Chave OpenRouter Válida! Saldo líquido: ${net_creds:.2f} USD | {f_rem}/{f_lim} reqs :free restantes hoje."
+                })
+
+            if snap_or.get("daily_exhausted") and net_creds <= 0.01:
+                return jsonify({
+                    "valid": False,
+                    "daily_exhausted": True,
+                    "msg": f"Chave OpenRouter sem saldo (${net_creds:.2f} USD) e com cota diária :free atingida na última execução."
+                })
+
+            if net_creds > 0.01:
+                return jsonify({
+                    "valid": True,
+                    "msg": f"Chave OpenRouter Paga Válida! Saldo líquido disponível: ${net_creds:.2f} USD."
+                })
+            tier_txt = "Free Tier (~50 reqs/dia em modelos :free)" if is_free_tier else "Saldo $0.00 USD"
+            return jsonify({
+                "valid": True,
+                "msg": f"Chave OpenRouter Válida! Conta {tier_txt} | Saldo líquido: ${net_creds:.2f} USD (fila :free compartilhada)."
+            })
         except urllib.error.HTTPError as e:
             return jsonify({"valid": False, "msg": f"Erro HTTP {e.code} no OpenRouter. Chave inválida ou recusada."})
         except Exception as e:
             return jsonify({"valid": False, "msg": f"Erro de conexão: {e}"})
 
     elif provider == "gemini":
+        test_model = str(data.get("model") or cfg.get("gemini_model") or "gemini-2.5-flash").strip()
         qs = urllib.parse.urlencode({"key": key})
         url = f"https://generativelanguage.googleapis.com/v1beta/models?{qs}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -1405,13 +1762,56 @@ def api_test_key():
             with urllib.request.urlopen(req, timeout=8) as resp:
                 gm_data = json.loads(resp.read().decode("utf-8"))
                 gm_count = len(gm_data.get("models", []))
-                return jsonify({"valid": True, "msg": f"Chave Google Gemini Válida! ({gm_count} modelos Vision liberados)."})
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                return jsonify({"valid": True, "msg": "Chave Gemini Válida! (Porém em limite temporário no momento)."})
+                return jsonify({"valid": False, "quota_exhausted": True, "msg": "Cota Gemini atingida (HTTP 429)."})
             return jsonify({"valid": False, "msg": f"Erro HTTP {e.code} no Google Gemini. Verifique a chave (AIza...)."})
         except Exception as e:
             return jsonify({"valid": False, "msg": f"Erro de conexão Gemini: {e}"})
+
+        if deep and test_model:
+            g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{test_model}:generateContent?{qs}"
+            g_payload = json.dumps({
+                "contents": [{"parts": [{"text": "ok"}]}],
+                "generationConfig": {"maxOutputTokens": 1, "temperature": 0.0}
+            }).encode("utf-8")
+            g_req = urllib.request.Request(g_url, data=g_payload, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(g_req, timeout=10) as g_resp:
+                    if g_resp.status == 200:
+                        auto_translate.record_gemini_status(key, model_name=test_model, ok=True, msg=f"Sondagem OK ({test_model})")
+                        return jsonify({"valid": True, "msg": f"Chave Google Gemini 100% Operacional em '{test_model}' ({gm_count} modelos liberados)."})
+            except urllib.error.HTTPError as ge:
+                g_body = ""
+                try:
+                    g_body = ge.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        ge.close()
+                    except Exception:
+                        pass
+                if ge.code == 429:
+                    auto_translate.record_gemini_error(key, test_model, 429, g_body)
+                    snap_g = auto_translate.get_gemini_quota_snapshot(key)
+                    return jsonify({
+                        "valid": False,
+                        "quota_exhausted": True,
+                        "msg": f"Chave reconhecida ({gm_count} modelos), porém COTA 429 ATINGIDA em '{test_model}' ({snap_g.get('last_msg') or 'limite excedido'})."
+                    })
+                if ge.code in (401, 403):
+                    auto_translate.record_gemini_error(key, test_model, ge.code, g_body)
+                    return jsonify({"valid": False, "msg": f"Chave Gemini sem permissão (HTTP {ge.code})."})
+
+        snap_g = auto_translate.get_gemini_quota_snapshot(key)
+        if snap_g.get("quota_exhausted") and snap_g.get("quota_reset_sec", 0.0) > 0:
+            return jsonify({
+                "valid": False,
+                "quota_exhausted": True,
+                "msg": f"Chave reconhecida ({gm_count} modelos), porém cota 429 registrada recentemente ({snap_g.get('last_msg')})."
+            })
+        return jsonify({"valid": True, "msg": f"Chave Google Gemini Válida! ({gm_count} modelos Vision liberados)."})
 
     return jsonify({"valid": False, "msg": "Provedor desconhecido."})
 

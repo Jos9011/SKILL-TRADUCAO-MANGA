@@ -531,7 +531,7 @@ def api_version():
         "dual_engine": True,
         "features": [
             "IA Vision Híbrido (Detector Geométrico Local + Gemini / Groq / OpenRouter / Ollama Vision)",
-            "OCR Especializado Coreano PP-OCRv5 & Suporte Nativo a PDF / CBZ / ZIP",
+            "OCR Especializado Japonês PP-OCRv6_manga, Coreano PP-OCRv5 & Suporte Nativo a PDF / CBZ / ZIP",
             "Cooperative Dual-Engine (Spatial Cartographer + Narrative Synthesizer)",
             "Delete Manga & Fast Library Management",
             "Persistent User Profile & Auto-Key Sync (Google Drive + Browser)",

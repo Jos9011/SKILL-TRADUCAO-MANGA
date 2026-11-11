@@ -1341,10 +1341,14 @@ def should_merge_lines(b1, b2, img_gray=None):
         cy2 = (y2_min + y2_max) / 2
         center_dist_y = abs(cy1 - cy2)
         overlap_ratio_y = overlap_y / min_h
+        is_cjk_vert = is_majority_cjk([b1.get("text", ""), b2.get("text", "")])
         
         if (overlap_ratio_y >= 0.40 and center_dist_y <= max_h * 0.45) or overlap_ratio_y >= 0.65:
-            # O vão horizontal entre colunas adjacentes do mesmo balão deve ser proporcional à largura da linha
-            allowed_gap_x = max(min(min_w * 0.9, 60), 38)
+            # Colunas CJK verticais frequentemente possuem espaçamento extra de furigana (ruby) entre colunas do mesmo balão
+            if is_cjk_vert:
+                allowed_gap_x = max(min(min_w * 2.2, 72), 48)
+            else:
+                allowed_gap_x = max(min(min_w * 0.9, 60), 38)
             if gap_x <= allowed_gap_x:
                 return not _has_border_wall()
                 
@@ -4768,8 +4772,9 @@ KOREAN_REC_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_PP-OCRv5_rec_infer.onnx
 KOREAN_DICT_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_v5_dict.txt")
 
 JAPANESE_MODEL_DIR = os.path.join(SCRIPT_DIR, "models", "japanese")
-JAPANESE_REC_PATH = os.path.join(JAPANESE_MODEL_DIR, "japan_PP-OCRv4_rec_infer.onnx")
-JAPANESE_DICT_PATH = os.path.join(JAPANESE_MODEL_DIR, "japan_v4_dict.txt")
+JAPANESE_DET_PATH = os.path.join(JAPANESE_MODEL_DIR, "manga_det.onnx")
+JAPANESE_REC_PATH = os.path.join(JAPANESE_MODEL_DIR, "manga_rec.onnx")
+JAPANESE_DICT_PATH = os.path.join(JAPANESE_MODEL_DIR, "ppocrv6_dict.txt")
 
 def _onnx_ensure_character_metadata(onnx_path, dict_path):
     """Embute a propriedade protobuf 'character' no ONNX se ausente (exigido pelo RapidOCR 1.2.x que ignora rec_keys_path)."""
@@ -4880,31 +4885,239 @@ def ensure_korean_ocr_model():
         return True
     return False
 
-def ensure_japanese_ocr_model():
-    """Garante que os arquivos do modelo de OCR Japonês (PP-OCRv4 ONNX com Hiragana/Katakana/Kanji) estejam prontos."""
-    os.makedirs(JAPANESE_MODEL_DIR, exist_ok=True)
-    if not os.path.exists(JAPANESE_REC_PATH):
-        try:
-            print("[*] Baixando modelo de OCR Japonês PP-OCRv4 (japan_PP-OCRv4_rec_infer.onnx)...")
-            url_m = "https://huggingface.co/cycloneboy/japan_PP-OCRv4_rec_infer/resolve/main/model.onnx"
-            req = urllib.request.Request(url_m, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=60) as resp, open(JAPANESE_REC_PATH, 'wb') as f:
-                f.write(resp.read())
-        except Exception as e:
-            print(f"[!] Erro ao baixar modelo japonês PP-OCRv4: {e}")
-    if not os.path.exists(JAPANESE_DICT_PATH):
-        try:
-            print("[*] Baixando dicionário PP-OCRv4 Japonês (Hiragana/Katakana/Kanji)...")
-            url_d = "https://huggingface.co/cycloneboy/japan_PP-OCRv4_rec_infer/resolve/main/japan_dict.txt"
-            req = urllib.request.Request(url_d, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=30) as resp, open(JAPANESE_DICT_PATH, 'wb') as f:
-                f.write(resp.read())
-        except Exception as e:
-            print(f"[!] Erro ao baixar dicionário japonês PP-OCRv4: {e}")
-    if os.path.exists(JAPANESE_REC_PATH) and os.path.exists(JAPANESE_DICT_PATH):
-        _onnx_ensure_character_metadata(JAPANESE_REC_PATH, JAPANESE_DICT_PATH)
-        return True
+def _download_file_atomic(url, dest_path, timeout=60):
+    """Baixa arquivo para .tmp antes de substituir o destino final, evitando arquivos corrompidos."""
+    tmp_path = f"{dest_path}.tmp"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp, open(tmp_path, 'wb') as f:
+            shutil.copyfileobj(resp, f)
+        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+            os.replace(tmp_path, dest_path)
+            return True
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise
     return False
+
+def ensure_japanese_ocr_model():
+    """Garante que os arquivos do motor Japonês especializado PP-OCRv6_manga (v0.3 ONNX FP32) estejam prontos."""
+    os.makedirs(JAPANESE_MODEL_DIR, exist_ok=True)
+    artifacts = [
+        (
+            JAPANESE_DET_PATH,
+            "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/main/det/manga_det.onnx",
+            "detector Japonês PP-OCRv6_manga (manga_det.onnx)",
+            60,
+        ),
+        (
+            JAPANESE_REC_PATH,
+            "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/main/rec/manga_rec.onnx",
+            "reconhecedor Japonês PP-OCRv6_manga (manga_rec.onnx)",
+            90,
+        ),
+        (
+            JAPANESE_DICT_PATH,
+            "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/main/ppocrv6_dict.txt",
+            "dicionário JIS X 0208 PP-OCRv6_manga (19.053 símbolos)",
+            30,
+        ),
+    ]
+    for dst_path, url, label, to_s in artifacts:
+        if not os.path.exists(dst_path) or os.path.getsize(dst_path) == 0:
+            try:
+                print(f"[*] Baixando {label}...")
+                _download_file_atomic(url, dst_path, timeout=to_s)
+            except Exception as e:
+                print(f"[!] Erro ao baixar {label}: {e}")
+    return all(os.path.exists(p) and os.path.getsize(p) > 0 for p, _, _, _ in artifacts)
+
+class PPOCRv6MangaEngine:
+    """Wrapper ONNX Runtime para Kellenok/PP-OCRv6_manga (v0.3), compatível com a interface RapidOCR."""
+
+    def __init__(self, det_path, rec_path, dict_path, thresh=0.15, box_thresh=0.25, unclip_ratio=1.45):
+        import onnxruntime as ort
+        try:
+            import pyclipper
+            self._pyclipper = pyclipper
+        except Exception:
+            self._pyclipper = None
+
+        sess_opts = ort.SessionOptions()
+        try:
+            sess_opts.log_severity_level = 3
+        except Exception:
+            pass
+        avail = ort.get_available_providers()
+        providers = ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else avail
+        self.det_sess = ort.InferenceSession(det_path, sess_options=sess_opts, providers=providers)
+        self.rec_sess = ort.InferenceSession(rec_path, sess_options=sess_opts, providers=providers)
+        self.det_input_name = self.det_sess.get_inputs()[0].name
+        self.rec_input_name = self.rec_sess.get_inputs()[0].name
+
+        with open(dict_path, "r", encoding="utf-8") as f:
+            self.vocab = ["blank"] + [line.rstrip("\r\n") for line in f] + [" "]
+
+        self.thresh = float(thresh)
+        self.box_thresh = float(box_thresh)
+        self.unclip_ratio = float(unclip_ratio)
+        self._det_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self._det_std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+    @staticmethod
+    def _ensure_bgr(img):
+        if img is None:
+            return None
+        if img.ndim == 2:
+            return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        if img.shape[2] == 4:
+            return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        return img
+
+    @staticmethod
+    def _box_score_fast(pred, box):
+        h, w = pred.shape[:2]
+        b = box.copy().astype(np.int32)
+        xmin = int(np.clip(np.floor(b[:, 0].min()), 0, w - 1))
+        xmax = int(np.clip(np.ceil(b[:, 0].max()), 0, w - 1))
+        ymin = int(np.clip(np.floor(b[:, 1].min()), 0, h - 1))
+        ymax = int(np.clip(np.ceil(b[:, 1].max()), 0, h - 1))
+        score_mask = np.zeros((ymax - ymin + 1, xmax - xmin + 1), dtype=np.uint8)
+        b[:, 0] -= xmin
+        b[:, 1] -= ymin
+        cv2.fillPoly(score_mask, [b.reshape(-1, 2)], 1)
+        return float(cv2.mean(pred[ymin:ymax + 1, xmin:xmax + 1], score_mask)[0])
+
+    def _unclip(self, box, ratio):
+        pts = box.astype(np.float32)
+        x, y = pts[:, 0], pts[:, 1]
+        area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+        perimeter = float(np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1).sum())
+        if area <= 0.0 or perimeter <= 0.0:
+            return None
+        dist = area * ratio / perimeter
+        if self._pyclipper is not None:
+            offset = self._pyclipper.PyclipperOffset()
+            offset.AddPath(pts.tolist(), self._pyclipper.JT_ROUND, self._pyclipper.ET_CLOSEDPOLYGON)
+            paths = offset.Execute(dist)
+            return np.asarray(paths[0], dtype=np.float32) if len(paths) == 1 else None
+        x0, y0 = float(x.min()) - dist, float(y.min()) - dist
+        x1, y1 = float(x.max()) + dist, float(y.max()) + dist
+        return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float32)
+
+    def text_detector(self, img_cv):
+        img = self._ensure_bgr(img_cv)
+        if img is None or img.size == 0:
+            return []
+        H, W = img.shape[:2]
+        if max(H, W) / max(1.0, float(min(H, W))) > 2.0:
+            ratio = min(1.0, (0.75 * 960.0 * 960.0 / float(max(1, H * W))) ** 0.5)
+        else:
+            ratio = min(2.0, 960.0 / float(max(1, H, W)))
+        rh = max(int(round(H * ratio / 32.0) * 32), 32)
+        rw = max(int(round(W * ratio / 32.0) * 32), 32)
+
+        inp = cv2.resize(img, (rw, rh)).astype(np.float32) / 255.0
+        inp = (inp - self._det_mean) / self._det_std
+        pred_map = np.float32(
+            self.det_sess.run(None, {self.det_input_name: inp.transpose((2, 0, 1))[np.newaxis, ...]})[0][0, 0]
+        )
+
+        mask = (pred_map > self.thresh).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        boxes = []
+        for cnt in contours:
+            pts = cnt.squeeze(1)
+            if pts.ndim != 2 or pts.shape[0] < 4:
+                continue
+            if self._box_score_fast(pred_map, pts) < self.box_thresh:
+                continue
+            upts = self._unclip(pts, self.unclip_ratio)
+            if upts is None or len(upts) == 0:
+                continue
+            _, (bw_m, bh_m), _ = cv2.minAreaRect(upts)
+            if min(bw_m, bh_m) < 3.0:
+                continue
+            xs_s = upts[:, 0] / float(rw) * float(W)
+            ys_s = upts[:, 1] / float(rh) * float(H)
+            x1 = float(np.clip(np.round(xs_s.min()), 0, W))
+            y1 = float(np.clip(np.round(ys_s.min()), 0, H))
+            x2 = float(np.clip(np.round(xs_s.max()), 0, W))
+            y2 = float(np.clip(np.round(ys_s.max()), 0, H))
+            if (x2 - x1) < 3.0 or (y2 - y1) < 3.0:
+                continue
+            boxes.append([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+        return boxes
+
+    def _recognize_single(self, crop):
+        crop = self._ensure_bgr(crop)
+        if crop is None or crop.size == 0:
+            return "", 0.0
+        if crop.shape[0] > crop.shape[1] * 1.2:
+            crop = cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        ch, cw = crop.shape[:2]
+        if ch <= 0 or cw <= 0:
+            return "", 0.0
+        target_w = min(2048, max(16, int(round(48.0 * cw / float(ch)))))
+        resized = cv2.resize(crop, (target_w, 48))
+        c_inp = ((resized.astype(np.float32) / 255.0 - 0.5) / 0.5).transpose((2, 0, 1))[np.newaxis, ...]
+        preds = np.float32(self.rec_sess.run(None, {self.rec_input_name: c_inp})[0][0])
+        if preds.size == 0:
+            return "", 0.0
+        if float(preds.max()) > 1.01 or float(preds.min()) < -0.01:
+            exp_p = np.exp(preds - preds.max(axis=-1, keepdims=True))
+            probs = exp_p / np.maximum(exp_p.sum(axis=-1, keepdims=True), 1e-12)
+        else:
+            probs = preds
+        indices = np.argmax(probs, axis=-1)
+        max_probs = np.max(probs, axis=-1)
+        chars = []
+        char_scores = []
+        prev_idx = -1
+        v_len = len(self.vocab)
+        for step_i, idx in enumerate(indices):
+            idx_i = int(idx)
+            if idx_i != 0 and idx_i != prev_idx and idx_i < v_len:
+                chars.append(self.vocab[idx_i])
+                char_scores.append(float(max_probs[step_i]))
+            prev_idx = idx_i
+        txt = "".join(chars).strip()
+        conf = float(np.mean(char_scores)) if char_scores else 0.0
+        return txt, conf
+
+    def text_recognizer(self, crops):
+        t0 = time.time()
+        if isinstance(crops, np.ndarray):
+            crops_list = [crops]
+        else:
+            crops_list = list(crops or [])
+        out = [self._recognize_single(c) for c in crops_list]
+        return out, (time.time() - t0)
+
+    def __call__(self, img_cv):
+        t0 = time.time()
+        img = self._ensure_bgr(img_cv)
+        if img is None or img.size == 0:
+            return None, (time.time() - t0)
+        H, W = img.shape[:2]
+        dt_boxes = self.text_detector(img)
+        results = []
+        for q in dt_boxes:
+            x1 = max(0, int(round(min(p[0] for p in q))))
+            y1 = max(0, int(round(min(p[1] for p in q))))
+            x2 = min(W, int(round(max(p[0] for p in q))))
+            y2 = min(H, int(round(max(p[1] for p in q))))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            crop = img[y1:y2, x1:x2]
+            txt, conf = self._recognize_single(crop)
+            if txt:
+                results.append([q, txt, conf])
+        return (results if results else None), (time.time() - t0)
 
 def _detect_rapidocr_api_style():
     """Detecta se RapidOCR instalado usa API 1.4.x (use_cls) ou 1.2.x/1.3.x (use_angle_cls)."""
@@ -4923,7 +5136,7 @@ def _detect_rapidocr_api_style():
     return "1.2"
 
 def get_rapidocr_engine(is_korean=False, is_japanese=False):
-    """Instancia o RapidOCR Coreano (PP-OCRv5), Japonês (PP-OCRv4) ou Universal com DBNet calibrado para balões de mangá."""
+    """Instancia o OCR Coreano (PP-OCRv5), Japonês (PP-OCRv6_manga v0.3) ou Universal calibrado para balões de mangá."""
     api_style = _detect_rapidocr_api_style()
     if is_korean:
         if not ensure_korean_ocr_model():
@@ -4952,28 +5165,8 @@ def get_rapidocr_engine(is_korean=False, is_japanese=False):
 
     if is_japanese:
         if not ensure_japanese_ocr_model():
-            raise RuntimeError("Modelo de OCR Japonês (PP-OCRv4) indisponível em models/japanese/.")
-        try:
-            common_jp = {
-                "det_model_path": None,
-                "det_limit_side_len": 1200,
-                "det_limit_type": "min",
-                "det_box_thresh": 0.22,
-                "det_thresh": 0.15,
-                "det_unclip_ratio": 1.78,
-                "width_height_ratio": -1,
-                "min_height": 6,
-                "text_score": 0.05,
-                "rec_model_path": JAPANESE_REC_PATH,
-                "rec_img_shape": [3, 48, 320],
-            }
-            if api_style == "1.4":
-                return RapidOCR(use_cls=False, rec_keys_path=JAPANESE_DICT_PATH, **common_jp)
-            return RapidOCR(use_angle_cls=False, **common_jp)
-        except Exception as e:
-            print(f"[!] Aviso ao iniciar RapidOCR Japonês com parâmetros customizados ({e}); tentando modo seguro...")
-            safe_jp = {"use_cls": False, "rec_model_path": JAPANESE_REC_PATH, "rec_keys_path": JAPANESE_DICT_PATH} if api_style == "1.4" else {"use_angle_cls": False, "rec_model_path": JAPANESE_REC_PATH}
-            return RapidOCR(**safe_jp)
+            raise RuntimeError("Modelo de OCR Japonês (PP-OCRv6_manga) indisponível em models/japanese/.")
+        return PPOCRv6MangaEngine(JAPANESE_DET_PATH, JAPANESE_REC_PATH, JAPANESE_DICT_PATH)
 
     try:
         common_uni = {
@@ -5013,7 +5206,7 @@ def detect_manga_language_and_engine(manga_dir):
     """
     Detecta automaticamente o idioma da obra e seleciona o motor ideal:
     - 'korean': Manhwa / Coreano (Hangul) -> Usa RapidOCR Coreano (NUNCA usa Mokuro)
-    - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (ou RapidOCR Japonês PP-OCRv4 se Mokuro ausente)
+    - 'mokuro': Mangá Japonês (Kanji/Kana) -> Usa Mokuro (ou PP-OCRv6_manga Japonês se Mokuro ausente)
     - 'rapidocr': Ocidental / Inglês / Espanhol / Chinês -> Usa RapidOCR padrão
     """
     folder_name = os.path.basename(manga_dir)
@@ -5068,7 +5261,7 @@ def detect_manga_language_and_engine(manga_dir):
         if is_mokuro_available():
             print("[+] Idioma detectado pelo título: JAPONÊS -> Usando Mokuro.")
         else:
-            print("[+] Idioma detectado pelo título: JAPONÊS -> Usando RapidOCR Japonês (PP-OCRv4).")
+            print("[+] Idioma detectado pelo título: JAPONÊS -> Usando Motor Japonês PP-OCRv6_manga.")
         return "mokuro"
 
     # 5. Amostra páginas internas para decidir sem margem de erro (inclusive em títulos com múltiplos idiomas ou neutros)
@@ -5160,7 +5353,7 @@ def detect_manga_language_and_engine(manga_dir):
             print("[+] Obra identificada pelas páginas como JAPONÊS (Kana detectado) -> Selecionando motor Japonês.")
             return "mokuro"
 
-        # Sonda com motor Japonês PP-OCRv4: distingue Mangá Japonês (Hiragana/Katakana) vs Manhua Chinês (apenas Hanzi)
+        # Sonda com motor Japonês PP-OCRv6_manga: distingue Mangá Japonês (Hiragana/Katakana) vs Manhua Chinês (apenas Hanzi)
         if not has_chinese_tag and latin_count <= 25 and sample_imgs and (chinese_count >= 1 or japanese_count >= 1 or latin_count < 8):
             if ensure_japanese_ocr_model():
                 try:
@@ -5431,7 +5624,14 @@ def _extract_page_blocks_tuned(engine, img_cv, is_korean=False, is_japanese=Fals
         elif best_idx >= 0 and sc > cand_items[best_idx][4] + 0.14 and sc >= 0.65:
             cand_items[best_idx] = [q, b, min_bgr, txt, sc, "min"]
 
-    if float(np.mean(gray < 75)) > 0.15:
+    has_dark_area = float(np.mean(gray < 75)) > (0.08 if is_japanese else 0.15)
+    if not has_dark_area and is_japanese and ih >= 32 and iw >= 32:
+        try:
+            small_dark = cv2.resize((gray < 55).astype(np.float32), (max(8, iw // 8), max(8, ih // 8)), interpolation=cv2.INTER_AREA)
+            has_dark_area = float(cv2.blur(small_dark, (3, 3)).max()) >= 0.72
+        except Exception:
+            pass
+    if has_dark_area:
         inv_bgr = 255 - img_cv
         res_inv, _ = engine(inv_bgr)
         for bd in (res_inv or []):
@@ -5440,13 +5640,57 @@ def _extract_page_blocks_tuned(engine, img_cv, is_korean=False, is_japanese=Fals
             xs = [float(p[0]) for p in q]
             ys = [float(p[1]) for p in q]
             b = [min(xs), min(ys), max(xs), max(ys)]
-            if not any(_box_iou_xyxy(b, eb) >= 0.45 for eb in existing_xyxy):
-                sub_g = gray[max(0, int(b[1])):min(ih, int(b[3])), max(0, int(b[0])):min(iw, int(b[2]))]
-                if sub_g.size > 0 and float(np.median(sub_g)) < 90 and float(np.percentile(sub_g, 92)) > 150:
+            best_iou, best_idx = 0.0, -1
+            for idx_e, eb in enumerate(existing_xyxy):
+                iou = _box_iou_xyxy(b, eb)
+                if iou > best_iou:
+                    best_iou, best_idx = iou, idx_e
+            sub_g = gray[max(0, int(b[1])):min(ih, int(b[3])), max(0, int(b[0])):min(iw, int(b[2]))]
+            if sub_g.size > 0 and float(np.median(sub_g)) < 90 and float(np.percentile(sub_g, 92)) > 150:
+                if best_iou < 0.45:
                     cand_items.append([q, b, inv_bgr, txt, sc, "inv"])
                     existing_xyxy.append(b)
+                elif is_japanese and best_idx >= 0 and sc > cand_items[best_idx][4] + 0.14 and sc >= 0.65:
+                    cand_items[best_idx] = [q, b, inv_bgr, txt, sc, "inv"]
 
-    # Costura e re-reconhece fragmentos verticais da MESMA coluna em mangá japonês (PP-OCRv4 exige rot90 CCW k=1 com padding)
+    # Filtra tiras estreitas de furigana (apenas Kana puro) coladas à coluna/linha principal com Kanji
+    if is_japanese and len(cand_items) >= 2:
+        _ruby_re = re.compile(r'^[\u3040-\u30ffー・]+$')
+        _kanji_re = re.compile(r'[\u4e00-\u9fff]')
+        keep_after_ruby = []
+        for idx_r, item_r in enumerate(cand_items):
+            bx = item_r[1]
+            txt_r = str(item_r[3] or "").strip()
+            bw = bx[2] - bx[0]
+            bh = bx[3] - bx[1]
+            is_furigana = False
+            if txt_r and _ruby_re.match(txt_r) and len(txt_r) <= 8:
+                for jdx_r, item_m in enumerate(cand_items):
+                    if idx_r == jdx_r:
+                        continue
+                    obx = item_m[1]
+                    otxt = str(item_m[3] or "").strip()
+                    if not otxt or not _kanji_re.search(otxt):
+                        continue
+                    obw = obx[2] - obx[0]
+                    obh = obx[3] - obx[1]
+                    ov_y = min(bx[3], obx[3]) - max(bx[1], obx[1])
+                    ov_x = min(bx[2], obx[2]) - max(bx[0], obx[0])
+                    gap_x = max(obx[0] - bx[2], bx[0] - obx[2])
+                    if bh >= bw * 0.90 and obw >= bw * 1.65 and bw <= max(24.0, obw * 0.58):
+                        if ov_y >= 0.30 * min(bh, obh) and -4.0 <= gap_x <= max(18.0, obw * 0.62):
+                            is_furigana = True
+                            break
+                    gap_y = max(obx[1] - bx[3], bx[1] - obx[3])
+                    if bw >= bh * 0.90 and obh >= bh * 1.65 and bh <= max(24.0, obh * 0.58):
+                        if ov_x >= 0.30 * min(bw, obw) and -4.0 <= gap_y <= max(16.0, obh * 0.62):
+                            is_furigana = True
+                            break
+            if not is_furigana:
+                keep_after_ruby.append(item_r)
+        cand_items = keep_after_ruby
+
+    # Costura e re-reconhece fragmentos verticais da MESMA coluna em mangá japonês (PP-OCRv6 exige rot90 CCW k=1 com padding)
     if is_japanese and len(cand_items) >= 2:
         nc = len(cand_items)
         v_adj = {i: [] for i in range(nc)}
@@ -5558,8 +5802,8 @@ def _extract_page_blocks_tuned(engine, img_cv, is_korean=False, is_japanese=Fals
             if s_no >= max(0.55, sc + 0.12) or (re.search(r'[A-Za-z]', t_no) and not re.search(r'[A-Za-z]', txt) and s_no >= 0.40):
                 txt, sc = t_no, s_no
         elif sc < 0.55:
-            c_safe, _ = _warp_ocr_quad_crop(src_img, q, allow_rot90=(is_japanese and bh >= bw * 1.45), px_x=2.5, px_y=2.0 if is_japanese else 0.0)
-            t_s, s_s = _recognize_bg_padded_crop(engine, c_safe, pad_x=6, pad_y=3, min_h=36 if is_japanese else 28)
+            c_safe, _ = _warp_ocr_quad_crop(src_img, q, allow_rot90=(is_japanese and bh > bw * 1.2), px_x=2.5, px_y=2.0 if is_japanese else 0.0)
+            t_s, s_s = _recognize_bg_padded_crop(engine, c_safe, pad_x=6, pad_y=3, min_h=48 if is_japanese else 28)
             if t_s and ((s_s >= sc + 0.08 and s_s >= 0.52) or (not is_japanese and re.search(r'[A-Za-z]', t_s) and not re.search(r'[A-Za-z]', txt) and s_s >= 0.42)):
                 txt, sc = t_s, s_s
         elif not is_korean and not is_japanese and re.match(r'^\.{1,5}[A-Za-z]|^[A-Za-z]+\.{2}$', txt):
@@ -5635,7 +5879,7 @@ def _extract_page_blocks_tuned(engine, img_cv, is_korean=False, is_japanese=Fals
     return grouped
 
 def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, is_japanese=False, progress_cb=None):
-    """Extrai textos usando RapidOCR (PP-OCRv5 Coreano, PP-OCRv4 Japonês ou Universal calibrado com detecção multi-passagem)."""
+    """Extrai textos usando RapidOCR (PP-OCRv5 Coreano, Universal) ou PP-OCRv6_manga Japonês com detecção multi-passagem."""
     img_files = get_image_files(manga_dir)
     if not img_files:
         print(f"[!] Erro crítico: Nenhuma imagem válida encontrada em '{manga_dir}'.")
@@ -5649,9 +5893,9 @@ def generate_rapidocr_json(manga_dir, output_json_path, is_korean=False, is_japa
         ver_str = "rapidocr_korean"
         mdl_str = "ppocr_v5_korean"
     elif is_japanese:
-        desc_msg = "OCR Japonês PP-OCRv4 (Hiragana/Katakana/Kanji)"
+        desc_msg = "OCR Japonês PP-OCRv6_manga v0.3 (Hiragana/Katakana/Kanji JIS)"
         ver_str = "rapidocr_japanese"
-        mdl_str = "ppocr_v4_japanese"
+        mdl_str = "ppocr_v6_manga"
     else:
         desc_msg = "OCR Universal (RapidOCR)"
         ver_str = "rapidocr"
@@ -6933,7 +7177,7 @@ def generate_ai_vision_json(manga_dir, output_json_path, cfg=None, progress_cb=N
         if fallback_is_korean:
             fb_ver, fb_mdl = "rapidocr_korean", "ppocr_v5_korean"
         elif fallback_is_japanese:
-            fb_ver, fb_mdl = "rapidocr_japanese", "ppocr_v4_japanese"
+            fb_ver, fb_mdl = "rapidocr_japanese", "ppocr_v6_manga"
         else:
             fb_ver, fb_mdl = "rapidocr", "rapidocr_default"
         mokuro_data = {
@@ -7151,9 +7395,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         else:
             expected_engine = "mokuro"
 
-    # Verificação de segurança: se Mokuro foi escolhido mas não está instalado no ambiente, usa RapidOCR Japonês PP-OCRv4
+    # Verificação de segurança: se Mokuro foi escolhido mas não está instalado no ambiente, usa motor Japonês PP-OCRv6_manga
     if expected_engine == "mokuro" and not is_mokuro_available():
-        print("[!] Aviso: Mokuro não está instalado neste ambiente. Alternando automaticamente para RapidOCR Japonês (PP-OCRv4)...")
+        print("[!] Aviso: Mokuro não está instalado neste ambiente. Alternando automaticamente para Motor Japonês (PP-OCRv6_manga)...")
         expected_engine = "rapidocr_japanese"
 
     print(f"[+] Motor OCR definido: {expected_engine.upper()}")
@@ -7172,7 +7416,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             engine_matches = (
                 (expected_engine == "ai_vision" and file_version == "ai_vision" and file_ocr_model == "ai_vision_hybrid") or
                 (expected_engine == "rapidocr_korean" and file_version == "rapidocr_korean" and file_ocr_model == "ppocr_v5_korean") or
-                (expected_engine == "rapidocr_japanese" and file_version == "rapidocr_japanese" and file_ocr_model == "ppocr_v4_japanese") or
+                (expected_engine == "rapidocr_japanese" and file_version == "rapidocr_japanese" and file_ocr_model == "ppocr_v6_manga") or
                 (expected_engine == "rapidocr" and file_version == "rapidocr") or
                 (expected_engine == "mokuro" and file_version not in ("rapidocr", "rapidocr_korean", "rapidocr_japanese", "ai_vision"))
             )
@@ -7184,8 +7428,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 if expected_engine == "rapidocr_korean" and file_ocr_model != "ppocr_v5_korean":
                     print("[*] Modelo OCR Coreano atualizado (PP-OCRv5). Regerando OCR e traduções antigas automaticamente...")
                     ocr_model_upgraded = True
-                elif expected_engine == "rapidocr_japanese" and file_ocr_model != "ppocr_v4_japanese":
-                    print("[*] Modelo OCR Japonês atualizado (PP-OCRv4). Regerando OCR e traduções antigas automaticamente...")
+                elif expected_engine == "rapidocr_japanese" and file_ocr_model != "ppocr_v6_manga":
+                    print("[*] Modelo OCR Japonês atualizado (PP-OCRv6_manga). Regerando OCR e traduções antigas automaticamente...")
                     ocr_model_upgraded = True
                 try: os.remove(mokuro_path)
                 except Exception: pass
@@ -7201,7 +7445,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             print("[+] Executando RapidOCR Coreano (Hangul)...")
             generate_rapidocr_json(manga_dir, mokuro_path, is_korean=True, progress_cb=progress_cb)
         elif expected_engine == "rapidocr_japanese":
-            print("[+] Executando RapidOCR Japonês (PP-OCRv4 Hiragana/Katakana/Kanji)...")
+            print("[+] Executando OCR Japonês PP-OCRv6_manga (Hiragana/Katakana/Kanji)...")
             generate_rapidocr_json(manga_dir, mokuro_path, is_japanese=True, progress_cb=progress_cb)
         elif expected_engine == "rapidocr":
             print("[+] Executando RapidOCR Universal com detecção de textos coloridos...")
@@ -7221,7 +7465,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 mokuro_ok = False
 
             if not mokuro_ok:
-                print("[*] Ativando fallback automático para RapidOCR Japonês (PP-OCRv4) para garantir a conclusão da tradução...")
+                print("[*] Ativando fallback automático para Motor Japonês (PP-OCRv6_manga) para garantir a conclusão da tradução...")
                 expected_engine = "rapidocr_japanese"
                 generate_rapidocr_json(manga_dir, mokuro_path, is_japanese=True, progress_cb=progress_cb)
 

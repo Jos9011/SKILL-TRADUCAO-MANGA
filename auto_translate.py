@@ -1039,13 +1039,18 @@ SFX_DICTIONARY = {
     'SPLRCH': 'SPLASH',
     'SLRCH': 'SLRCH',
     'SLURP': 'SLURP',
-    'SLURRRRRRP': 'SLURP'
+    'SLURRRRRRP': 'SLURP',
+    'PAN': 'PAF',
+    'HE HE': 'HEHE',
+    'HEHE': 'HEHE',
+    'PHEW': 'UFA',
+    'CHIPO': 'CHUP',
 }
 
 COMMON_SOUNDS = set(SFX_DICTIONARY.keys()) | {
     'AH', 'HAH', 'AHN', 'MNH', 'UGH', 'NGH', 'AAH', 'AHA', 'FWAA', 'NYAA',
     'HYAH', 'NYAH', 'FUH', 'JYAA', 'CHOP', 'DROP', 'FREEZE', 'SLIP', 'SHH',
-    'OH', 'OOH', 'WOAH', 'HMM', 'TCH'
+    'OH', 'OOH', 'WOAH', 'HMM', 'TCH', 'PAN', 'PHEW', 'HEHE'
 }
 
 def translate_sfx_phrase(text):
@@ -4452,6 +4457,26 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     if re.search(r'\bcum\b', orig_lower) and is_adult and re.search(r'\bcum\b', cleaned, re.IGNORECASE) and not any(w in cleaned.lower() for w in ['goz', 'porra', 'leite']):
         cleaned = re.sub(r'(?i)\bcum\b', 'gozar', cleaned)
 
+    # Armadilhas eróticas e risos/onomatopeias (+18 e ZH/EN)
+    if re.search(r'\b(?:he\s+he|hehe)\b', orig_lower):
+        cleaned = re.sub(r'(?i)\bele\s+ele\b', 'Hehe', cleaned)
+    if is_adult and re.search(r'(?:屁眼|後穴|asshole|anal|butt)', orig_lower):
+        cleaned = re.sub(r'(?i)\b(?:o\s+)?babaca\b', 'o cu', cleaned)
+        cleaned = re.sub(r'(?i)\bum\s+babaca\b', 'um cu', cleaned)
+    if is_adult and ('射' in orig_lower or re.search(r'\b(?:shoot|came)\b', orig_lower)):
+        cleaned = re.sub(r'(?i)\batirando\b', 'gozando', cleaned)
+        cleaned = re.sub(r'(?i)\btiroteio\b', 'gozo', cleaned)
+    if '手下留情' in orig_lower:
+        cleaned = re.sub(r'(?i)miseric[oó]rdia\s+minion', 'pegar leve', cleaned)
+    if '本小姐' in orig_lower:
+        cleaned = re.sub(r'(?i)srta\.?\s+ben', 'euzinha', cleaned)
+    if '口技' in orig_lower:
+        cleaned = re.sub(r'(?i)porta-voz', 'sexo oral', cleaned)
+    if '名器' in orig_lower:
+        cleaned = re.sub(r'(?i)obra-prima', 'buceta perfeita', cleaned)
+    if 'a polo gize' in orig_lower:
+        cleaned = re.sub(r'(?i)um\s+polo\s+se\s+desculpa', 'Peça desculpas', cleaned)
+
     # Dinâmica familiar enteado/madrasta (mulher) e falsos amigos
     cleaned = _preserve_case(r'\bvoc[êe]\s+[eé]\s+um\s+estranho\b', 'você é uma estranha', cleaned)
     cleaned = _preserve_case(r'\bde\s+forma\s+material\b', 'de forma maternal', cleaned)
@@ -5066,11 +5091,19 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
                 "- KO (+18): '자지/고추'->'pau/pinto'; '보지'->'buceta'; '유두/젖꼭지'->'mamilo/biquinho'; '딸치다'->'bater uma/masturbar'; '자위펫'->'brinquedo'.\n"
                 "- KO DESAMBIG.: '쓰고'(sexual/ferramenta)->'usar/metendo' (NUNCA 'escrever'); '바둑이'->'Baduki'; '-님'->'-sama/senhor(a)'; '수인'->'homens-fera'; '갈 것 같다/싸다'->'vou gozar/gozei'.\n"
             )
+        zh_hints = ""
+        if "zh" in str(src_lang).lower():
+            zh_hints = (
+                "- ZH (+18): '屁眼/後穴'->'cu/ânus' (NUNCA 'babaca'); '射/要射了/射精'->'gozar/vou gozar/gozo' (NUNCA 'atirar/tiroteio'); "
+                "'口技'->'sexo oral/boquete' (NUNCA 'porta-voz'); '名器'->'buceta perfeita/de ouro' (NUNCA 'obra-prima'); "
+                "'肉棒/鸡巴'->'pau/rola'; '手下留情'->'pegar leve/ter piedade' (NUNCA 'minion'); '本小姐'->'eu/esta senhorita/euzinha' (NUNCA 'Srta. Ben'); "
+                "'下海'->'entrar pro pornô/indústria adulta' (NUNCA 'sea debut'); '早洩肉棒'->'pau frouxo/que goza rápido'.\n"
+            )
         adult_compact = ""
         if is_adult:
             adult_compact = (
                 "\nADULTO (+18 SEM CENSURA): PT-BR explícito ('buceta', 'xoxota', 'pau', 'pinto', 'gozar', 'gozando', 'calcinha', 'tesão').\n"
-                f"{ko_hints}"
+                f"{ko_hints}{zh_hints}"
                 "- Concorde gênero/pronomes com quem fala e a cena.\n"
             )
         return (
@@ -5087,9 +5120,9 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
     if is_adult:
         adult_clause = (
             "\nADULTO (+18 SEM CENSURA):\n"
-            "- Anatomia: 'pussy/cunt'/'coño/rajita'->'buceta/xoxota' (fem); 'cock/dick/penis'/'pene/verga/polla'->'pau/pinto/rola' (masc). Nunca troque o gênero na frase.\n"
+            "- Anatomia: 'pussy/cunt'/'coño/rajita'->'buceta/xoxota' (fem); 'cock/dick/penis'/'pene/verga/polla'->'pau/pinto/rola' (masc); 'asshole'(anal)->'cu/ânus' (NUNCA 'babaca'). Nunca troque o gênero na frase.\n"
             "- Ações: 'came/cum/cumming'/'correrse/me vengo'->'gozou/gozar/gozando' (NUNCA 'veio/chegou'); 'came inside'->'gozou dentro'; 'creampie'->'leitada/gozada dentro'; 'I can't hold it'->'Não aguento mais!'; 'calentura'->'tesão'; 'coger'(ES +18)->'foder/transar'; 'sow'->'porca/vadia'; 'panties'->'calcinha'.\n"
-            "- Armadilhas & gênero: falante c/ mulher 'so wet/stranger'->'tão molhada/estranha'; filho falando do pai p/ mãe 'Dad'->'O papai/Meu pai' (NUNCA 'Seu pai'); 'act all motherly'->'agir como mãe' (NUNCA 'material'); 'nuisance'->'estorvo/incômodo'; 'come hang out'->'venha me visitar' (NUNCA 'pendurar'); 'it's hard'(erótico)->'tá duro'; 'pee-pee'->'pauzinho'; manter nomes/pratos JP ('Oyakodon', 'Hatsuko', 'Yu-kun' NUNCA 'ONU/Vamos').\n"
+            "- Armadilhas & gênero: 'he he/hehe'->'hehe/risinhos' (NUNCA 'ele ele'); 'pan'(tapa/som)->'tapa/plap' (NUNCA 'pão'); 'lewd'->'safado/pervertido/delícia' (NUNCA 'nojento'); falante c/ mulher 'so wet/stranger'->'tão molhada/estranha'; filho falando do pai p/ mãe 'Dad'->'O papai/Meu pai' (NUNCA 'Seu pai'); 'act all motherly'->'agir como mãe' (NUNCA 'material'); 'nuisance'->'estorvo/incômodo'; 'come hang out'->'venha me visitar' (NUNCA 'pendurar'); 'it's hard'(erótico)->'tá duro'; 'pee-pee'->'pauzinho'; manter nomes/pratos JP ('Oyakodon', 'Hatsuko', 'Yu-kun' NUNCA 'ONU/Vamos').\n"
             "- Gemidos ('u u u', 'mph', 'ahn', 'kuh'): mantenha som expressivo ('Ugh...', 'Anh...'); NUNCA 'u'->'você' ou 'Anh'->'irmão'.\n"
         )
 

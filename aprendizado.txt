@@ -33,6 +33,18 @@
   * 傻逼量的活儿 -> quantidade absurda de trabalho
   * 顶回去 -> recusar com firmeza / peitar
   * 888 / 8888888 (danmaku de aplausos no scan chinês) -> CLAP CLAP
+  * 屁眼 / 後穴 -> cu, ânus (NUNCA traduzir como "babaca")
+  * 射 / 要射了 / 射精 -> gozar, vou gozar, gozo (NUNCA traduzir como "atirar" ou "tiroteio")
+  * 口技 -> boquete, sexo oral (NUNCA traduzir como "porta-voz")
+  * 名器 -> buceta perfeita, buceta de ouro (NUNCA traduzir como "obra-prima")
+  * 手下留情 -> pegar leve, ter piedade (NUNCA traduzir como "Misericórdia Minion")
+  * 本小姐 -> eu, euzinha, esta senhorita (NUNCA traduzir como "Srta. Ben")
+  * 下海 -> entrar pro pornô, estrear na indústria adulta (NUNCA traduzir como "Sea debut")
+  * 早洩肉棒 -> pau frangote que goza rápido / precoce (NUNCA "bastões de ejeção de carne prematuros")
+  * 繩匠 (Zenless Zone Zero) -> Proxy
+  * 絶區零 / 绝区零 -> Zenless Zone Zero
+  * 大保底 (Zenless Zone Zero / Gacha) -> Hard Pity / garantia de banner
+  * 音擎 / 音警池 (Zenless Zone Zero) -> W-Engine / banner de W-Engine
 - Em mangás e manhwas adultos (+18): preserve o tom sem censura e sem pudor, usando gírias eróticas brasileiras naturais da cena (ex: calcinha, pau, gozou, etc.)
 - GÊNERO CORRETO DOS PERSONAGENS: Quando uma veterana ou superior for mulher (ex: Haruka-senpai, 学姐, 先辈 feminina), use SEMPRE artigos e adjetivos femininos ("a Senpai", "dela", "ela é muito maneira", "ficou brava"). Nunca trate uma personagem feminina como homem.
 - MARCAS D'ÁGUA DE SCANS CHINESES: NUNCA traduza nomes de grupos scanlators ou números de redes (como "春卷", "社具费号", "QQ群", "汉化组") literalmente como comida ou taxa (ex: "rolinhos primavera", "taxa da associação"). Se for apenas crédito de scan/grupo QQ, ignore ou deixe em branco.
@@ -74,6 +86,16 @@
 
 [O QUE NÃO FAZER - PROIBIÇÕES E ERROS A EVITAR]
 - NUNCA use palavras em espanhol (como "pero", "entonces", "ahora", "mira", "despacio")
+- NUNCA confunda o insulto "asshole" ou "屁眼" com xingamento: em cenas eróticas (+18), traduza SEMPRE como cu, ânus ou bundinha (NUNCA "babaca")
+- NUNCA traduza "shoot" ou "射 / 射精 / 要射了" em cenas adultas como "atirar" ou "tiroteio" (traduza como "gozar", "vou gozar", "gozada")
+- NUNCA traduza "HE HE" / "Hehe" como "Ele ele" (é risada descontraída: Hehe / Risinhos)
+- NUNCA traduza a onomatopeia "PAN" como "Pão" (é som de tapa ou batida de sexo)
+- NUNCA traduza "came" em sexo como "chegou" (traduza como "gozou / gozei")
+- NUNCA traduza "lewd" como "nojento" (traduza como "safado / pervertido / delícia")
+- NUNCA traduza "口技" como "porta-voz" (traduza como "sexo oral / boquete")
+- NUNCA traduza "名器" como "obra-prima" (traduza como "buceta perfeita / buceta de ouro")
+- NUNCA traduza "手下留情" como "Misericórdia Minion" (traduza como "pegar leve / ter piedade")
+- NUNCA traduza "本小姐" como "Srta. Ben" (traduza como "eu / esta senhorita / euzinha")
 - NUNCA invente nomes de personagens que não estejam explicitamente no texto original (ex: nunca invente "Rudeus", "Rudy" ou outros nomes ocidentais se o texto original for apenas uma onomatopeia ou frase descritiva)
 - NUNCA retorne saídas truncadas de uma única letra (como "O" ou "A") para frases ou orações completas
 - NUNCA traduza gírias ou expressões coloquiais chinesas literalmente palavra por palavra

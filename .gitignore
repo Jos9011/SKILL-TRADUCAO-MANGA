@@ -6,3 +6,5 @@ __pycache__/
 .thumb_cache/
 models/
 config.json
+*.jsonl
+outputs_manga/

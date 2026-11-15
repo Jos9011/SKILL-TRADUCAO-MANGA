@@ -6,10 +6,11 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.6.3 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.6.4 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.6.3--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.6.4--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
+[![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
 [![Abrir Servidor IA no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Dolphin_Server.ipynb)
 
 Plataforma profissional de scanlation para tradução, OCR e diagramação de mangás, manhwas e doujinshis com **Arquitetura Cooperativa de Duas IAs (v0.2.0 Beta)**:

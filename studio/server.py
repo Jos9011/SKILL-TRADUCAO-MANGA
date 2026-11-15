@@ -1907,6 +1907,17 @@ def api_delete_manga():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route("/api/dataset/export", methods=["POST"])
+def api_dataset_export():
+    """Exporta o histórico de traduções validadas para dataset_manga_ptbr.jsonl (ShareGPT/Alpaca) para fine-tuning."""
+    try:
+        import dataset_exporter
+        fmt = (request.json or {}).get("format", "sharegpt")
+        res = dataset_exporter.export_training_dataset(format_type=fmt)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "total_pairs": 0})
+
 @app.route("/api/aprendizado", methods=["GET", "POST"])
 def api_aprendizado():
     fpath = os.path.join(SYS_DIR, "aprendizado.txt")

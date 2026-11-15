@@ -436,6 +436,28 @@ class QuotaAndRateLimitTests(unittest.TestCase):
             self.assertTrue(gem_k["quota_exhausted"])
             self.assertGreater(len(st["runtime_warnings"]), 0)
 
+    def test_dataset_export_and_endpoint(self):
+        import dataset_exporter
+        client = server.app.test_client()
+
+        with tempfile.TemporaryDirectory() as td:
+            out_file = os.path.join(td, "test_dataset.jsonl")
+            cache_file = os.path.join(td, "translation_cache.json")
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump({"Hello world!": "Olá mundo!", "Bad noise": ""}, f)
+
+            res = dataset_exporter.export_training_dataset(output_path=out_file, search_dirs=[td])
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["total_pairs"], 1)
+            self.assertTrue(os.path.exists(out_file))
+
+            # Test API endpoint
+            r_api = client.post("/api/dataset/export", json={"format": "sharegpt"})
+            self.assertEqual(r_api.status_code, 200)
+            d_api = r_api.get_json()
+            self.assertTrue(d_api["ok"])
+            self.assertGreater(d_api["total_pairs"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

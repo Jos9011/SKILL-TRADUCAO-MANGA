@@ -1462,6 +1462,8 @@ def api_start_translation():
     force_ocr = bool(data.get("force_ocr", False))
     retranslate = bool(data.get("retranslate", False))
     provider = data.get("provider", "groq")
+    colorize = bool(data.get("colorize", False))
+    colorize_only = bool(data.get("colorize_only", False))
 
     def _worker():
         global job_state
@@ -1485,12 +1487,37 @@ def api_start_translation():
                         job_state["percentage"] = 30 + int(pct * 0.4)
                     elif stage == "diagram":
                         job_state["percentage"] = 70 + int(pct * 0.3)
+                    elif stage == "colorize":
+                        job_state["percentage"] = int(pct * 0.95) if colorize_only else 70 + int(pct * 0.25)
                     elif stage == "done":
                         job_state["percentage"] = 100
                 if result:
                     job_state["result"] = result
 
         try:
+            if colorize_only:
+                import manga_colorizer
+                res = manga_colorizer.colorize_manga_folder(
+                    manga_path,
+                    progress_cb=progress_callback
+                )
+                with job_lock:
+                    if not res or not res.get("success"):
+                        job_state["status"] = "error"
+                        job_state["error"] = "Falha ao colorir páginas do mangá."
+                        job_state["message"] = "Erro: Nenhuma página colorida foi gerada."
+                    else:
+                        job_state["status"] = "done"
+                        job_state["percentage"] = 100
+                        out_p = res.get("output_dir", "")
+                        if out_p:
+                            m_id = get_manga_hash(out_p)
+                            res["id"] = m_id
+                            res["reader_url"] = f"/read/{m_id}/"
+                        job_state["message"] = f"Mangá colorizado com sucesso ({res.get('total_pages', 0)} páginas) em {res.get('elapsed_seconds', 0)}s!"
+                        job_state["result"] = res
+                return
+
             cfg = auto_translate.load_config({"provider": provider})
             res = auto_translate.process_manga(
                 manga_path,
@@ -1499,7 +1526,8 @@ def api_start_translation():
                 retranslate=retranslate,
                 is_adult=is_adult,
                 config=cfg,
-                progress_cb=progress_callback
+                progress_cb=progress_callback,
+                colorize=colorize
             )
             with job_lock:
                 if not res or res is False:
@@ -1538,6 +1566,11 @@ def api_start_translation():
 
     threading.Thread(target=_worker, daemon=True).start()
     return jsonify({"success": True})
+
+@app.route("/api/colorize", methods=["POST"])
+def api_colorize():
+    """Endpoint direto para colorizar páginas de uma obra sem tradução."""
+    return api_start_translation()
 
 @app.route("/api/progress")
 def api_progress():

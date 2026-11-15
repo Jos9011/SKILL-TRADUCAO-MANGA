@@ -8235,7 +8235,7 @@ def is_valid_translation(orig_text, trans_text):
 
     return True
 
-def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None, colorize=None):
     if sys.stdout is None:
         sys.stdout = _SafeStreamWrapper()
     if sys.stderr is None:
@@ -8243,6 +8243,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 
     if config is None:
         config = load_config()
+    if colorize is None:
+        colorize = bool(config.get("colorize", False)) if config else False
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
         print(f"[!] Erro: Caminho inválido ({manga_dir})")
@@ -8647,6 +8649,18 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             continue
             
         h_img, w_img = img_cv.shape[:2]
+
+        # Colorização neural inteligente antes de limpar e diagramar
+        if colorize:
+            try:
+                import manga_colorizer
+                if progress_cb:
+                    try: progress_cb("colorize", idx + 1, len(pages_data), f"Colorindo página {idx + 1}/{len(pages_data)} com IA...")
+                    except Exception: pass
+                img_cv = manga_colorizer.colorize_cv2(img_cv)
+            except Exception as e_col:
+                print(f"[!] Aviso: Falha na colorização da página {idx + 1}: {e_col}")
+
         cleaned = img_cv.copy()
         bubbles = p.get("bubbles", [])
         
@@ -9500,6 +9514,12 @@ if __name__ == "__main__":
             if "--adult" in args: args.remove("--adult")
             if "--18" in args: args.remove("--18")
 
+        colorize_flag = False
+        if "--colorize" in args or "--color" in args:
+            colorize_flag = True
+            if "--colorize" in args: args.remove("--colorize")
+            if "--color" in args: args.remove("--color")
+
         if "--groq" in args:
             cli_provider = "groq"
             args.remove("--groq")
@@ -9545,6 +9565,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if target:
-        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, retranslate=retranslate_flag, is_adult=is_adult_flag, config=cfg)
+        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, retranslate=retranslate_flag, is_adult=is_adult_flag, config=cfg, colorize=colorize_flag)
     else:
         print("[!] Nenhuma pasta informada.")

@@ -2026,12 +2026,23 @@
                   <div class="pill-btn" onclick="setOption('provider', 'openrouter')">OpenRouter</div>
                 </div>
               </div>
+
+              <div class="option-card">
+                <span class="option-label">Colorização (IA)</span>
+                <div class="pill-selector" id="colorize-selector">
+                  <div class="pill-btn active" onclick="setOption('colorize', false)">Original (P&B)</div>
+                  <div class="pill-btn" onclick="setOption('colorize', true)" title="Colorir automaticamente ilustrações usando rede neural leve (ONNX/GPU)">🎨 Colorir Mangá</div>
+                </div>
+              </div>
             </div>
 
             <div class="selection-actions" style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
               <button class="btn-spotify" id="btn-start" onclick="startTranslation()" style="padding: 14px 36px; font-size: 1.05rem;">
                 <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                 INICIAR TRADUÇÃO
+              </button>
+              <button class="btn-secondary" id="btn-colorize-only" onclick="startColorizeOnly()" title="Colorir todas as páginas com IA neural sem traduzir" style="border-color: rgba(189,147,249,0.5); color: #bd93f9;">
+                🎨 Colorir Apenas
               </button>
               <button class="btn-secondary" onclick="resetSelection()">Trocar Obra</button>
               <button class="btn-secondary" style="border-color: rgba(255,85,85,0.4); color: #ff5555;" onclick="deleteSelectedManga()" title="Excluir permanentemente estes arquivos do servidor">
@@ -2495,7 +2506,8 @@
     let selectedOptions = {
       ocr: 'auto',
       adult: true,
-      provider: 'groq'
+      provider: 'groq',
+      colorize: false
     };
     let activeResult = null;
     let libraryData = { translated: [], raw: [] };
@@ -3071,6 +3083,7 @@
         container.querySelectorAll('.pill-btn').forEach(btn => btn.classList.remove('active'));
         const index = type === 'ocr' ? ['auto', 'rapidocr', 'mokuro', 'korean', 'ai_vision'].indexOf(value) :
                       type === 'adult' ? (value ? 0 : 1) :
+                      type === 'colorize' ? (value ? 1 : 0) :
                       ['groq', 'ollama', 'openrouter'].indexOf(value);
         if (index >= 0 && container.children[index]) {
           container.children[index].classList.add('active');
@@ -3082,8 +3095,10 @@
     async function startTranslation() {
       if (isInspectingFolder || !currentSelectedManga) return;
       const btn = document.getElementById('btn-start');
+      const btnCol = document.getElementById('btn-colorize-only');
       btn.disabled = true;
       btn.style.opacity = '0.6';
+      if (btnCol) { btnCol.disabled = true; btnCol.style.opacity = '0.6'; }
 
       document.getElementById('live-progress-section').style.display = 'block';
       document.getElementById('terminal-logs').innerHTML = '<div>[+] Iniciando pipeline profissional de tradução...</div>';
@@ -3098,7 +3113,8 @@
           first_img: currentSelectedManga.first_img || '',
           ocr_mode: selectedOptions.ocr,
           is_adult: selectedOptions.adult,
-          provider: selectedOptions.provider
+          provider: selectedOptions.provider,
+          colorize: Boolean(selectedOptions.colorize)
         };
         const res = await fetch('/api/start', {
           method: 'POST',
@@ -3112,11 +3128,55 @@
           alert(data.error || "Erro ao iniciar");
           btn.disabled = false;
           btn.style.opacity = '1';
+          if (btnCol) { btnCol.disabled = false; btnCol.style.opacity = '1'; }
         }
       } catch (e) {
         alert("Erro de conexão ao iniciar tradução.");
         btn.disabled = false;
         btn.style.opacity = '1';
+        if (btnCol) { btnCol.disabled = false; btnCol.style.opacity = '1'; }
+      }
+    }
+
+    // START COLORIZE ONLY
+    async function startColorizeOnly() {
+      if (isInspectingFolder || !currentSelectedManga) return;
+      const btn = document.getElementById('btn-colorize-only');
+      const btnStart = document.getElementById('btn-start');
+      if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+      if (btnStart) { btnStart.disabled = true; btnStart.style.opacity = '0.6'; }
+
+      document.getElementById('live-progress-section').style.display = 'block';
+      document.getElementById('terminal-logs').innerHTML = '<div>[+] Iniciando colorização neural com IA...</div>';
+      const eq = document.getElementById('equalizer-anim');
+      if (eq) eq.style.display = 'flex';
+
+      updatePlayerCover(currentSelectedManga.first_img, currentSelectedManga.name, "Colorindo páginas com IA...");
+
+      try {
+        const payload = {
+          path: currentSelectedManga.path,
+          first_img: currentSelectedManga.first_img || '',
+          colorize: true,
+          colorize_only: true
+        };
+        const res = await fetch('/api/colorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          pollProgress();
+        } else {
+          alert(data.error || "Erro ao iniciar colorização");
+          if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+          if (btnStart) { btnStart.disabled = false; btnStart.style.opacity = '1'; }
+        }
+      } catch (e) {
+        alert("Erro de conexão ao iniciar colorização.");
+        if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+        if (btnStart) { btnStart.disabled = false; btnStart.style.opacity = '1'; }
       }
     }
 
@@ -3149,12 +3209,16 @@
           // Atualiza badge de etapa e provedor
           const liveStage = document.getElementById('live-stage-badge');
           if (liveStage && data.stage) {
-            liveStage.innerText = data.stage.toUpperCase();
+            liveStage.innerText = data.stage === 'colorize' ? 'COLORIZAÇÃO' : data.stage.toUpperCase();
           }
           const liveEngine = document.getElementById('live-engine-label');
           if (liveEngine) {
-            liveEngine.innerText = selectedOptions.provider === 'groq' ? `Groq Cloud (${formatModelShortName(currentConfig.groq_model || 'qwen/qwen3.8-27b')})` :
-                                   selectedOptions.provider === 'openrouter' ? 'OpenRouter Cloud' : 'IA Local GPU (Ollama)';
+            if (data.stage === 'colorize') {
+              liveEngine.innerText = 'Colorizador Neural IA (ONNX / GPU)';
+            } else {
+              liveEngine.innerText = selectedOptions.provider === 'groq' ? `Groq Cloud (${formatModelShortName(currentConfig.groq_model || 'qwen/qwen3.8-27b')})` :
+                                     selectedOptions.provider === 'openrouter' ? 'OpenRouter Cloud' : 'IA Local GPU (Ollama)';
+            }
           }
 
           // Atualiza barra principal
@@ -3178,6 +3242,8 @@
             clearInterval(pollInterval);
             document.getElementById('btn-start').disabled = false;
             document.getElementById('btn-start').style.opacity = '1';
+            const btnCol = document.getElementById('btn-colorize-only');
+            if (btnCol) { btnCol.disabled = false; btnCol.style.opacity = '1'; }
             activeResult = data.result;
             showActionButtons(data.result);
             loadLibrary();
@@ -3187,9 +3253,11 @@
             clearInterval(pollInterval);
             document.getElementById('btn-start').disabled = false;
             document.getElementById('btn-start').style.opacity = '1';
+            const btnCol = document.getElementById('btn-colorize-only');
+            if (btnCol) { btnCol.disabled = false; btnCol.style.opacity = '1'; }
             const eqErr = document.getElementById('equalizer-anim');
             if (eqErr) eqErr.style.display = 'none';
-            alert(`Erro na tradução: ${data.error}`);
+            alert(`Erro no processamento: ${data.error}`);
           }
         } catch (e) {
           console.error("Poll error:", e);

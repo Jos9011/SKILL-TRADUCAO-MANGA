@@ -6,10 +6,11 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.6.4 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.6.5 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.6.4--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.6.5--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
+[![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
 [![Abrir Servidor IA no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Dolphin_Server.ipynb)
 
@@ -91,3 +92,20 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 ### 5. Exportação Automática para `.CBZ` e Leitor Web
 * **`.CBZ` Automático:** Arquivo pronto para Tachiyomi, Mihon, Kuro Reader, Kotatsu e Perfect Viewer.
 * **Leitor Web Interativo:** `leitor.html` com suporte a teclado (setas/espaço), modo página única e rolagem contínua (*webtoon*).
+
+---
+
+## 🎨 Colorização Automática de Mangás com IA Neural (Novo!)
+
+O Manga Studio agora conta com um motor completo de colorização neural profunda baseado na arquitetura U-Net otimizada (ONNX FP16 ~58MB):
+
+* **Abordagem B (Integrada na WebUI & CLI):**
+  - **Pill Selector:** Ative a opção `🎨 Colorir Mangá` para traduzir e colorir as ilustrações simultaneamente, mantendo o interior dos balões perfeitamente limpos e o texto PT-BR nítido.
+  - **Botão "🎨 Colorir Apenas":** Coloriza todas as páginas de uma obra sem traduzir.
+  - **Terminal / CLI:** Execute `python manga_colorizer.py "caminho/do/manga"` ou passe `--colorize` no `auto_translate.py`.
+  - **Preservação de Nanquim (`preserve_lineart`):** Mescla o traço original no canal de luminância, evitando borrões na tinta preta.
+
+* **Abordagem A (Google Colab com GPU Gratuita/Pro):**
+  - **Notebook Dedicado:** Abra o [Colab_Colorir_Manga.ipynb](Colab_Colorir_Manga.ipynb) diretamente no Google Colab.
+  - **Aceleração CUDA:** Processa em ~0.5s a 1.5s por página nas GPUs gratuitas T4 ou GPUs Pro (V100/A100).
+  - **Direto do Google Drive:** Lê da pasta de entrada (ex: `G:\Meu Drive\MANGAS [PT-BR]`), salva em `[COLORIDO]` e empacota automaticamente em `.cbz`!

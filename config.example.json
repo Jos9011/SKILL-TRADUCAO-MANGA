@@ -19,5 +19,6 @@
   "ollama_model": "dolphin-llama3:latest",
   "ollama_vision_model": "",
   "vision_provider": "auto",
+  "colorize": false,
   "temperature": 0.0
 }

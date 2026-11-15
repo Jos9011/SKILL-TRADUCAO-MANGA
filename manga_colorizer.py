@@ -86,7 +86,11 @@ def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True, re
     orig_h, orig_w = img_bgr.shape[:2]
     orig_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     work_img, scale = img_bgr, 1.0
-    if max_size and max(orig_h, orig_w) > max_size:
+    if max_size is None:
+        active_prov = session.get_providers()[0] if session else ""
+        max_size = 1536 if "CUDA" in active_prov else 1024
+
+    if max_size and max_size > 0 and max(orig_h, orig_w) > max_size:
         scale = max_size / float(max(orig_h, orig_w))
         nw, nh = max(32, int(round(orig_w * scale))), max(32, int(round(orig_h * scale)))
         work_img = cv2.resize(img_bgr, (nw, nh), interpolation=cv2.INTER_AREA)

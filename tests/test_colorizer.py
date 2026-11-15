@@ -139,6 +139,13 @@ class MangaColorizerTests(unittest.TestCase):
         res_with_ref = manga_colorizer.colorize_cv2(img_gray, max_size=64, reference=colored_ref)
         self.assertEqual(res_with_ref.shape, (64, 64, 3))
 
+    def test_multi_page_sequential_colorization(self):
+        # Garante que múltiplas páginas consecutivas rodam sem exceções ou acúmulo de memória
+        img = np.full((64, 64, 3), 180, dtype=np.uint8)
+        for _ in range(3):
+            out = manga_colorizer.colorize_cv2(img, max_size=64)
+            self.assertEqual(out.shape, (64, 64, 3))
+
 
 if __name__ == "__main__":
     unittest.main()

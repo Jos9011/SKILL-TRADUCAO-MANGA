@@ -1,8 +1,7 @@
 """
 manga_colorizer.py - Módulo de Colorização Neural de Mangás (Manga Studio)
-Colorização automática de mangás P&B usando modelo ONNX leve baseado em U-Net.
-Compatível com CPU local e GPU CUDA (Google Colab / PCs com GPU Nvidia).
-Regra de Ouro: Código modular com foco laser (< 300 linhas).
+Colorização de mangás P&B com modelo ONNX leve U-Net e preservação cirúrgica de nanquim.
+Suporta CPU e GPU (CUDA) com gestão segura de memória VRAM. Foco laser (< 300 linhas).
 """
 
 import os
@@ -17,30 +16,23 @@ from PIL import Image
 
 MODEL_SUBDIR = os.path.join("models", "colorizer")
 MODEL_FILENAME = "manga-colorize-fp16.onnx"
-HF_MODEL_URL = (
-    "https://huggingface.co/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx"
-)
+HF_MODEL_URL = "https://huggingface.co/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx"
 
 _CACHED_SESSION = None
 _SESSION_LOCK = threading.Lock()
 
 
 def get_default_model_path():
-    """Retorna o caminho padrão para o arquivo do modelo ONNX."""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_dir, MODEL_SUBDIR, MODEL_FILENAME)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), MODEL_SUBDIR, MODEL_FILENAME)
 
 
 def download_model_if_needed(target_path=None, verbose=True):
-    """Baixa os pesos ONNX (~58MB) do Hugging Face se ainda não existirem."""
     dest = target_path or get_default_model_path()
     if os.path.exists(dest) and os.path.getsize(dest) > 10 * 1024 * 1024:
         return dest
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if verbose:
-        print(f"[*] Baixando modelo neural de colorização (~58MB)...")
-        print(f"    Origem: {HF_MODEL_URL}")
-        print(f"    Destino: {dest}")
+        print("[*] Baixando modelo neural de colorização (~58MB)...")
     urllib.request.urlretrieve(HF_MODEL_URL, dest)
     if verbose:
         print("[+] Modelo neural baixado com sucesso!")
@@ -48,7 +40,7 @@ def download_model_if_needed(target_path=None, verbose=True):
 
 
 def get_session(model_path=None, use_gpu=True):
-    """Inicializa ou retorna a sessão ONNX Runtime em cache com GPU/CPU."""
+    """Inicializa ou retorna a sessão ONNX Runtime em cache com gestão segura de VRAM."""
     global _CACHED_SESSION
     with _SESSION_LOCK:
         if _CACHED_SESSION is not None:
@@ -59,29 +51,30 @@ def get_session(model_path=None, use_gpu=True):
         available = ort.get_available_providers()
         providers = []
         if use_gpu and "CUDAExecutionProvider" in available:
-            providers.append("CUDAExecutionProvider")
+            cuda_opts = {
+                "arena_extend_strategy": "kSameAsRequested",
+                "gpu_mem_limit": 6 * 1024 * 1024 * 1024,
+                "cudnn_conv_use_max_workspace": "0",
+                "do_copy_in_default_stream": True,
+            }
+            providers.append(("CUDAExecutionProvider", cuda_opts))
         providers.append("CPUExecutionProvider")
 
         opts = ort.SessionOptions()
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        opts.enable_cpu_mem_arena = False
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         _CACHED_SESSION = ort.InferenceSession(m_path, sess_options=opts, providers=providers)
-        active_provider = _CACHED_SESSION.get_providers()[0]
-        print(f"[+] Motor de Colorização ONNX ativo: [{active_provider}]")
+        print(f"[+] Motor de Colorização ONNX ativo: [{_CACHED_SESSION.get_providers()[0]}]")
         return _CACHED_SESSION
 
 
 def natural_sort_key(s):
-    """Ordenação natural para nomes de arquivos (ex: 1, 2, 10)."""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
 
 
 def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True, reference=None):
-    """Coloriza uma imagem OpenCV BGR.
-    - img_bgr: array numpy (H, W, 3) ou (H, W)
-    - max_size: limite opcional para acelerar processamento em CPU
-    - preserve_lineart: mescla o nanquim original via canal de luminância Y
-    - reference: perfil, pasta ou imagem de referência de cores
-    """
+    """Coloriza uma imagem OpenCV BGR com preservação de nanquim e gestão de memória."""
     if session is None:
         session = get_session()
 
@@ -92,19 +85,15 @@ def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True, re
 
     orig_h, orig_w = img_bgr.shape[:2]
     orig_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-
-    work_img = img_bgr
-    scale = 1.0
+    work_img, scale = img_bgr, 1.0
     if max_size and max(orig_h, orig_w) > max_size:
         scale = max_size / float(max(orig_h, orig_w))
-        new_w = max(32, int(round(orig_w * scale)))
-        new_h = max(32, int(round(orig_h * scale)))
-        work_img = cv2.resize(img_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        nw, nh = max(32, int(round(orig_w * scale))), max(32, int(round(orig_h * scale)))
+        work_img = cv2.resize(img_bgr, (nw, nh), interpolation=cv2.INTER_AREA)
 
     h, w = work_img.shape[:2]
     pad_h = (32 - (h % 32)) % 32
     pad_w = (32 - (w % 32)) % 32
-
     gray_norm = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
     if pad_h > 0 or pad_w > 0:
         gray_norm = cv2.copyMakeBorder(gray_norm, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
@@ -115,8 +104,10 @@ def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True, re
 
     outputs = session.run(["rgb"], {"input": inp})
     out_rgb = outputs[0][0, :, :h, :w]
+    del inp, outputs
     out_rgb = np.transpose(out_rgb, (1, 2, 0))
     out_bgr = np.clip(out_rgb * 255.0, 0, 255).astype(np.uint8)
+    del out_rgb
     out_bgr = cv2.cvtColor(out_bgr, cv2.COLOR_RGB2BGR)
 
     if scale != 1.0:
@@ -160,10 +151,10 @@ def colorize_image(image_input, output_path=None, session=None, max_size=None, p
 
     if output_path:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        is_success, encoded = cv2.imencode(".jpg", colored_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        if is_success:
+        ok, enc = cv2.imencode(".jpg", colored_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if ok:
             with open(output_path, "wb") as f:
-                f.write(encoded.tobytes())
+                f.write(enc.tobytes())
         return output_path
 
     if isinstance(image_input, Image.Image) or is_path:
@@ -172,12 +163,9 @@ def colorize_image(image_input, output_path=None, session=None, max_size=None, p
 
 
 def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size=None, preserve_lineart=True, reference=None):
-    """Processa em lote todas as imagens de um diretório de mangá.
-    - input_dir: pasta com páginas (.jpg, .jpeg, .png, .webp, .bmp)
-    - output_dir: destino padrão: {input_dir} [COLORIDO]
-    - progress_cb: callback de status (stage, current, total, text, result)
-    - reference: pasta, imagem ou arquivo zip de referência cromática
-    """
+    """Processa em lote todas as imagens de um diretório de mangá com limpeza periódica de VRAM."""
+    import gc
+
     input_dir = os.path.abspath(input_dir.strip("\"'"))
     if not os.path.isdir(input_dir):
         raise FileNotFoundError(f"Diretório não encontrado: {input_dir}")
@@ -189,10 +177,8 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
         raise ValueError(f"Nenhuma imagem encontrada em: {input_dir}")
 
     if not output_dir:
-        folder_name = os.path.basename(input_dir)
-        clean_name = folder_name.replace(" [COLORIDO]", "").replace("[COLORIDO]", "").strip()
-        parent_dir = os.path.dirname(input_dir)
-        output_dir = os.path.join(parent_dir, f"{clean_name} [COLORIDO]")
+        clean_name = os.path.basename(input_dir).replace(" [COLORIDO]", "").replace("[COLORIDO]", "").strip()
+        output_dir = os.path.join(os.path.dirname(input_dir), f"{clean_name} [COLORIDO]")
 
     os.makedirs(output_dir, exist_ok=True)
     total = len(files)
@@ -209,15 +195,11 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
         except Exception:
             pass
 
-    print(f"[*] Iniciando colorização de {total} páginas:")
-    print(f"    Origem: {input_dir}")
-    print(f"    Destino: {output_dir}")
+    print(f"[*] Iniciando colorização de {total} páginas:\n    Origem: {input_dir}\n    Destino: {output_dir}")
 
     for idx, fname in enumerate(files):
         in_path = os.path.join(input_dir, fname)
-        base_name, _ = os.path.splitext(fname)
-        out_path = os.path.join(output_dir, f"{base_name}.jpg")
-
+        out_path = os.path.join(output_dir, f"{os.path.splitext(fname)[0]}.jpg")
         msg = f"Colorindo página {idx + 1}/{total} ({fname})..."
         if progress_cb:
             progress_cb("colorize", idx + 1, total, msg)
@@ -235,6 +217,15 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
             )
         except Exception as ex:
             print(f"[!] Erro ao colorir {fname}: {ex}")
+        finally:
+            gc.collect()
+            if "torch" in sys.modules:
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
     elapsed = time.time() - t_start
     final_msg = f"Colorização concluída com sucesso em {elapsed:.1f}s!"
@@ -258,7 +249,6 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
     }
     if progress_cb:
         progress_cb("done", total, total, final_msg, result=result_data)
-
     return result_data
 
 

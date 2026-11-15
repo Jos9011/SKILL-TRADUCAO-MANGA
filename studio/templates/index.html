@@ -3180,6 +3180,37 @@
       }
     }
 
+    // COLORIZE ALREADY TRANSLATED MANGA DIRECTLY FROM LIBRARY
+    async function colorizeExistingManga(path, cleanName, firstImg) {
+      const confirmMsg = `Deseja colorir o mangá já traduzido:\n\n"${cleanName}"?\n\nAs páginas traduzidas serão coloridas com IA mantendo o texto nítido e salvas em uma pasta [COLORIDO].`;
+      if (!confirm(confirmMsg)) return;
+
+      currentSelectedManga = {
+        path: path,
+        name: cleanName,
+        clean_name: cleanName,
+        first_img: firstImg
+      };
+
+      switchTab('translate');
+
+      const selName = document.getElementById('selected-manga-name');
+      if (selName) selName.innerText = cleanName;
+      const selCover = document.getElementById('selected-cover-img');
+      if (selCover && firstImg) {
+        selCover.src = `/api/thumb?path=${encodeURIComponent(firstImg)}`;
+        selCover.style.display = 'block';
+        const pl = document.getElementById('selected-cover-placeholder');
+        if (pl) pl.style.display = 'none';
+      }
+      const selCard = document.getElementById('selection-card');
+      if (selCard) selCard.style.display = 'flex';
+      const dz = document.getElementById('dropzone');
+      if (dz) dz.style.display = 'none';
+
+      await startColorizeOnly();
+    }
+
     // LIVE PROGRESS POLLER
     let pollInterval = null;
     function pollProgress() {
@@ -3409,6 +3440,9 @@
             <div class="card-actions-subrow">
               <button class="card-action-btn primary" title="Ler online no navegador" onclick="event.stopPropagation(); openReader('${escapeQuotes(m.path)}', '${escapeQuotes(m.reader_url)}');">
                 📖 Ler
+              </button>
+              <button class="card-action-btn" style="border-color: rgba(189,147,249,0.5); color: #bd93f9;" title="Colorir este mangá já traduzido com IA" onclick="event.stopPropagation(); colorizeExistingManga('${escapeQuotes(m.path)}', '${escapeQuotes(m.clean_name)}', '${escapeQuotes(m.first_img)}');">
+                🎨 Colorir
               </button>
               <button class="card-action-btn audit" title="Avaliar leitura e disparar auto-auditoria da IA" onclick="event.stopPropagation(); openAuditModal('${escapeQuotes(m.path)}', '${escapeQuotes(m.clean_name)}');">
                 ⭐ Auditar

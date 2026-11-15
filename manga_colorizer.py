@@ -219,9 +219,19 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
     final_msg = f"Colorização concluída com sucesso em {elapsed:.1f}s!"
     print(f"[+] {final_msg}")
 
+    cbz_name = f"{os.path.basename(output_dir)}.cbz"
+    cbz_path = os.path.join(os.path.dirname(output_dir), cbz_name)
+    try:
+        import auto_translate
+        auto_translate.create_html_reader(output_dir, os.path.basename(output_dir))
+        auto_translate.create_cbz_archive(output_dir, cbz_path)
+    except Exception:
+        pass
+
     result_data = {
         "success": True,
         "output_dir": output_dir,
+        "cbz_path": cbz_path if os.path.exists(cbz_path) else None,
         "total_pages": total,
         "elapsed_seconds": round(elapsed, 2),
     }

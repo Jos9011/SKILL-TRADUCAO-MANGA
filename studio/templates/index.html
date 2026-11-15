@@ -2033,6 +2033,9 @@
                   <div class="pill-btn active" onclick="setOption('colorize', false)">Original (P&B)</div>
                   <div class="pill-btn" onclick="setOption('colorize', true)" title="Colorir automaticamente ilustrações usando rede neural leve (ONNX/GPU)">🎨 Colorir Mangá</div>
                 </div>
+                <div id="color-reference-container" style="display: none; margin-top: 8px;">
+                  <input type="text" id="color-reference-path" placeholder="Pasta/imagem de referência (opcional)..." style="width: 100%; box-sizing: border-box; font-size: 0.8rem; padding: 6px 10px; background: rgba(0,0,0,0.35); border: 1px solid rgba(189,147,249,0.3); border-radius: 6px; color: #fff; outline: none;" title="Opcional: Cole o caminho de um capítulo colorido ou capa para ancorar as cores dos personagens">
+                </div>
               </div>
             </div>
 
@@ -3089,6 +3092,10 @@
           container.children[index].classList.add('active');
         }
       }
+      if (type === 'colorize') {
+        const refBox = document.getElementById('color-reference-container');
+        if (refBox) refBox.style.display = value ? 'block' : 'none';
+      }
     }
 
     // START TRANSLATION
@@ -3107,6 +3114,9 @@
 
       updatePlayerCover(currentSelectedManga.first_img, currentSelectedManga.name, "Iniciando motor de OCR e análise...");
 
+      const refInput = document.getElementById('color-reference-path');
+      const refVal = refInput ? refInput.value.trim() : '';
+
       try {
         const payload = {
           path: currentSelectedManga.path,
@@ -3114,7 +3124,8 @@
           ocr_mode: selectedOptions.ocr,
           is_adult: selectedOptions.adult,
           provider: selectedOptions.provider,
-          colorize: Boolean(selectedOptions.colorize)
+          colorize: Boolean(selectedOptions.colorize),
+          reference: refVal || null
         };
         const res = await fetch('/api/start', {
           method: 'POST',
@@ -3153,12 +3164,16 @@
 
       updatePlayerCover(currentSelectedManga.first_img, currentSelectedManga.name, "Colorindo páginas com IA...");
 
+      const refInput = document.getElementById('color-reference-path');
+      const refVal = refInput ? refInput.value.trim() : '';
+
       try {
         const payload = {
           path: currentSelectedManga.path,
           first_img: currentSelectedManga.first_img || '',
           colorize: true,
-          colorize_only: true
+          colorize_only: true,
+          reference: refVal || null
         };
         const res = await fetch('/api/colorize', {
           method: 'POST',
@@ -3182,8 +3197,11 @@
 
     // COLORIZE ALREADY TRANSLATED MANGA DIRECTLY FROM LIBRARY
     async function colorizeExistingManga(path, cleanName, firstImg) {
-      const confirmMsg = `Deseja colorir o mangá já traduzido:\n\n"${cleanName}"?\n\nAs páginas traduzidas serão coloridas com IA mantendo o texto nítido e salvas em uma pasta [COLORIDO].`;
-      if (!confirm(confirmMsg)) return;
+      const askRef = prompt(
+        `Colorizar mangá já traduzido:\n"${cleanName}"\n\nDeseja indicar o caminho de uma pasta ou imagem COLORIDA como referência de cores?\n(Ex: outro capítulo colorido ou capa. Deixe em branco para colorização automática normal):`,
+        ""
+      );
+      if (askRef === null) return; // cancelado
 
       currentSelectedManga = {
         path: path,
@@ -3193,6 +3211,12 @@
       };
 
       switchTab('translate');
+
+      const refInput = document.getElementById('color-reference-path');
+      if (refInput) {
+        refInput.value = askRef.trim();
+      }
+      setOption('colorize', true);
 
       const selName = document.getElementById('selected-manga-name');
       if (selName) selName.innerText = cleanName;

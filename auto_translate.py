@@ -8235,7 +8235,7 @@ def is_valid_translation(orig_text, trans_text):
 
     return True
 
-def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None, colorize=None):
+def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None, colorize=None, color_reference=None):
     if sys.stdout is None:
         sys.stdout = _SafeStreamWrapper()
     if sys.stderr is None:
@@ -8245,6 +8245,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         config = load_config()
     if colorize is None:
         colorize = bool(config.get("colorize", False)) if config else False
+    if color_reference is None and config:
+        color_reference = config.get("color_reference", None)
     manga_dir = os.path.abspath(manga_dir.strip('\"\''))
     if not os.path.exists(manga_dir) or not os.path.isdir(manga_dir):
         print(f"[!] Erro: Caminho inválido ({manga_dir})")
@@ -8631,6 +8633,16 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
 
     # 4. Diagramação e Inpainting
     print(f"[*] Iniciando limpeza profissional de balões e diagramação...")
+    ref_profile = None
+    if colorize and color_reference:
+        try:
+            import color_reference as cr_mod
+            ref_profile = cr_mod.extract_reference_profile(color_reference)
+            if ref_profile:
+                print(f"[+] Referência cromática ativa para colorização: {ref_profile.get('source')}")
+        except Exception as e_rf:
+            print(f"[!] Aviso: Falha ao carregar referência cromática: {e_rf}")
+
     for idx, p in enumerate(tqdm(pages_data, desc="Diagramação", unit="pág")):
         if progress_cb:
             try: progress_cb("diagram", idx + 1, len(pages_data), f"Diagramação e Inpainting: Página {idx + 1} de {len(pages_data)}")
@@ -8657,7 +8669,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 if progress_cb:
                     try: progress_cb("colorize", idx + 1, len(pages_data), f"Colorindo página {idx + 1}/{len(pages_data)} com IA...")
                     except Exception: pass
-                img_cv = manga_colorizer.colorize_cv2(img_cv)
+                img_cv = manga_colorizer.colorize_cv2(img_cv, reference=ref_profile)
             except Exception as e_col:
                 print(f"[!] Aviso: Falha na colorização da página {idx + 1}: {e_col}")
 
@@ -9530,6 +9542,7 @@ if __name__ == "__main__":
             cli_provider = "ollama"
             args.remove("--ollama")
 
+        cli_reference = None
         # Parsing de argumentos chave-valor
         i = 0
         while i < len(args):
@@ -9541,6 +9554,9 @@ if __name__ == "__main__":
                 del args[i:i+2]
             elif args[i] == "--key" and i + 1 < len(args):
                 cli_key = args[i + 1]
+                del args[i:i+2]
+            elif args[i] in ("--reference", "--ref") and i + 1 < len(args):
+                cli_reference = args[i + 1]
                 del args[i:i+2]
             else:
                 i += 1
@@ -9565,6 +9581,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if target:
-        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, retranslate=retranslate_flag, is_adult=is_adult_flag, config=cfg, colorize=colorize_flag)
+        process_manga(target, ocr_mode=chosen_mode, force_ocr=force_ocr_flag, retranslate=retranslate_flag, is_adult=is_adult_flag, config=cfg, colorize=colorize_flag, color_reference=cli_reference)
     else:
         print("[!] Nenhuma pasta informada.")

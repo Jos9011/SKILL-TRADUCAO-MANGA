@@ -1464,6 +1464,7 @@ def api_start_translation():
     provider = data.get("provider", "groq")
     colorize = bool(data.get("colorize", False))
     colorize_only = bool(data.get("colorize_only", False))
+    color_reference = data.get("reference") or data.get("color_reference") or None
 
     def _worker():
         global job_state
@@ -1499,7 +1500,8 @@ def api_start_translation():
                 import manga_colorizer
                 res = manga_colorizer.colorize_manga_folder(
                     manga_path,
-                    progress_cb=progress_callback
+                    progress_cb=progress_callback,
+                    reference=color_reference
                 )
                 with job_lock:
                     if not res or not res.get("success"):
@@ -1527,7 +1529,8 @@ def api_start_translation():
                 is_adult=is_adult,
                 config=cfg,
                 progress_cb=progress_callback,
-                colorize=colorize
+                colorize=colorize,
+                color_reference=color_reference
             )
             with job_lock:
                 if not res or res is False:

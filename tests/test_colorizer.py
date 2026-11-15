@@ -111,6 +111,33 @@ class MangaColorizerTests(unittest.TestCase):
         sig = inspect.signature(auto_translate.process_manga)
         self.assertIn("colorize", sig.parameters)
         self.assertIsNone(sig.parameters["colorize"].default)
+        self.assertIn("color_reference", sig.parameters)
+
+    def test_color_reference_profile_and_transfer(self):
+        import color_reference
+
+        # Test with colored image
+        colored_ref = np.full((64, 64, 3), (120, 80, 200), dtype=np.uint8)
+        profile = color_reference.extract_reference_profile(colored_ref)
+        self.assertIsNotNone(profile)
+        self.assertIn("mean_a", profile)
+        self.assertIn("mean_b", profile)
+
+        # Test transfer on a colored image
+        dummy_in = np.full((64, 64, 3), 150, dtype=np.uint8)
+        transferred = color_reference.apply_reference_transfer(dummy_in, profile, strength=0.9)
+        self.assertEqual(transferred.shape, (64, 64, 3))
+        self.assertTrue(np.any(transferred[30, 30] != dummy_in[30, 30]))
+
+        # Test transfer with strength=0 (zero modification, 100% reversible!)
+        unmodified = color_reference.apply_reference_transfer(dummy_in, profile, strength=0.0)
+        np.testing.assert_array_equal(dummy_in, unmodified)
+
+    def test_colorize_with_reference_param(self):
+        colored_ref = np.full((64, 64, 3), (120, 80, 200), dtype=np.uint8)
+        img_gray = np.full((64, 64, 3), 180, dtype=np.uint8)
+        res_with_ref = manga_colorizer.colorize_cv2(img_gray, max_size=64, reference=colored_ref)
+        self.assertEqual(res_with_ref.shape, (64, 64, 3))
 
 
 if __name__ == "__main__":

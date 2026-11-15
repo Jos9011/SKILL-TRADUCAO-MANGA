@@ -75,11 +75,12 @@ def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
 
 
-def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True):
+def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True, reference=None):
     """Coloriza uma imagem OpenCV BGR.
     - img_bgr: array numpy (H, W, 3) ou (H, W)
     - max_size: limite opcional para acelerar processamento em CPU
     - preserve_lineart: mescla o nanquim original via canal de luminância Y
+    - reference: perfil, pasta ou imagem de referência de cores
     """
     if session is None:
         session = get_session()
@@ -121,6 +122,14 @@ def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True):
     if scale != 1.0:
         out_bgr = cv2.resize(out_bgr, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
 
+    if reference is not None:
+        try:
+            import color_reference
+            prof = reference if isinstance(reference, dict) else color_reference.extract_reference_profile(reference)
+            out_bgr = color_reference.apply_reference_transfer(out_bgr, prof)
+        except Exception:
+            pass
+
     if preserve_lineart:
         ycrcb = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2YCrCb)
         ycrcb[:, :, 0] = orig_gray
@@ -129,7 +138,7 @@ def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True):
     return out_bgr
 
 
-def colorize_image(image_input, output_path=None, session=None, max_size=None, preserve_lineart=True):
+def colorize_image(image_input, output_path=None, session=None, max_size=None, preserve_lineart=True, reference=None):
     """Coloriza imagem a partir de arquivo, PIL.Image ou numpy array."""
     is_path = isinstance(image_input, str)
     if is_path:
@@ -146,7 +155,7 @@ def colorize_image(image_input, output_path=None, session=None, max_size=None, p
         raise TypeError("Entrada deve ser caminho de arquivo, PIL.Image ou numpy.ndarray")
 
     colored_bgr = colorize_cv2(
-        img_bgr, session=session, max_size=max_size, preserve_lineart=preserve_lineart
+        img_bgr, session=session, max_size=max_size, preserve_lineart=preserve_lineart, reference=reference
     )
 
     if output_path:
@@ -162,11 +171,12 @@ def colorize_image(image_input, output_path=None, session=None, max_size=None, p
     return colored_bgr
 
 
-def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size=None, preserve_lineart=True):
+def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size=None, preserve_lineart=True, reference=None):
     """Processa em lote todas as imagens de um diretório de mangá.
     - input_dir: pasta com páginas (.jpg, .jpeg, .png, .webp, .bmp)
     - output_dir: destino padrão: {input_dir} [COLORIDO]
     - progress_cb: callback de status (stage, current, total, text, result)
+    - reference: pasta, imagem ou arquivo zip de referência cromática
     """
     input_dir = os.path.abspath(input_dir.strip("\"'"))
     if not os.path.isdir(input_dir):
@@ -188,6 +198,16 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
     total = len(files)
     t_start = time.time()
     session = get_session()
+
+    ref_profile = None
+    if reference is not None:
+        try:
+            import color_reference
+            ref_profile = reference if isinstance(reference, dict) else color_reference.extract_reference_profile(reference)
+            if ref_profile:
+                print(f"[+] Referência cromática ativa: {ref_profile.get('source')}")
+        except Exception:
+            pass
 
     print(f"[*] Iniciando colorização de {total} páginas:")
     print(f"    Origem: {input_dir}")
@@ -211,6 +231,7 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
                 session=session,
                 max_size=max_size,
                 preserve_lineart=preserve_lineart,
+                reference=ref_profile,
             )
         except Exception as ex:
             print(f"[!] Erro ao colorir {fname}: {ex}")
@@ -247,6 +268,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Colorizador Neural de Mangás (Manga Studio)")
     parser.add_argument("path", help="Pasta do mangá ou imagem individual para colorir")
     parser.add_argument("-o", "--output", help="Pasta ou arquivo de destino", default=None)
+    parser.add_argument("-r", "--reference", help="Pasta, imagem ou arquivo de referência de cores", default=None)
     parser.add_argument("--max-size", type=int, default=None, help="Tamanho máximo para modo rápido")
     parser.add_argument("--no-lineart", action="store_true", help="Desativa preservação do nanquim original")
 
@@ -259,6 +281,7 @@ if __name__ == "__main__":
             output_dir=args.output,
             max_size=args.max_size,
             preserve_lineart=not args.no_lineart,
+            reference=args.reference,
         )
     elif os.path.isfile(target_path):
         out = args.output or os.path.splitext(target_path)[0] + "_colorido.jpg"
@@ -267,6 +290,7 @@ if __name__ == "__main__":
             output_path=out,
             max_size=args.max_size,
             preserve_lineart=not args.no_lineart,
+            reference=args.reference,
         )
         print(f"[+] Imagem salva em: {out}")
     else:

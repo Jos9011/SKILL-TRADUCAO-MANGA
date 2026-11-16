@@ -64,8 +64,12 @@ SYS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(SYS_DIR)
 if SYS_DIR not in sys.path:
     sys.path.insert(0, SYS_DIR)
+STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+if STUDIO_DIR not in sys.path:
+    sys.path.insert(0, STUDIO_DIR)
 
 import auto_translate
+import drive_helper
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -100,36 +104,11 @@ MANGA_PATH_CACHE = {}
 
 def find_drive_roots():
     """Retorna lista de caminhos raiz do Google Drive encontrados (Linux/Colab e Windows)."""
-    candidates = [
-        "/content/drive/MyDrive",
-        "G:\\Meu Drive",
-        "G:\\My Drive",
-        os.path.expanduser("~/Google Drive"),
-        os.path.expanduser("~/Meu Drive")
-    ]
-    if os.name == 'nt':
-        import string
-        for letter in string.ascii_uppercase:
-            candidates.append(f"{letter}:\\Meu Drive")
-            candidates.append(f"{letter}:\\My Drive")
-            
-    roots = []
-    for c in candidates:
-        if os.path.exists(c) and c not in roots:
-            roots.append(c)
-    return roots
+    return drive_helper.find_drive_roots()
 
 def is_drive_path(p):
     """Verifica se o caminho informado está dentro de um Google Drive montado."""
-    if not p:
-        return False
-    clean = os.path.abspath(p).replace('\\', '/').lower()
-    if '/content/drive' in clean:
-        return True
-    for r in find_drive_roots():
-        if os.path.abspath(r).replace('\\', '/').lower() in clean:
-            return True
-    return False
+    return drive_helper.is_drive_path(p)
 
 def _get_pymupdf():
     """Importa PyMuPDF de forma segura (suportando import pymupdf ou import fitz legado)."""
@@ -787,152 +766,43 @@ def api_version():
 def api_library():
     """Retorna mangás traduzidos e obras prontas para traduzir, respeitando pastas locais, Google Drive e uploads."""
     cfg = auto_translate.load_config()
-    raw_dir = cfg.get("raw_mangas_dir") or BASE_MANGAS_DIR
-    trans_dir = cfg.get("translated_mangas_dir") or BASE_MANGAS_DIR
-    
+    raw_dir = cfg.get("raw_mangas_dir")
+    trans_dir = cfg.get("translated_mangas_dir")
+
+    # Sanitização: Ignora caminhos Windows (ex: C:\...) quando rodando no Linux / Google Colab
+    if os.name != "nt":
+        if raw_dir and re.match(r"^[a-zA-Z]:", str(raw_dir)):
+            raw_dir = None
+        if trans_dir and re.match(r"^[a-zA-Z]:", str(trans_dir)):
+            trans_dir = None
+
+    if not raw_dir or not os.path.exists(raw_dir):
+        raw_dir = BASE_MANGAS_DIR if (os.name == "nt" and os.path.exists(BASE_MANGAS_DIR)) else None
+    if not trans_dir or not os.path.exists(trans_dir):
+        trans_dir = BASE_MANGAS_DIR if (os.name == "nt" and os.path.exists(BASE_MANGAS_DIR)) else None
+
     translated = []
     raw = []
     seen_paths = set()
-    
-    def _scan(folder_path):
-        entries = []
-        if not folder_path or not os.path.exists(folder_path):
-            return entries
-        for item in sorted(os.listdir(folder_path)):
-            full_p = os.path.abspath(os.path.join(folder_path, item))
-            if full_p in seen_paths or item.startswith(".") or item == "_ocr":
-                continue
 
-            # 1. Pastas com imagens
-            if os.path.isdir(full_p):
-                imgs = [f for f in os.listdir(full_p) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                # Se não houver imagens diretas, checa se há subpastas imediatas de capítulos
-                if not imgs:
-                    subdirs = [os.path.join(full_p, d) for d in os.listdir(full_p) if os.path.isdir(os.path.join(full_p, d)) and not d.startswith(".")]
-                    for sub in subdirs:
-                        sub_imgs = [f for f in os.listdir(sub) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                        if sub_imgs:
-                            imgs = sub_imgs
-                            break
-                if not imgs:
-                    continue
-                seen_paths.add(full_p)
-                has_reader = os.path.exists(os.path.join(full_p, "leitor.html"))
-                cbz_path = full_p.rstrip("/\\") + ".cbz"
-                has_cbz = os.path.exists(cbz_path)
-                first_img = os.path.join(full_p, sorted(imgs)[0])
-                mtime = os.path.getmtime(full_p)
-                m_id = get_manga_hash(full_p)
-                entry = {
-                    "id": m_id,
-                    "name": item,
-                    "clean_name": item.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
-                    "path": full_p,
-                    "pages": len(imgs),
-                    "has_reader": has_reader,
-                    "has_cbz": has_cbz,
-                    "cbz_path": cbz_path if has_cbz else None,
-                    "reader_path": os.path.join(full_p, "leitor.html") if has_reader else None,
-                    "reader_url": f"/read/{m_id}/",
-                    "mtime": mtime,
-                    "first_img": first_img,
-                    "is_drive": is_drive_path(full_p),
-                    "is_archive": False
-                }
-                entries.append(entry)
+    trans_scan_folders = [trans_dir] if trans_dir else []
+    raw_scan_folders = [raw_dir] if raw_dir else []
 
-            # 2. Arquivos compactados ou PDF (.zip, .cbz ou .pdf)
-            elif os.path.isfile(full_p) and item.lower().endswith(('.zip', '.cbz', '.pdf')):
-                # Se já houver uma pasta com o mesmo nome descompactada contendo imagens, evita duplicar
-                unpacked_candidate = os.path.splitext(full_p)[0]
-                if unpacked_candidate in seen_paths:
-                    continue
-                if os.path.exists(unpacked_candidate) and os.path.isdir(unpacked_candidate):
-                    has_imgs = any(f.lower().endswith(('.jpg','.jpeg','.png','.webp')) for f in os.listdir(unpacked_candidate))
-                    if has_imgs:
-                        continue
+    roots = drive_helper.find_drive_roots()
+    for r in roots:
+        raw_m_dirs, trans_m_dirs = drive_helper.find_manga_directories(r)
+        for td in trans_m_dirs:
+            if td not in trans_scan_folders:
+                trans_scan_folders.insert(0, td)
+        for rd in raw_m_dirs:
+            if rd not in raw_scan_folders:
+                raw_scan_folders.insert(0, rd)
 
-                if item.lower().endswith('.pdf'):
-                    fitz = _get_pymupdf()
-                    if fitz is None:
-                        continue
-                    try:
-                        doc = fitz.open(full_p)
-                        try:
-                            num_pages = len(doc)
-                        finally:
-                            doc.close()
-                        if num_pages <= 0:
-                            continue
-                        seen_paths.add(full_p)
-                        mtime = os.path.getmtime(full_p)
-                        m_id = get_manga_hash(full_p)
-                        clean_n = os.path.splitext(item)[0]
-                        entries.append({
-                            "id": m_id,
-                            "name": clean_n,
-                            "clean_name": clean_n.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
-                            "path": full_p,
-                            "pages": num_pages,
-                            "has_reader": False,
-                            "has_cbz": False,
-                            "cbz_path": None,
-                            "reader_path": None,
-                            "reader_url": None,
-                            "mtime": mtime,
-                            "first_img": f"{full_p}::page0",
-                            "is_drive": is_drive_path(full_p),
-                            "is_archive": True,
-                            "archive_type": "PDF"
-                        })
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        with zipfile.ZipFile(full_p, 'r') as z:
-                            zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
-                            if not zip_imgs:
-                                continue
-                            zip_imgs.sort()
-                            seen_paths.add(full_p)
-                            mtime = os.path.getmtime(full_p)
-                            m_id = get_manga_hash(full_p)
-                            clean_n = os.path.splitext(item)[0]
-                            arc_type = "CBZ" if item.lower().endswith(".cbz") else "ZIP"
-                            entries.append({
-                                "id": m_id,
-                                "name": clean_n,
-                                "clean_name": clean_n.replace(" [PT-BR]", "").replace("[PT-BR]", "").strip(),
-                                "path": full_p,
-                                "pages": len(zip_imgs),
-                                "has_reader": False,
-                                "has_cbz": False,
-                                "cbz_path": None,
-                                "reader_path": None,
-                                "reader_url": None,
-                                "mtime": mtime,
-                                "first_img": f"{full_p}::{zip_imgs[0]}",
-                                "is_drive": is_drive_path(full_p),
-                                "is_archive": True,
-                                "archive_type": arc_type
-                            })
-                    except Exception:
-                        pass
+        # Se não foram encontradas subpastas nomeadas, escaneia a própria raiz do Drive
+        if not raw_m_dirs and not trans_m_dirs:
+            if r not in raw_scan_folders:
+                raw_scan_folders.append(r)
 
-        return entries
-
-    # Pastas de escaneamento de mangás traduzidos
-    trans_scan_folders = [trans_dir]
-    raw_scan_folders = [raw_dir]
-    
-    for r in find_drive_roots():
-        t_drive = os.path.join(r, "MANGAS [PT-BR]")
-        if os.path.exists(t_drive) and t_drive not in trans_scan_folders:
-            trans_scan_folders.insert(0, t_drive)
-        r_drive = os.path.join(r, "MANGAS")
-        if os.path.exists(r_drive) and r_drive not in raw_scan_folders:
-            raw_scan_folders.insert(0, r_drive)
-            
     if os.path.exists(UPLOAD_DIR):
         if UPLOAD_DIR not in trans_scan_folders:
             trans_scan_folders.append(UPLOAD_DIR)
@@ -940,17 +810,17 @@ def api_library():
             raw_scan_folders.append(UPLOAD_DIR)
 
     for sf in trans_scan_folders:
-        for e in _scan(sf):
+        for e in drive_helper.scan_folder_for_mangas(sf, seen_paths, MANGA_PATH_CACHE, _get_pymupdf):
             if "[PT-BR]" in e["name"] or e["has_reader"]:
                 translated.append(e)
             else:
                 raw.append(e)
 
     for rf in raw_scan_folders:
-        for e in _scan(rf):
+        for e in drive_helper.scan_folder_for_mangas(rf, seen_paths, MANGA_PATH_CACHE, _get_pymupdf):
             if not e["has_reader"] and "[PT-BR]" not in e["name"]:
                 raw.append(e)
-                
+
     translated.sort(key=lambda x: x["mtime"], reverse=True)
     raw.sort(key=lambda x: x["mtime"], reverse=True)
     return jsonify({"translated": translated, "raw": raw})
@@ -1123,10 +993,16 @@ def api_thumb():
                     im.thumbnail((320, 460), Image.Resampling.LANCZOS)
                     im.save(thumb_dest, "JPEG", quality=85)
             else:
+                logo_p = os.path.join(STATIC_DIR, "logo.png")
+                if os.path.exists(logo_p):
+                    return send_file(logo_p, mimetype="image/png")
                 return "", 404
         return send_file(thumb_dest, mimetype="image/jpeg")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logo_p = os.path.join(STATIC_DIR, "logo.png")
+        if os.path.exists(logo_p):
+            return send_file(logo_p, mimetype="image/png")
+        return "", 404
 
 def pick_folder_native(title="Selecione a Pasta", init_dir=""):
     """Executa a seleção nativa de pastas via subprocesso com Tkinter isolado na thread principal do processo."""
@@ -1210,75 +1086,32 @@ def api_upload():
 
 @app.route("/api/drive_folders")
 def api_drive_folders():
-    """Lista pastas e arquivos zip/cbz de mangás disponíveis no Google Drive."""
-    roots = find_drive_roots()
+    """Lista pastas e arquivos zip/cbz de mangás disponíveis no Google Drive com suporte a capítulos e variações."""
+    roots = drive_helper.find_drive_roots()
     if not roots:
         return jsonify({"available": False, "folders": []})
-        
+
     folders = []
     seen = set()
     search_dirs = []
+
     for r in roots:
-        manga_sub = os.path.join(r, "MANGAS")
-        if os.path.exists(manga_sub):
-            search_dirs.append(manga_sub)
+        raw_dirs, trans_dirs = drive_helper.find_manga_directories(r)
+        search_dirs.extend(raw_dirs)
+        search_dirs.extend(trans_dirs)
         search_dirs.append(r)
-        
+
     for base in search_dirs:
-        try:
-            for item in sorted(os.listdir(base)):
-                p = os.path.abspath(os.path.join(base, item))
-                if p in seen or item.startswith(".") or item == "_ocr" or item == "MANGAS [PT-BR]":
-                    continue
-                # Se for pasta
-                if os.path.isdir(p):
-                    imgs = [f for f in os.listdir(p) if f.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
-                    if imgs:
-                        seen.add(p)
-                        folders.append({
-                            "name": item,
-                            "path": p,
-                            "pages": len(imgs),
-                            "is_archive": False
-                        })
-                # Se for arquivo .pdf
-                elif os.path.isfile(p) and item.lower().endswith('.pdf'):
-                    fitz = _get_pymupdf()
-                    if fitz is not None:
-                        try:
-                            doc = fitz.open(p)
-                            try:
-                                num_pages = len(doc)
-                            finally:
-                                doc.close()
-                            if num_pages > 0:
-                                seen.add(p)
-                                folders.append({
-                                    "name": f"📄 {item}",
-                                    "path": p,
-                                    "pages": num_pages,
-                                    "is_archive": True
-                                })
-                        except Exception:
-                            pass
-                # Se for arquivo .zip ou .cbz
-                elif os.path.isfile(p) and item.lower().endswith(('.zip', '.cbz')):
-                    try:
-                        with zipfile.ZipFile(p, 'r') as z:
-                            zip_imgs = [info.filename for info in z.infolist() if not info.is_dir() and info.filename.lower().endswith(('.jpg','.jpeg','.png','.webp'))]
-                            if zip_imgs:
-                                seen.add(p)
-                                folders.append({
-                                    "name": f"📦 {item}",
-                                    "path": p,
-                                    "pages": len(zip_imgs),
-                                    "is_archive": True
-                                })
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-            
+        for e in drive_helper.scan_folder_for_mangas(base, seen, MANGA_PATH_CACHE, _get_pymupdf):
+            if e["path"] in search_dirs:
+                continue
+            folders.append({
+                "name": e["name"],
+                "path": e["path"],
+                "pages": e["pages"],
+                "is_archive": e.get("is_archive", False)
+            })
+
     return jsonify({"available": True, "folders": folders})
 
 @app.route("/api/pick_folder", methods=["POST"])
@@ -1371,6 +1204,10 @@ def api_drive_extract_all():
     
     if not folder_path:
         for root in find_drive_roots():
+            raw_dirs, _ = drive_helper.find_manga_directories(root)
+            if raw_dirs:
+                folder_path = raw_dirs[0]
+                break
             candidate = os.path.join(root, "MANGAS")
             if os.path.exists(candidate):
                 folder_path = candidate

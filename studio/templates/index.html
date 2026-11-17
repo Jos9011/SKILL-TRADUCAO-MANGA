@@ -2081,9 +2081,19 @@
             </div>
           </div>
 
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
-            <h4 style="font-size: 1.1rem; font-weight: 700;">Progresso em Tempo Real</h4>
-            <span id="progress-status-badge" style="color: var(--spotify-green); font-weight: 700; font-size: 0.9rem;">Processando...</span>
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+              <h4 style="font-size: 1.1rem; font-weight: 700; margin: 0;">Progresso em Tempo Real</h4>
+              <span id="progress-status-badge" style="color: var(--spotify-green); font-weight: 700; font-size: 0.9rem;">Processando...</span>
+            </div>
+            <div id="job-control-actions" style="display: flex; align-items: center; gap: 8px;">
+              <button type="button" class="btn-secondary" id="btn-pause-job" onclick="togglePauseJob()" style="padding: 6px 14px; font-size: 0.84rem; border-color: rgba(241, 196, 15, 0.55); color: #f1c40f;">
+                ⏸️ Pausar
+              </button>
+              <button type="button" class="btn-secondary" id="btn-stop-job" onclick="stopActiveJob()" style="padding: 6px 14px; font-size: 0.84rem; border-color: rgba(255, 85, 85, 0.55); color: #ff5555;">
+                ⏹️ Parar
+              </button>
+            </div>
           </div>
 
           <div class="progress-bar-wrapper" style="margin-bottom: 16px;">
@@ -3293,8 +3303,33 @@
             logBox.scrollTop = logBox.scrollHeight;
           }
 
+          const jobCtrlBox = document.getElementById('job-control-actions');
+          const btnPause = document.getElementById('btn-pause-job');
+          const btnStop = document.getElementById('btn-stop-job');
+          const eqEl = document.getElementById('equalizer-anim');
+
+          if (data.status === 'running' || data.status === 'paused') {
+            if (jobCtrlBox) jobCtrlBox.style.display = 'flex';
+            if (btnPause) {
+              btnPause.dataset.state = data.status;
+              btnPause.disabled = false;
+              if (data.status === 'paused') {
+                btnPause.innerText = '▶️ Retomar';
+                btnPause.style.borderColor = 'rgba(29, 185, 84, 0.65)';
+                btnPause.style.color = 'var(--spotify-green)';
+              } else {
+                btnPause.innerText = '⏸️ Pausar';
+                btnPause.style.borderColor = 'rgba(241, 196, 15, 0.55)';
+                btnPause.style.color = '#f1c40f';
+              }
+            }
+            if (btnStop) btnStop.disabled = false;
+            if (eqEl) eqEl.style.display = data.status === 'paused' ? 'none' : 'flex';
+          }
+
           if (data.status === 'done') {
             clearInterval(pollInterval);
+            if (jobCtrlBox) jobCtrlBox.style.display = 'none';
             document.getElementById('btn-start').disabled = false;
             document.getElementById('btn-start').style.opacity = '1';
             const btnCol = document.getElementById('btn-colorize-only');
@@ -3302,22 +3337,67 @@
             activeResult = data.result;
             showActionButtons(data.result);
             loadLibrary();
-            const eqDone = document.getElementById('equalizer-anim');
-            if (eqDone) eqDone.style.display = 'none';
-          } else if (data.status === 'error') {
+            if (eqEl) eqEl.style.display = 'none';
+          } else if (data.status === 'cancelled') {
             clearInterval(pollInterval);
+            if (jobCtrlBox) jobCtrlBox.style.display = 'none';
             document.getElementById('btn-start').disabled = false;
             document.getElementById('btn-start').style.opacity = '1';
             const btnCol = document.getElementById('btn-colorize-only');
             if (btnCol) { btnCol.disabled = false; btnCol.style.opacity = '1'; }
-            const eqErr = document.getElementById('equalizer-anim');
-            if (eqErr) eqErr.style.display = 'none';
+            if (eqEl) eqEl.style.display = 'none';
+            loadLibrary();
+          } else if (data.status === 'error') {
+            clearInterval(pollInterval);
+            if (jobCtrlBox) jobCtrlBox.style.display = 'none';
+            document.getElementById('btn-start').disabled = false;
+            document.getElementById('btn-start').style.opacity = '1';
+            const btnCol = document.getElementById('btn-colorize-only');
+            if (btnCol) { btnCol.disabled = false; btnCol.style.opacity = '1'; }
+            if (eqEl) eqEl.style.display = 'none';
             alert(`Erro no processamento: ${data.error}`);
           }
         } catch (e) {
           console.error("Poll error:", e);
         }
       }, 700);
+    }
+
+    async function togglePauseJob() {
+      const btnPause = document.getElementById('btn-pause-job');
+      const isPaused = btnPause && btnPause.dataset.state === 'paused';
+      const endpoint = isPaused ? '/api/job/resume' : '/api/job/pause';
+      if (btnPause) btnPause.disabled = true;
+      try {
+        const res = await fetch(endpoint, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success && data.error) {
+          alert(data.error);
+        }
+      } catch (e) {
+        alert('Erro ao alterar pausa: ' + e);
+      } finally {
+        if (btnPause) btnPause.disabled = false;
+      }
+    }
+
+    async function stopActiveJob() {
+      if (!confirm('Deseja parar a tradução agora?\nO progresso já traduzido será salvo no cache para você continuar depois sem perder cotas.')) {
+        return;
+      }
+      const btnStop = document.getElementById('btn-stop-job');
+      if (btnStop) btnStop.disabled = true;
+      try {
+        const res = await fetch('/api/job/stop', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success && data.error) {
+          alert(data.error);
+          if (btnStop) btnStop.disabled = false;
+        }
+      } catch (e) {
+        alert('Erro ao parar tradução: ' + e);
+        if (btnStop) btnStop.disabled = false;
+      }
     }
 
     function showActionButtons(result) {
@@ -4669,10 +4749,10 @@
       try {
         const res = await fetch('/api/progress');
         const data = await res.json();
-        if (data && data.status === 'running') {
+        if (data && (data.status === 'running' || data.status === 'paused')) {
           document.getElementById('live-progress-section').style.display = 'block';
           const eq = document.getElementById('equalizer-anim');
-          if (eq) eq.style.display = 'flex';
+          if (eq) eq.style.display = data.status === 'paused' ? 'none' : 'flex';
           updatePlayerCover(data.first_img, data.manga_name, data.message);
           pollProgress();
         }

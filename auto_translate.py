@@ -8565,59 +8565,60 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         print(f"[*] Modo Fallback de Tradução Nuvem ativado (MyMemory/Google).")
 
     # Traduz página por página com coerência narrativa e suporte a glossário
-    for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
-        if progress_cb:
-            try: progress_cb("translation", p["page"], len(pages_data), f"Dupla de IAs: Mapeando e adaptando cena da pág {p['page']} de {len(pages_data)}")
-            except Exception: pass
-        if is_credits_page(p["bubbles"]):
-            continue
-            
-        untranslated = []
-        for b in p["bubbles"]:
-            orig_text = b["combined_text"].strip()
-            # 1. Consulta memória global persistente de tradução aprendida
-            if orig_text not in cache or not is_valid_translation(orig_text, cache.get(orig_text, "")):
-                mem_hit = lookup_translation_memory(orig_text)
-                if mem_hit and is_valid_translation(orig_text, mem_hit):
-                    cache[orig_text] = mem_hit
-            # Se não está no cache ou o que está no cache não é uma tradução válida para PT
-            if orig_text not in cache or not is_valid_translation(orig_text, cache[orig_text]):
-                untranslated.append((orig_text, b))
+    try:
+        for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
+            if progress_cb:
+                try: progress_cb("translation", p["page"], len(pages_data), f"Dupla de IAs: Mapeando e adaptando cena da pág {p['page']} de {len(pages_data)}")
+                except Exception: pass
+            if is_credits_page(p["bubbles"]):
+                continue
                 
-        if untranslated:
-            batch_res = translate_page_dialogue(
-                untranslated,
-                engine_opts=engine_opts,
-                is_adult=is_adult,
-                glossary=glossary,
-                page_w=p.get("width", 1200),
-                page_h=p.get("height", 1800),
-                src_lang=src_lang,
-                page_num=p.get("page", 1)
-            )
-            for orig, trans in batch_res.items():
-                if trans and is_valid_translation(orig, trans):
-                    cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+            untranslated = []
+            for b in p["bubbles"]:
+                orig_text = b["combined_text"].strip()
+                # 1. Consulta memória global persistente de tradução aprendida
+                if orig_text not in cache or not is_valid_translation(orig_text, cache.get(orig_text, "")):
+                    mem_hit = lookup_translation_memory(orig_text)
+                    if mem_hit and is_valid_translation(orig_text, mem_hit):
+                        cache[orig_text] = mem_hit
+                # Se não está no cache ou o que está no cache não é uma tradução válida para PT
+                if orig_text not in cache or not is_valid_translation(orig_text, cache[orig_text]):
+                    untranslated.append((orig_text, b))
                     
-            # Se ainda houver textos sem tradução válida, tenta o fallback
-            still_untranslated = [item[0] for item in untranslated if item[0] not in cache or not is_valid_translation(item[0], cache[item[0]])]
-            if still_untranslated:
-                cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult, engine_opts=engine_opts)
-                for orig, trans in zip(still_untranslated, cloud_res):
+            if untranslated:
+                batch_res = translate_page_dialogue(
+                    untranslated,
+                    engine_opts=engine_opts,
+                    is_adult=is_adult,
+                    glossary=glossary,
+                    page_w=p.get("width", 1200),
+                    page_h=p.get("height", 1800),
+                    src_lang=src_lang,
+                    page_num=p.get("page", 1)
+                )
+                for orig, trans in batch_res.items():
                     if trans and is_valid_translation(orig, trans):
                         cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
-
-    try:
-        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-        with open(cache_file, "w", encoding="utf-8") as cf:
-            json.dump(cache, cf, ensure_ascii=False, indent=2)
-        # Salva novas traduções aprovadas pela IA na memória global (nunca grava fallback de emergência)
-        if engine_type is not None:
-            fb_originals = (engine_opts or {}).get("_fallback_originals", set())
-            ai_approved_cache = {k: v for k, v in cache.items() if k not in fb_originals}
-            update_global_translation_memory(ai_approved_cache)
-    except Exception as e:
-        print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
+                        
+                # Se ainda houver textos sem tradução válida, tenta o fallback
+                still_untranslated = [item[0] for item in untranslated if item[0] not in cache or not is_valid_translation(item[0], cache[item[0]])]
+                if still_untranslated:
+                    cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult, engine_opts=engine_opts)
+                    for orig, trans in zip(still_untranslated, cloud_res):
+                        if trans and is_valid_translation(orig, trans):
+                            cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+    finally:
+        try:
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as cf:
+                json.dump(cache, cf, ensure_ascii=False, indent=2)
+            # Salva novas traduções aprovadas pela IA na memória global (nunca grava fallback de emergência)
+            if engine_type is not None:
+                fb_originals = (engine_opts or {}).get("_fallback_originals", set())
+                ai_approved_cache = {k: v for k, v in cache.items() if k not in fb_originals}
+                update_global_translation_memory(ai_approved_cache)
+        except Exception as e:
+            print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
 
     for p in pages_data:
         for b in p["bubbles"]:

@@ -70,6 +70,9 @@ if STUDIO_DIR not in sys.path:
 
 import auto_translate
 import drive_helper
+import job_control
+
+job_ctrl = job_control.JobController()
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -1279,9 +1282,10 @@ def api_start_translation():
             first_img = imgs[0]
         
     with job_lock:
-        if job_state["status"] == "running":
-            return jsonify({"error": "Já existe uma tradução em andamento!"}), 409
-            
+        if job_state["status"] in ("running", "paused"):
+            return jsonify({"error": "Já existe uma tradução em andamento ou pausada!"}), 409
+
+        job_ctrl.reset()
         job_state["status"] = "running"
         job_state["manga_name"] = os.path.basename(manga_path)
         job_state["manga_path"] = manga_path
@@ -1314,6 +1318,7 @@ def api_start_translation():
         sys.stderr = capture
 
         def progress_callback(stage, current, total, text, result=None):
+            job_ctrl.checkpoint()
             with job_lock:
                 job_state["stage"] = stage
                 job_state["current_page"] = current
@@ -1392,6 +1397,12 @@ def api_start_translation():
                             res["id"] = m_id
                             res["reader_url"] = f"/read/{m_id}/"
                         job_state["result"] = res
+        except job_control.JobCancelledError:
+            with job_lock:
+                job_state["status"] = "cancelled"
+                job_state["stage"] = "cancelled"
+                job_state["message"] = "Tradução interrompida pelo usuário (progresso salvo no cache)."
+                job_state["logs"].append("⏹️ Tradução encerrada com segurança. O cache já traduzido foi preservado!")
         except Exception as e:
             err_msg = str(e) or e.__class__.__name__
             tb_msg = traceback.format_exc()
@@ -1408,6 +1419,41 @@ def api_start_translation():
 
     threading.Thread(target=_worker, daemon=True).start()
     return jsonify({"success": True})
+
+@app.route("/api/job/pause", methods=["POST"])
+def api_job_pause():
+    """Pausa a tradução em andamento no próximo ponto seguro."""
+    with job_lock:
+        if job_state["status"] != "running":
+            return jsonify({"success": False, "error": "Nenhuma tradução ativa para pausar."}), 400
+        job_ctrl.pause()
+        job_state["status"] = "paused"
+        job_state["message"] = "⏸️ Tradução pausada pelo usuário."
+        job_state["logs"].append("⏸️ Pausa solicitada — aguardando retomar ou parar...")
+    return jsonify({"success": True, "status": "paused"})
+
+@app.route("/api/job/resume", methods=["POST"])
+def api_job_resume():
+    """Retoma uma tradução pausada."""
+    with job_lock:
+        if job_state["status"] != "paused":
+            return jsonify({"success": False, "error": "A tradução não está pausada."}), 400
+        job_ctrl.resume()
+        job_state["status"] = "running"
+        job_state["message"] = "▶️ Tradução retomada..."
+        job_state["logs"].append("▶️ Tradução retomada pelo usuário.")
+    return jsonify({"success": True, "status": "running"})
+
+@app.route("/api/job/stop", methods=["POST"])
+def api_job_stop():
+    """Interrompe a tradução com segurança preservando o cache já traduzido."""
+    with job_lock:
+        if job_state["status"] not in ("running", "paused"):
+            return jsonify({"success": False, "error": "Nenhuma tradução ativa para parar."}), 400
+        job_ctrl.stop()
+        job_state["message"] = "⏹️ Interrompendo tradução com segurança..."
+        job_state["logs"].append("⏹️ Cancelamento solicitado — salvando cache e encerrando...")
+    return jsonify({"success": True, "status": "stopping"})
 
 @app.route("/api/colorize", methods=["POST"])
 def api_colorize():

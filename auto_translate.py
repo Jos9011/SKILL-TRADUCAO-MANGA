@@ -53,6 +53,9 @@ try:
 except Exception:
     _pyphen_dic = None
 
+import balloon_cavity
+import typography_ptbr
+
 try:
     import wordninja
 except ImportError:
@@ -297,38 +300,16 @@ def get_best_font():
     return "arial.ttf"
 
 def select_font_for_bubble(text, is_shout=False, is_thought=False):
-    """Seleciona dinamicamente a melhor fonte tipográfica de scanlation profissional para o balão."""
-    clean = text.strip()
-    
-    # 1. Gritos, exclamações enfáticas ou onomatopeias
-    if is_shout or clean.endswith('!!') or clean.endswith('!?') or clean.endswith('!?!') or (clean.endswith('!') and len(clean.split()) <= 4 and clean.isupper()):
-        if os.path.exists(SHOUT_FONT):
-            return SHOUT_FONT
-        if os.path.exists(KOMIKA_FONT):
-            return KOMIKA_FONT
-        if os.path.exists(r"C:\Windows\Fonts\impact.ttf"):
-            return r"C:\Windows\Fonts\impact.ttf"
-            
-    # 2. Pensamentos, sussurros, notas e diálogos suaves (itálico com suporte completo a acentos PT-BR)
-    if is_thought or (clean.startswith('(') and clean.endswith(')')) or '~' in clean or clean.startswith('*'):
-        if os.path.exists(DIALOGUE_ITALIC_FONT):
-            return DIALOGUE_ITALIC_FONT
-        if os.path.exists(ANIME_ACE_ITALIC) and not re.search(r'[ÁÀÂÃÉÊÍÓÔÕÚÜÇáàâãéêíóôõúüç]', clean):
-            return ANIME_ACE_ITALIC
-        if os.path.exists(MANGA_TEMPLE_ITALIC) and not re.search(r'[ÁÀÂÃÉÊÍÓÔÕÚÜÇáàâãéêíóôõúüç~]', clean):
-            return MANGA_TEMPLE_ITALIC
-        if os.path.exists(r"C:\Windows\Fonts\comici.ttf"):
-            return r"C:\Windows\Fonts\comici.ttf"
-            
-    # 3. Diálogo padrão de scanlation profissional (Anime Ace 2.0 BB -> Komika Axis -> Comic Neue)
-    if os.path.exists(ANIME_ACE_FONT):
-        return ANIME_ACE_FONT
-    if os.path.exists(KOMIKA_FONT):
-        return KOMIKA_FONT
-    if os.path.exists(DIALOGUE_FONT):
-        return DIALOGUE_FONT
-        
-    return get_best_font()
+    """Seleciona dinamicamente a melhor fonte tipográfica consistente para o balão."""
+    fonts_map = {
+        "anime_ace": ANIME_ACE_FONT,
+        "komika": KOMIKA_FONT,
+        "shout": SHOUT_FONT,
+        "dialogue": DIALOGUE_FONT,
+        "dialogue_italic": DIALOGUE_ITALIC_FONT,
+        "fallback": get_best_font(),
+    }
+    return typography_ptbr.select_clean_font(text, fonts_map, is_shout=is_shout, is_thought=is_thought)
 
 _NOTDEF_CACHE = {}
 _FALLBACK_FONTS = {}
@@ -1468,15 +1449,31 @@ def is_majority_hangul(lines_text):
     return ko_cnt >= zh_ja_cnt
 
 def smart_group_bubbles(blocks, img_gray=None):
-    """Agrupa linhas de texto próximas usando conectividade de grafos, suportando leitura oriental e ocidental."""
+    """Agrupa linhas de texto próximas usando conectividade de grafos e cavidades de balões fechados."""
     n = len(blocks)
     if n == 0:
         return []
     adj = {i: [] for i in range(n)}
-    
+
+    bids = [0] * n
+    if img_gray is not None and img_gray.size > 0:
+        try:
+            id_map, _ = balloon_cavity.build_balloon_map(img_gray)
+            bids = [balloon_cavity.find_box_balloon_id(b["box"], id_map) for b in blocks]
+        except Exception:
+            bids = [0] * n
+
     for i in range(n):
         for j in range(i + 1, n):
-            if should_merge_lines(blocks[i], blocks[j], img_gray=img_gray):
+            bi, bj = bids[i], bids[j]
+            if bi > 0 and bi == bj:
+                # Mesmo balão branco fechado -> funde sempre em uma única fala
+                adj[i].append(j)
+                adj[j].append(i)
+            elif (bi > 0 or bj > 0) and bi != bj:
+                # Nunca mistura fala dentro de balão com narração/texto externo
+                continue
+            elif should_merge_lines(blocks[i], blocks[j], img_gray=img_gray):
                 adj[i].append(j)
                 adj[j].append(i)
                 
@@ -1509,17 +1506,28 @@ def smart_group_bubbles(blocks, img_gray=None):
             # Leitura oriental: Direita para Esquerda (X descrescente), Topo para Baixo
             comp_blocks.sort(key=lambda b: (-b["box"][2], b["box"][1]))
         else:
-            # Leitura ocidental: Topo para Baixo (Y crescente), Esquerda para Direita
-            comp_blocks.sort(key=lambda b: (b["box"][1], b["box"][0]))
+            # Leitura ocidental: faixas verticais de ~22px, depois Esquerda para Direita
+            comp_blocks.sort(key=lambda b: (int(b["box"][1] // 22), b["box"][0]))
         
         xmin = min(b["box"][0] for b in comp_blocks)
         ymin = min(b["box"][1] for b in comp_blocks)
         xmax = max(b["box"][2] for b in comp_blocks)
         ymax = max(b["box"][3] for b in comp_blocks)
         
-        lines_text = [b["text"].strip() for b in comp_blocks]
+        lines_text = [b["text"].strip() for b in comp_blocks if b.get("text", "").strip()]
         is_cjk_bubble = is_majority_cjk(lines_text)
         is_ko_bubble = is_majority_hangul(lines_text)
+        if is_cjk_bubble:
+            # Remove artefatos soltos de 1-2 letras latinas vazadas de scans ingleses por baixo do CJK
+            clean_cjk_lines = []
+            for ln in lines_text:
+                if re.fullmatch(r"[A-Za-z]{1,2}", ln):
+                    continue
+                ln_c = re.sub(r"(?<![A-Za-z])[A-Z]{1,2}(?![A-Za-z])", "", ln).strip()
+                if ln_c:
+                    clean_cjk_lines.append(ln_c)
+            if clean_cjk_lines:
+                lines_text = clean_cjk_lines
         full_text = smart_join_lines(lines_text, is_cjk=is_cjk_bubble, preserve_spaces=is_ko_bubble)
         if not is_cjk_bubble:
             full_text = repair_glued_text(full_text)
@@ -2019,7 +2027,7 @@ def analyze_safe_balloon(cleaned_gray, orig_gray, box, limits):
     result["safe_max_y"] = result["safe_cy"] + result["target_h"] / 2.0
     return result
 
-def _try_hyphenate_word(draw, word, font, max_w, stroke_width=0, min_len=5):
+def _try_hyphenate_word(draw, word, font, max_w, stroke_width=0, min_len=8):
     """Tenta dividir palavra longa em PT-BR com hífen silábico seguro para caber em max_w."""
     if not _pyphen_dic or len(word) < min_len:
         return None
@@ -2099,7 +2107,7 @@ def wrap_text_diamond(draw, text, font, max_w, max_h, stroke_width=0, shape_type
     if not words:
         return []
         
-    line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+    line_bbox = draw.textbbox((0, 0), "ÁÇÃÊÓÚg", font=font)
     line_h = max(4.0, (line_bbox[3] - line_bbox[1]) * line_spacing)
     max_k = max(1, int(max_h / line_h))
 
@@ -2254,7 +2262,7 @@ def fit_text_to_box_ex(draw, text, max_w, max_h, font_path, stroke_width=1, shap
         for fs in range(hi_fs, lo_fs - 1, -1):
             font = ImageFont.truetype(font_path, fs)
             st = _eff_stroke(fs)
-            line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+            line_bbox = draw.textbbox((0, 0), "ÁÇÃÊÓÚg", font=font)
             line_h = max(4.0, (line_bbox[3] - line_bbox[1]) * lead)
             max_lines = int(usable_h / line_h)
             if max_lines < 1:
@@ -5133,6 +5141,7 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
         "2. Seja conciso p/ caber em 'max_chars'; preserve (!, ?, ..., ~, ♡). ZERO notas ou comentários.\n"
         "3. ZERO espanhol residual ('Muchas gracias'->'Muito obrigado', 'joyas'->'joias', 'tienda'->'loja', 'ropa'->'roupa', 'hoy'->'hoje', 'vengan'->'venham'). Em cena comercial, nunca sexualize palavras comuns ('joyería'->'joalheria', 'cuerpo'->'corpo').\n"
         "4. Reconstrua OCR fragmentado pelo contexto antes de traduzir (ex: 'Wit c H\\'S'->'da bruxa', 'LN ABLE'->'incapaz', 'CONS E-QUE N CES'->'consequências', 'ARE YO LI OKAY'->'você está bem?', 'Fr I END'->'amiga', 'Ch IL DISH'->'infantil').\n"
+        "5. Traduza sempre o pronome inglês 'I' (sozinho ou na frase, ex: 'I...', 'I\\'m') como 'Eu'/'Estou' em PT-BR — NUNCA deixe 'I' em inglês solto na tradução.\n"
         f"{adult_clause}{glossary_rules}{learned_compact}"
         'SAÍDA EXCLUSIVA EM JSON VÁLIDO: {"1": "Tradução 1", "2": "Tradução 2"}'
     )
@@ -6386,7 +6395,9 @@ def is_ocr_noise(text, score, is_korean=False, is_japanese=False):
             if len(t) <= 1 and sc < 0.75:
                 return True
     else:
-        if len(t) <= 1 and sc < 0.60:
+        if len(t) <= 1 and t.upper() not in ("I", "A") and sc < 0.60:
+            return True
+        if len(t) <= 1 and t.upper() in ("I", "A") and sc < 0.42:
             return True
     if len(set(t)) <= 2 and len(t) >= 4 and sc < 0.75:
         return True
@@ -7041,7 +7052,9 @@ def _detect_text_boxes_for_vision(det_engine, img_cv):
             b["_ellipsis_fallback"] = ell_fb
             filtered_grouped.append(b)
             continue
-        if len(rbs) <= 1 and (max(bw, bh) < min_side_thr or (bw * bh) < min_area_thr):
+        txt_chk = (b.get("combined_text") or "").strip()
+        is_english_i = bool(re.fullmatch(r"I[\.\!\?…]*", txt_chk))
+        if len(rbs) <= 1 and not is_english_i and (max(bw, bh) < min_side_thr or (bw * bh) < min_area_thr):
             continue
         if len(rbs) <= 1 and (cy > 0.935 * ih or cy < 0.045 * ih) and (cx < 0.22 * iw or cx > 0.78 * iw) and bh < 0.032 * ih and bw < 0.05 * iw:
             continue
@@ -8684,12 +8697,23 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             img_pil.save(out_file, quality=95)
             continue
         
-        # 4.1 Limpar balões com algoritmo cirúrgico (Apenas se foi traduzido com sucesso; preserva reticências puras)
+        # 4.1 Limpar balões: varredura completa da cavidade fechada + limpeza cirúrgica nas bordas OCR
         img_cv_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        id_map_page, balloon_infos_page = balloon_cavity.build_balloon_map(img_cv)
+        swept_bids = set()
+        bid_usage_count = {}
         for b in bubbles:
             trans_txt = b.get("translated_text", "").strip()
             if not trans_txt or re.fullmatch(r'\.{2,8}|…+', trans_txt) or not is_valid_translation(b["combined_text"], trans_txt):
+                b["_balloon_id"] = 0
                 continue
+            bid = balloon_cavity.find_box_balloon_id(b["box"], id_map_page)
+            b["_balloon_id"] = bid
+            if bid > 0:
+                bid_usage_count[bid] = bid_usage_count.get(bid, 0) + 1
+            if bid > 0 and bid in balloon_infos_page and bid not in swept_bids:
+                balloon_cavity.sweep_balloon_interior(cleaned, balloon_infos_page[bid], erode_px=2)
+                swept_bids.add(bid)
             r_boxes = b.get("raw_boxes") or [b["box"]]
             for r_box in r_boxes:
                 clean_speech_bubble(cleaned, r_box)
@@ -8785,46 +8809,54 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             render_white_on_dark = geom["render_white_on_dark"]
             safe_cx = geom["safe_cx"]
             safe_cy = geom["safe_cy"]
-            safe_min_x = geom["safe_min_x"]
-            safe_max_x = geom["safe_max_x"]
             safe_min_y = geom["safe_min_y"]
             safe_max_y = geom["safe_max_y"]
             target_w = geom["target_w"]
             target_h = geom["target_h"]
+            band_prof = geom["band_profile"]
 
-            # Margem de segurança na largura considerando os limites da partição e da página
-            max_avail_w = min(
-                (safe_cx - x_min_limit) * 2 - 8,
-                (x_max_limit - safe_cx) * 2 - 8,
-                min(safe_cx, w_img - safe_cx) * 2 - 16
-            )
-            if max_avail_w > 30:
-                target_w = min(target_w, max_avail_w)
+            # Se a fala está dentro de um balão fechado exclusivo, usa a cavidade real sem rabichos
+            bid = b.get("_balloon_id", 0)
+            if bid > 0 and bid in balloon_infos_page and bid_usage_count.get(bid, 0) == 1:
+                reg = balloon_cavity.compute_safe_text_region(balloon_infos_page[bid], pad_x=14, pad_y=12)
+                safe_cx = reg["safe_cx"]
+                safe_cy = reg["safe_cy"]
+                target_w = reg["target_w"]
+                target_h = reg["target_h"]
+                band_prof = reg["band_profile"]
+                safe_min_y = reg["safe_min_y"]
+                safe_max_y = reg["safe_max_y"]
+                is_white_bg = True
+                geom["is_enclosed"] = True
+            else:
+                # Margem de segurança na largura considerando os limites da partição e da página
+                max_avail_w = min(
+                    (safe_cx - x_min_limit) * 2 - 8,
+                    (x_max_limit - safe_cx) * 2 - 8,
+                    min(safe_cx, w_img - safe_cx) * 2 - 16
+                )
+                if max_avail_w > 30:
+                    target_w = min(target_w, max_avail_w)
 
             is_display = bool(
                 orig_line_h >= (w_img * 0.030)
                 or (len(text.split()) <= 2 and (text.endswith("!!") or text.endswith("!?") or orig_line_h >= w_img * 0.025))
             )
 
-            # Seleciona a melhor fonte tipográfica profissional para a fala
+            # Seleciona fonte consistente e calibra tipografia PT-BR sem colisão de acentos
             chosen_font_path = select_font_for_bubble(text)
-            stroke_w_hint = 1 if is_white_bg else 2
-            font, lines, used_leading = fit_text_to_box_ex(
+            stroke_w_hint = 0 if is_white_bg else 2
+            font, lines, line_h = typography_ptbr.fit_text_ptbr(
                 draw, text, target_w, target_h, chosen_font_path,
+                measure_fn=measure_manga_line_width,
                 stroke_width=stroke_w_hint,
-                shape_type=geom["shape_type"],
-                band_profile=geom["band_profile"],
+                band_profile=band_prof,
                 page_w=w_img,
-                orig_line_h=orig_line_h,
-                page_med_h=page_med_h,
                 is_display=is_display,
-                pre_padded=geom["is_enclosed"]
             )
             if not lines:
                 continue
-                
-            line_bbox = draw.textbbox((0, 0), "Ag", font=font)
-            line_h = max(4.0, (line_bbox[3] - line_bbox[1]) * used_leading)
+
             total_h = len(lines) * line_h
             start_y = safe_cy - (total_h / 2.0) + (line_h / 2.0)
             
@@ -8855,9 +8887,9 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 stroke_fill = (15, 15, 15)
                 stroke_w = max(2, int(round(font_size * 0.09)))
             else:
-                text_fill = (0, 0, 0)
+                text_fill = (15, 15, 15) if is_white_bg else (0, 0, 0)
                 stroke_fill = (255, 255, 255)
-                stroke_w = 1 if is_white_bg else max(2, int(round(font_size * 0.08)))
+                stroke_w = 0 if is_white_bg else max(2, int(round(font_size * 0.08)))
             
             for line_idx, line in enumerate(lines):
                 ly = start_y + (line_idx * line_h)

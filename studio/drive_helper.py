@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 studio/drive_helper.py - Descoberta Inteligente e Escaneamento do Google Drive
-Gerencia caminhos de Google Drive (Colab e Windows) de forma tolerante a maiúsculas/minúsculas.
+Gerencia caminhos de Google Drive (Colab e Windows) resolvendo symlinks e duplicatas.
 Regra de Ouro: Coeso, desacoplado e estritamente < 300 linhas.
 """
 
@@ -10,33 +10,37 @@ import re
 import zipfile
 
 
+def real_path_key(path):
+    """Retorna chave canônica resolvendo symlinks (ex: 'My Drive' -> 'MyDrive')."""
+    if not path:
+        return ""
+    try:
+        return os.path.normcase(os.path.realpath(path))
+    except Exception:
+        return os.path.normcase(os.path.abspath(path))
+
+
 def natural_sort_key(s):
     """Ordenação natural para números em nomes de arquivos (ex: 1, 2, 10)."""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", str(s))]
 
 
 def find_drive_roots():
-    """Retorna lista de caminhos raiz do Google Drive encontrados (Linux/Colab e Windows)."""
+    """Retorna caminhos raiz únicos do Google Drive (sem duplicar symlinks)."""
     roots = []
+    seen_real = set()
 
-    # 1. Google Colab / Linux (/content/drive e subpastas)
-    for colab_base in ["/content/drive", "/content/gdrive"]:
-        if os.path.exists(colab_base):
-            try:
-                for entry in sorted(os.listdir(colab_base)):
-                    if entry.startswith("."):
-                        continue
-                    p = os.path.abspath(os.path.join(colab_base, entry))
-                    if os.path.isdir(p) and p not in roots:
-                        roots.append(p)
-            except Exception:
-                pass
-            colab_base_norm = os.path.abspath(colab_base)
-            if colab_base_norm not in roots:
-                roots.append(colab_base_norm)
+    def _add_root(candidate):
+        if not candidate or not os.path.exists(candidate):
+            return
+        norm = os.path.abspath(candidate)
+        rk = real_path_key(norm)
+        if rk not in seen_real:
+            seen_real.add(rk)
+            roots.append(norm)
 
-    # 2. Candidatos fixos comuns em Colab e Linux/Windows
-    fixed_candidates = [
+    # 1. Prioriza caminhos canônicos do Colab antes de varrer symlinks
+    for fixed in [
         "/content/drive/MyDrive",
         "/content/drive/Meu Drive",
         "/content/drive/My Drive",
@@ -46,20 +50,31 @@ def find_drive_roots():
         "G:\\My Drive",
         os.path.expanduser("~/Google Drive"),
         os.path.expanduser("~/Meu Drive")
-    ]
+    ]:
+        _add_root(fixed)
 
+    # 2. Varre subpastas adicionais de montagem no Colab / Linux
+    for colab_base in ["/content/drive", "/content/gdrive"]:
+        if os.path.exists(colab_base):
+            try:
+                for entry in sorted(os.listdir(colab_base)):
+                    if entry.startswith("."):
+                        continue
+                    p = os.path.join(colab_base, entry)
+                    if os.path.isdir(p):
+                        _add_root(p)
+            except Exception:
+                pass
+            if not roots:
+                _add_root(colab_base)
+
+    # 3. Letras de unidade no Windows
     if os.name == "nt":
         import string
         for letter in string.ascii_uppercase:
-            fixed_candidates.append(f"{letter}:\\Meu Drive")
-            fixed_candidates.append(f"{letter}:\\My Drive")
-            fixed_candidates.append(f"{letter}:\\Google Drive")
-
-    for c in fixed_candidates:
-        if os.path.exists(c):
-            norm = os.path.abspath(c)
-            if norm not in roots:
-                roots.append(norm)
+            _add_root(f"{letter}:\\Meu Drive")
+            _add_root(f"{letter}:\\My Drive")
+            _add_root(f"{letter}:\\Google Drive")
 
     return roots
 
@@ -68,23 +83,22 @@ def is_drive_path(p):
     """Verifica se o caminho informado está dentro de um Google Drive montado."""
     if not p:
         return False
-    clean = os.path.abspath(p).replace("\\", "/").lower()
+    clean = real_path_key(p).replace("\\", "/")
     if "/content/drive" in clean or "/content/gdrive" in clean:
         return True
     for r in find_drive_roots():
-        if os.path.abspath(r).replace("\\", "/").lower() in clean:
+        if real_path_key(r).replace("\\", "/") in clean:
             return True
     return False
 
 
 def find_manga_directories(root):
     """
-    Localiza pastas de mangá dentro de uma raiz do Drive, de forma insensível
-    a maiúsculas/minúsculas e tolerante a variações (MANGAS, Mangas, etc.).
-    Retorna (raw_dirs, translated_dirs).
+    Localiza pastas de mangá dentro de uma raiz do Drive, insensível a maiúsculas
+    e sem duplicar symlinks. Retorna (raw_dirs, translated_dirs).
     """
-    raw_dirs = []
-    trans_dirs = []
+    raw_dirs, trans_dirs = [], []
+    seen_real = set()
     if not root or not os.path.exists(root):
         return raw_dirs, trans_dirs
 
@@ -95,24 +109,55 @@ def find_manga_directories(root):
             full_p = os.path.abspath(os.path.join(root, item))
             if not os.path.isdir(full_p):
                 continue
+            rk = real_path_key(full_p)
+            if rk in seen_real:
+                continue
             item_low = item.lower()
-            if "manga" in item_low or "mangas" in item_low:
+            if "manga" in item_low:
+                seen_real.add(rk)
                 if "[pt-br]" in item_low or "pt-br" in item_low or "traduzid" in item_low:
-                    if full_p not in trans_dirs:
-                        trans_dirs.append(full_p)
+                    trans_dirs.append(full_p)
                 else:
-                    if full_p not in raw_dirs:
-                        raw_dirs.append(full_p)
+                    raw_dirs.append(full_p)
     except Exception:
         pass
 
     return raw_dirs, trans_dirs
 
 
+def deduplicate_entries(entries):
+    """Remove duplicatas lógicas (mesma obra em pasta + CBZ ou pastas espelhadas)."""
+    best_by_name = {}
+    for entry in entries:
+        key = (entry.get("clean_name") or entry.get("name") or "").strip().lower()
+        if not key:
+            continue
+        prev = best_by_name.get(key)
+        if not prev:
+            best_by_name[key] = entry
+            continue
+        # Prefere pasta descompactada / com leitor / Google Drive / mais recente
+        score_new = (
+            not entry.get("is_archive", False),
+            bool(entry.get("has_reader", False)),
+            bool(entry.get("is_drive", False)),
+            entry.get("mtime", 0),
+        )
+        score_old = (
+            not prev.get("is_archive", False),
+            bool(prev.get("has_reader", False)),
+            bool(prev.get("is_drive", False)),
+            prev.get("mtime", 0),
+        )
+        if score_new > score_old:
+            best_by_name[key] = entry
+    return list(best_by_name.values())
+
+
 def scan_folder_for_mangas(folder_path, seen_paths, path_cache, get_pymupdf_fn):
     """
-    Varre um diretório buscando obras (pastas com imagens/capítulos, .zip, .cbz ou .pdf).
-    Popula path_cache e seen_paths para garantir integridade e agilidade.
+    Varre diretório buscando obras (pastas com imagens/capítulos, .zip, .cbz ou .pdf).
+    Usa real_path_key em seen_paths para evitar duplicatas via symlinks.
     """
     entries = []
     if not folder_path or not os.path.exists(folder_path):
@@ -121,9 +166,14 @@ def scan_folder_for_mangas(folder_path, seen_paths, path_cache, get_pymupdf_fn):
     img_exts = (".jpg", ".jpeg", ".png", ".webp")
 
     try:
-        for item in sorted(os.listdir(folder_path)):
+        items = sorted(os.listdir(folder_path))
+        # Processa pastas antes de arquivos para que .cbz/.zip reconheçam a pasta já existente
+        items.sort(key=lambda name: (not os.path.isdir(os.path.join(folder_path, name)), name.lower()))
+
+        for item in items:
             full_p = os.path.abspath(os.path.join(folder_path, item))
-            if full_p in seen_paths or item.startswith(".") or item == "_ocr":
+            rk = real_path_key(full_p)
+            if rk in seen_paths or item.startswith(".") or item == "_ocr":
                 continue
 
             # 1. Pastas com imagens diretas ou subpastas de capítulos
@@ -142,15 +192,14 @@ def scan_folder_for_mangas(folder_path, seen_paths, path_cache, get_pymupdf_fn):
                 if not imgs:
                     continue
 
-                seen_paths.add(full_p)
+                seen_paths.add(rk)
                 imgs.sort(key=natural_sort_key)
-                m_id = str(abs(hash(full_p)))
+                m_id = str(abs(hash(rk)))
                 if path_cache is not None:
                     path_cache[m_id] = full_p
 
                 has_reader = os.path.exists(os.path.join(full_p, "leitor.html"))
-                clean_full = full_p.rstrip("/\\")
-                cbz_p = clean_full + ".cbz"
+                cbz_p = full_p.rstrip("/\\") + ".cbz"
                 has_cbz = os.path.exists(cbz_p)
 
                 entries.append({
@@ -173,10 +222,10 @@ def scan_folder_for_mangas(folder_path, seen_paths, path_cache, get_pymupdf_fn):
             # 2. Arquivos compactados (.zip, .cbz) ou .pdf
             elif os.path.isfile(full_p) and item.lower().endswith((".zip", ".cbz", ".pdf")):
                 unpacked = os.path.splitext(full_p)[0]
-                if unpacked in seen_paths and os.path.isdir(unpacked):
+                if real_path_key(unpacked) in seen_paths or os.path.isdir(unpacked):
                     continue
 
-                m_id = str(abs(hash(full_p)))
+                m_id = str(abs(hash(rk)))
                 if path_cache is not None:
                     path_cache[m_id] = full_p
                 clean_n = os.path.splitext(item)[0]
@@ -189,7 +238,7 @@ def scan_folder_for_mangas(folder_path, seen_paths, path_cache, get_pymupdf_fn):
                             num_pages = len(doc)
                             doc.close()
                             if num_pages > 0:
-                                seen_paths.add(full_p)
+                                seen_paths.add(rk)
                                 entries.append({
                                     "id": m_id,
                                     "name": clean_n,
@@ -218,7 +267,7 @@ def scan_folder_for_mangas(folder_path, seen_paths, path_cache, get_pymupdf_fn):
                             ]
                             if zip_imgs:
                                 zip_imgs.sort(key=natural_sort_key)
-                                seen_paths.add(full_p)
+                                seen_paths.add(rk)
                                 arc_type = "CBZ" if item.lower().endswith(".cbz") else "ZIP"
                                 entries.append({
                                     "id": m_id,

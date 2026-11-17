@@ -821,6 +821,8 @@ def api_library():
             if not e["has_reader"] and "[PT-BR]" not in e["name"]:
                 raw.append(e)
 
+    translated = drive_helper.deduplicate_entries(translated)
+    raw = drive_helper.deduplicate_entries(raw)
     translated.sort(key=lambda x: x["mtime"], reverse=True)
     raw.sort(key=lambda x: x["mtime"], reverse=True)
     return jsonify({"translated": translated, "raw": raw})

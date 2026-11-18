@@ -85,8 +85,8 @@ app.jinja_env.auto_reload = True
 try:
     from version import __version__, __version_name__, get_version_info
 except Exception:
-    __version__ = "0.7.2-beta"
-    __version_name__ = "v0.7.2 Beta"
+    __version__ = "0.7.3-beta"
+    __version_name__ = "v0.7.3 Beta"
 
 APP_VERSION = __version__
 APP_VERSION_NAME = __version_name__
@@ -1774,7 +1774,7 @@ def api_test_key():
             return jsonify({"valid": False, "msg": f"Erro de conexão: {e}"})
 
     elif provider == "gemini":
-        test_model = str(data.get("model") or cfg.get("gemini_model") or "gemini-2.5-flash").strip()
+        test_model = str(data.get("model") or cfg.get("gemini_model") or "gemini-3.1-flash-lite").strip()
         qs = urllib.parse.urlencode({"key": key})
         url = f"https://generativelanguage.googleapis.com/v1beta/models?{qs}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})

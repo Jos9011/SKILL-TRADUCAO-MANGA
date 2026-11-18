@@ -20,5 +20,6 @@
   "ollama_vision_model": "",
   "vision_provider": "auto",
   "colorize": false,
-  "temperature": 0.0
+  "temperature": 0.0,
+  "ntfy_topic": ""
 }

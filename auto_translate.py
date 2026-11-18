@@ -34,6 +34,7 @@ from PIL import Image, ImageDraw, ImageFont
 import textwrap
 import urllib.request
 import urllib.error
+import urllib.parse
 from rapidocr_onnxruntime import RapidOCR
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 
@@ -3914,11 +3915,24 @@ def collapse_spaced_letters(text):
         return m.group(0)
     return re.sub(r'\b[A-Za-z](?:\s+[A-Za-z]){2,}\b', _repl, text)
 
-def clean_ocr_scan_noise(text):
-    """Limpa artefatos típicos de OCR, quebras de linhas e fontes de mangá em inglês/japonês antes de enviar para a IA."""
+_CJK_RE = re.compile(r'[぀-ヿ一-鿿가-힯ᄀ-ᇿ㄰-㆏]')
+
+def is_cjk_source(original_text="", src_lang="auto"):
+    """True se a fala original é japonês/chinês/coreano (regras feitas para inglês não se aplicam)."""
+    lang = (src_lang or "auto").lower()
+    if lang.startswith(("ja", "zh", "ko")):
+        return True
+    return bool(_CJK_RE.search(original_text or ""))
+
+def clean_ocr_scan_noise(text, src_lang="auto"):
+    """Limpa artefatos típicos de OCR, quebras de linhas e fontes de mangá em inglês/espanhol antes de enviar para a IA."""
     if not text:
         return ""
     t = text
+    # Correções de OCR latino não fazem sentido em texto japonês/chinês/coreano
+    if is_cjk_source(t, src_lang):
+        return t
+    is_spanish = (src_lang or "auto").lower().startswith("es")
 
     # 1. Reconecta letras individuais espaçadas (kerning de balão)
     t = collapse_spaced_letters(t)
@@ -3996,40 +4010,42 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"\b[cC][uU][\s\-_]*[mM]+[\s\-_]*[mM]*[iI][nN][gG]!*", "CUMMING!", t, flags=re.IGNORECASE)
     t = re.sub(r"\b[cC][uU]\s*[mM]\s*[mM][iI][nN][eE]!*", "CUMMING!", t, flags=re.IGNORECASE)
 
-    # Desfragmentação de OCR latino / espanhol
-    t = re.sub(r"(?i)\bjoy\s+eri\s*a\b", "joyería", t)
-    t = re.sub(r"(?i)\bjoy\s+as\b", "joyas", t)
-    t = re.sub(r"(?i)\bjoy\s+a\b", "joya", t)
-    t = re.sub(r"(?i)\b(?:ml\s*chas|much\s+as)\b", "muchas", t)
-    t = re.sub(r"(?i)\bgraci\s+as\b", "gracias", t)
-    t = re.sub(r"(?i)\bti\s+en\s+da\b", "tienda", t)
-    t = re.sub(r"(?i)\bti\s+en\s+das\b", "tiendas", t)
-    t = re.sub(r"(?i)\ben\s+cim\s+a\b", "encima", t)
-    t = re.sub(r"(?i)\btam\s*bi\s*en\b", "también", t)
-    t = re.sub(r"(?i)\ba\s*ten\s*der\b", "atender", t)
-    t = re.sub(r"(?i)\bde\s+dic\s+aci\s+on\b", "dedicación", t)
-    t = re.sub(r"(?i)\ba\s*comp\s*an\s*an\s*te\b", "acompañante", t)
-    t = re.sub(r"(?i)\bsir\s+va\s*se\b", "sírvase", t)
-    t = re.sub(r"(?i)\bde\s+jar\b", "dejar", t)
-    t = re.sub(r"(?i)\blle\s+vas\b", "llevas", t)
-    t = re.sub(r"(?i)\blle\s+vo\b", "llevo", t)
-    t = re.sub(r"(?i)\blle\s+va\b", "lleva", t)
-    t = re.sub(r"(?i)\bpu\s+es\s+tas\b", "puestas", t)
-    t = re.sub(r"(?i)\bpu\s+es\s+ta\b", "puesta", t)
-    t = re.sub(r"(?i)\bcue\s+r\s*po\b", "cuerpo", t)
-    t = re.sub(r"(?i)\bcal\s+i\s+en\s+tu\s+ra\b", "calentura", t)
-    t = re.sub(r"(?i)\bvi\s+si\s+ta\b", "visita", t)
-    t = re.sub(r"(?i)\bcl\s+i\s+en\s+te\s*la\b", "clientela", t)
-    t = re.sub(r"(?i)\bcl\s+i\s+en\s+tes\b", "clientes", t)
-    t = re.sub(r"(?i)\bcl\s+i\s+en\s+te\b", "cliente", t)
-    t = re.sub(r"(?i)\bsu\s+cur\s+sal\b", "sucursal", t)
-    t = re.sub(r"(?i)\bper\s+for\s+aci\s+on\s*es\b", "perforaciones", t)
-    t = re.sub(r"(?i)\bac\s+ce\s+so\s+ri\s+os\b", "accesorios", t)
-    t = re.sub(r"(?i)\bmo\s+del\s+o\b", "modelo", t)
-    t = re.sub(r"(?i)\bam\s+bul\s+an\s+te\b", "ambulante", t)
-    t = re.sub(r"(?i)\bto\s+das\b", "todas", t)
-    t = re.sub(r"(?i)\bto\s+do\b", "todo", t)
-    t = re.sub(r"(?i)\bmer\s+can\s+ci\s*a\b", "mercancía", t)
+    # Desfragmentação de OCR espanhol: SÓ para obras em espanhol
+    # (em inglês, "to do" virava "todo" e "to das" virava "todas")
+    if is_spanish:
+        t = re.sub(r"(?i)\bjoy\s+eri\s*a\b", "joyería", t)
+        t = re.sub(r"(?i)\bjoy\s+as\b", "joyas", t)
+        t = re.sub(r"(?i)\bjoy\s+a\b", "joya", t)
+        t = re.sub(r"(?i)\b(?:ml\s*chas|much\s+as)\b", "muchas", t)
+        t = re.sub(r"(?i)\bgraci\s+as\b", "gracias", t)
+        t = re.sub(r"(?i)\bti\s+en\s+da\b", "tienda", t)
+        t = re.sub(r"(?i)\bti\s+en\s+das\b", "tiendas", t)
+        t = re.sub(r"(?i)\ben\s+cim\s+a\b", "encima", t)
+        t = re.sub(r"(?i)\btam\s*bi\s*en\b", "también", t)
+        t = re.sub(r"(?i)\ba\s*ten\s*der\b", "atender", t)
+        t = re.sub(r"(?i)\bde\s+dic\s+aci\s+on\b", "dedicación", t)
+        t = re.sub(r"(?i)\ba\s*comp\s*an\s*an\s*te\b", "acompañante", t)
+        t = re.sub(r"(?i)\bsir\s+va\s*se\b", "sírvase", t)
+        t = re.sub(r"(?i)\bde\s+jar\b", "dejar", t)
+        t = re.sub(r"(?i)\blle\s+vas\b", "llevas", t)
+        t = re.sub(r"(?i)\blle\s+vo\b", "llevo", t)
+        t = re.sub(r"(?i)\blle\s+va\b", "lleva", t)
+        t = re.sub(r"(?i)\bpu\s+es\s+tas\b", "puestas", t)
+        t = re.sub(r"(?i)\bpu\s+es\s+ta\b", "puesta", t)
+        t = re.sub(r"(?i)\bcue\s+r\s*po\b", "cuerpo", t)
+        t = re.sub(r"(?i)\bcal\s+i\s+en\s+tu\s+ra\b", "calentura", t)
+        t = re.sub(r"(?i)\bvi\s+si\s+ta\b", "visita", t)
+        t = re.sub(r"(?i)\bcl\s+i\s+en\s+te\s*la\b", "clientela", t)
+        t = re.sub(r"(?i)\bcl\s+i\s+en\s+tes\b", "clientes", t)
+        t = re.sub(r"(?i)\bcl\s+i\s+en\s+te\b", "cliente", t)
+        t = re.sub(r"(?i)\bsu\s+cur\s+sal\b", "sucursal", t)
+        t = re.sub(r"(?i)\bper\s+for\s+aci\s+on\s*es\b", "perforaciones", t)
+        t = re.sub(r"(?i)\bac\s+ce\s+so\s+ri\s+os\b", "accesorios", t)
+        t = re.sub(r"(?i)\bmo\s+del\s+o\b", "modelo", t)
+        t = re.sub(r"(?i)\bam\s+bul\s+an\s+te\b", "ambulante", t)
+        t = re.sub(r"(?i)\bto\s+das\b", "todas", t)
+        t = re.sub(r"(?i)\bto\s+do\b", "todo", t)
+        t = re.sub(r"(?i)\bmer\s+can\s+ci\s*a\b", "mercancía", t)
 
     # Nomes e ruídos japoneses
     t = re.sub(r"(?i)\bhats\s+uk\s+o\b", "Hatsuko", t)
@@ -4051,10 +4067,18 @@ def clean_ocr_scan_noise(text):
     t = re.sub(r"(?i)\bpee\s*pee\b", "pee-pee", t)
     return t
 
-def clean_ai_translation(text, original_text="", is_adult=True):
-    """Higieniza rigorosamente a saída da IA: elimina notas, 'Obs:', prefixos e normaliza anatomia."""
+def clean_ai_translation(text, original_text="", is_adult=True, src_lang="auto"):
+    """Higieniza rigorosamente a saída da IA: elimina notas, 'Obs:', prefixos e normaliza anatomia.
+
+    Regras que inspecionam palavras em INGLÊS do original só rodam quando a fonte é latina:
+    em japonês/coreano/chinês essas palavras nunca aparecem e as regras disparavam sempre.
+    """
     if not text:
         return original_text.strip()
+    src_cjk = is_cjk_source(original_text, src_lang)
+    _orig_words = re.findall(r"[a-zA-Z']+", original_text or "")
+    # Original composto só de sons curtos (ex: 'u u u', 'mph ahn', 'NGH!')
+    orig_is_moan = (not src_cjk) and bool(_orig_words) and len(_orig_words) <= 4 and all(len(w) <= 4 for w in _orig_words)
         
     cleaned = sanitize_lettering_text(_strip_think_tags(text)).strip()
     
@@ -4247,7 +4271,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         cleaned = _preserve_case(r'\bposso\s+velhar\b', 'posso aguentar', cleaned)
 
         # Gemidos curtos confundidos com 'irmão mais velho' ou falsos amigos
-        if re.search(r'\birm[ãa]o\s+mais\s+velho\b', cleaned, flags=re.IGNORECASE) and not re.search(r'\b(?:brother|onii|ani)\b', orig_lower):
+        if orig_is_moan and re.search(r'\birm[ãa]o\s+mais\s+velho\b', cleaned, flags=re.IGNORECASE) and not re.search(r'\b(?:brother|onii|ani|bro)\b', orig_lower):
             cleaned = re.sub(r'\birm[ãa]o\s+mais\s+velho\b', lambda m: 'Anh' if m.group(0)[0].isupper() else 'anh', cleaned, flags=re.IGNORECASE)
 
         # O filho falando com a mãe sobre o pai (Dad -> O papai / Meu pai, NUNCA 'Seu pai')
@@ -4264,18 +4288,9 @@ def clean_ai_translation(text, original_text="", is_adult=True):
             cleaned = re.sub(r'\bmuito\s+molhado\b', 'muito molhada', cleaned, flags=re.IGNORECASE)
             cleaned = re.sub(r'\bum\s+pouco\s+molhado\b', 'um pouco molhada', cleaned, flags=re.IGNORECASE)
 
-        # Protagonista masculino falando de si quando criança ('when I was little' -> 'quando eu era pequeno')
-        cleaned = _preserve_case(r'\bquando\s+eu\s+era\s+pequena\b', 'quando eu era pequeno', cleaned)
-
-        # Mulher / mãe falando de ser desejada ou ser parceira
-        cleaned = re.sub(r'\bser\s+desejado\b', lambda m: 'Ser desejada' if m.group(0)[0].isupper() else 'ser desejada', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\b(continuarei\s+sendo|serei|sou)\s+seu\s+parceiro\b', r'\1 sua parceira', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\bser\s+seu\s+parceiro\b', 'ser sua parceira', cleaned, flags=re.IGNORECASE)
-
-        # Mulher mostrando-se nua
-        cleaned = _preserve_case(r'\bse\s+mostraria\s+nu\b', 'se mostraria nua', cleaned)
-        cleaned = _preserve_case(r'\bmostrar(?:-se)?\s+nu\b', 'mostrar-se nua', cleaned)
-        cleaned = _preserve_case(r'\bficar\s+nu\b', 'ficar nua', cleaned)
+        # (Removido: regras que forçavam gênero sem saber quem fala - 'pequena'->'pequeno',
+        #  'desejado'->'desejada', 'parceiro'->'parceira', 'nu'->'nua'. A concordância de
+        #  gênero é responsabilidade do prompt de contexto da página.)
 
         # Sow (insulto/fetiche em mangá adulto) -> Porca / Vadia (NUNCA semear)
         if re.search(r'\bsow\b', orig_lower):
@@ -4375,7 +4390,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
 
     # PROTEÇÃO ANTI-ALUCINAÇÃO EM TERMOS COMERCIAIS / JOALHERIA / ROUPAS:
     # Se o texto original tratava de joias, joalheria, loja ou roupas, impede que a IA confunda com órgãos genitais
-    orig_has_jewelry = bool(re.search(r'(?i)\b(joyas?|joyer[íi]a|tiendas?|ropas?|collares|pulseras|anillos|gemas|jewelry|jewel|store|shop)\b', orig_lower))
+    orig_has_jewelry = bool(re.search(r'(?i)\b(joyas?|joyer[íi]a|collares|pulseras|anillos|gemas|jewelry|jewel|jewels)\b', orig_lower))
     if orig_has_jewelry:
         cleaned = re.sub(r'(?i)\b(?:na|a)\s+buceta\s+dela\b', 'na joalheria', cleaned)
         cleaned = re.sub(r'(?i)\b(?:na|no)\s+buceta\b', 'na joalheria', cleaned)
@@ -4431,7 +4446,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     cleaned = _preserve_case(r'\btasa\s*dor\s*a\b', 'avaliadora', cleaned)
 
     # Proteção de nomes japoneses e termos culturais
-    if "hatsuko" in orig_lower or "hats" in orig_lower:
+    if "hatsuko" in orig_lower or re.search(r'\bhats\s+uk', orig_lower):
         cleaned = _preserve_case(r'\bchap[ée]us\s+(?:uk\s+o|uk)\b', 'Hatsuko', cleaned)
         cleaned = _preserve_case(r'\bchap[ée]us\b', 'Hatsuko', cleaned)
     cleaned = _preserve_case(r'\boya\s+kod\b', 'oyakodon', cleaned)
@@ -4440,7 +4455,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
 
     # BARREIRA DE FERRO (QUALITY GATE): Nomes de personagens, fontes comic e gírias adultas em tempo real
     if re.search(r'\b(?:yuk\s*un|yu-kun|yu\s*kun)\b', orig_lower):
-        cleaned = re.sub(r'(?i)\b(?:vamos\s+na\s+onu|vamos|onu|yuk\s+onu)\b', 'Yu-kun', cleaned)
+        cleaned = re.sub(r'(?i)\b(?:vamos\s+na\s+onu|yuk\s+onu|onu)\b', 'Yu-kun', cleaned)
     if 's ihi woman' in orig_lower or 'natsuki san' in orig_lower:
         cleaned = re.sub(r'(?i)\bs\s*ihi\s*mulher', 'Essa mulher', cleaned)
     if re.search(r'\bfr\s+i\s+end\b', orig_lower) and 'padre' in cleaned.lower():
@@ -4460,7 +4475,7 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     if re.search(r'\bhang\s+(?:ol\s*u\s*it|out)\b', orig_lower):
         cleaned = re.sub(r'(?i)venha\s+pendurar\s+a\s+qualquer\s+hora!?', 'venha me visitar quando quiser!', cleaned)
         cleaned = re.sub(r'(?i)\bpendurar\b', 'visitar', cleaned)
-    if re.search(r'\bhard\b', orig_lower) and is_adult and re.search(r'\bdif[íi]cil\b', cleaned, re.IGNORECASE):
+    if re.search(r'\bhard\b', orig_lower) and re.search(r'\b(?:cock|dick|penis|shaft|erect|erection|boner)\b', orig_lower) and is_adult and re.search(r'\bdif[íi]cil\b', cleaned, re.IGNORECASE):
         cleaned = re.sub(r'(?i)\bdif[íi]cil\b', 'duro', cleaned)
     if re.search(r'\bcum\b', orig_lower) and is_adult and re.search(r'\bcum\b', cleaned, re.IGNORECASE) and not any(w in cleaned.lower() for w in ['goz', 'porra', 'leite']):
         cleaned = re.sub(r'(?i)\bcum\b', 'gozar', cleaned)
@@ -4486,7 +4501,6 @@ def clean_ai_translation(text, original_text="", is_adult=True):
         cleaned = re.sub(r'(?i)um\s+polo\s+se\s+desculpa', 'Peça desculpas', cleaned)
 
     # Dinâmica familiar enteado/madrasta (mulher) e falsos amigos
-    cleaned = _preserve_case(r'\bvoc[êe]\s+[eé]\s+um\s+estranho\b', 'você é uma estranha', cleaned)
     cleaned = _preserve_case(r'\bde\s+forma\s+material\b', 'de forma maternal', cleaned)
     cleaned = _preserve_case(r'\bage\s+de\s+forma\s+material\b', 'fica bancando a mãe', cleaned)
     cleaned = _preserve_case(r'\btoda\s+material\b', 'toda maternal', cleaned)
@@ -4496,12 +4510,8 @@ def clean_ai_translation(text, original_text="", is_adult=True):
     # Ruídos gráficos de clímax
     cleaned = re.sub(r'(?i)\b[eé],\s+estou\s+gozando\b', 'Estou gozando', cleaned)
 
-    # Proteção contra retorno vazio da IA em momentos cruciais (+18)
-    if not cleaned.strip() and original_text.strip():
-        if re.search(r'hard\s+cock\s+hits\s+deep', orig_lower):
-            cleaned = "O pau duro bate tão fundo que não consigo evitar..."
-        elif is_adult and re.search(r'\b(cum|cock|dick|pussy)\b', orig_lower):
-            cleaned = "Ah... Estou gozando!"
+    # Retorno vazio NÃO é preenchido com falas inventadas: devolve "" para o
+    # pipeline tentar outro motor (tradução individual / Google).
     
     # Limpeza de artefatos de OCR e corações transcritos ('heart', '√', '✔')
     cleaned = re.sub(r'(?i)\bheart(?:\s+111|\s+11|\s+1)?\b', '♡', cleaned)
@@ -4907,7 +4917,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
             fb_set.add(orig)
             try:
                 t = google_translate_free(orig, source_lang=src_lang)
-                batch_out[k] = clean_ai_translation(t, original_text=orig, is_adult=is_adult)
+                batch_out[k] = clean_ai_translation(t, original_text=orig, is_adult=is_adult, src_lang=src_lang)
             except Exception:
                 batch_out[k] = orig
         return json.dumps(batch_out, ensure_ascii=False)
@@ -4926,7 +4936,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
 
 def translate_single_dialogue(text, engine_type=None, model_name=None, engine_opts=None, is_adult=True, src_lang="auto"):
     """Traduz uma única fala com roteamento resiliente e fallback instantâneo."""
-    clean_t = clean_ocr_scan_noise(text.strip())
+    clean_t = clean_ocr_scan_noise(text.strip(), src_lang=src_lang)
     if is_scan_watermark(clean_t):
         return ""
     sfx_res = translate_sfx_phrase(clean_t)
@@ -4943,7 +4953,7 @@ def translate_single_dialogue(text, engine_type=None, model_name=None, engine_op
             {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
         ]
         res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=True, max_tokens=350, is_batch=False, src_lang=src_lang)
-        cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=True)
+        cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=True, src_lang=src_lang)
         if cleaned and is_valid_translation(clean_t, cleaned):
             if engine_opts.get("_last_used_fallback"):
                 engine_opts.setdefault("_fallback_originals", set()).add(text.strip())
@@ -4956,7 +4966,7 @@ def translate_single_dialogue(text, engine_type=None, model_name=None, engine_op
         {"role": "user", "content": f"Traduza fielmente para PT-BR:\n\n{clean_t}"}
     ]
     res = execute_translation_request(messages, engine_opts=engine_opts, is_adult=False, max_tokens=350, is_batch=False, src_lang=src_lang)
-    cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=False)
+    cleaned = clean_ai_translation(res, original_text=clean_t, is_adult=False, src_lang=src_lang)
     if cleaned and is_valid_translation(clean_t, cleaned):
         if engine_opts.get("_last_used_fallback"):
             engine_opts.setdefault("_fallback_originals", set()).add(text.strip())
@@ -5031,7 +5041,7 @@ def build_page_spatial_dossier(bubbles_to_trans, page_w=1200, page_h=1800, src_l
             char_budget = max(floor_c, min(ceil_c, int(raw_char_len * char_mult)))
             cap_desc = f"amplo (máx recomendável: {char_budget} carac.)"
             
-        cleaned_t = clean_ocr_scan_noise(orig_text)
+        cleaned_t = clean_ocr_scan_noise(orig_text, src_lang=src_lang)
         
         dossier_bubbles.append({
             "pos": pos_label,
@@ -5254,7 +5264,7 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
                 for k, trans in parsed.items():
                     if k in chunk_dmap:
                         orig = chunk_dmap[k]
-                        cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                        cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult, src_lang=src_lang)
                         if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
                             results[orig] = cleaned_trans
                             chunk_ok += 1
@@ -8611,7 +8621,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 )
                 for orig, trans in batch_res.items():
                     if trans and is_valid_translation(orig, trans):
-                        cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                        cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult, src_lang=src_lang)
                         
                 # Se ainda houver textos sem tradução válida, tenta o fallback
                 still_untranslated = [item[0] for item in untranslated if item[0] not in cache or not is_valid_translation(item[0], cache[item[0]])]
@@ -8619,7 +8629,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                     cloud_res = translate_batch_texts(still_untranslated, src_lang=src_lang, is_adult=is_adult, engine_opts=engine_opts)
                     for orig, trans in zip(still_untranslated, cloud_res):
                         if trans and is_valid_translation(orig, trans):
-                            cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult)
+                            cache[orig] = clean_ai_translation(trans, original_text=orig, is_adult=is_adult, src_lang=src_lang)
     finally:
         try:
             os.makedirs(os.path.dirname(cache_file), exist_ok=True)
@@ -8637,7 +8647,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         for b in p["bubbles"]:
             orig_text = b["combined_text"].strip()
             cached_val = cache.get(orig_text, "")
-            cleaned_val = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult) if cached_val else ""
+            cleaned_val = clean_ai_translation(cached_val, original_text=orig_text, is_adult=is_adult, src_lang=src_lang) if cached_val else ""
             if cleaned_val and is_valid_translation(orig_text, cleaned_val):
                 b["translated_text"] = cleaned_val
             elif cached_val and is_valid_translation(orig_text, cached_val):
@@ -8963,8 +8973,12 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         
     try:
         import requests
-        requests.post("https://ntfy.sh/jos9011_mangas",
-            data=f"O mangá '{clean_name}' acabou de ser traduzido e salvo no seu OneDrive!".encode('utf-8'),
+        # Push via ntfy.sh SOMENTE com tópico próprio configurado ("ntfy_topic"); tópicos são públicos
+        ntfy_topic = str((config or {}).get("ntfy_topic", "") or "").strip()
+        if not ntfy_topic:
+            raise RuntimeError("ntfy desativado")
+        requests.post(f"https://ntfy.sh/{urllib.parse.quote(ntfy_topic, safe='')}",
+            data="Um mangá acabou de ser traduzido e salvo.".encode('utf-8'),
             headers={
                 "Title": "Mangá Concluído!",
                 "Priority": "default",

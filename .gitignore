@@ -8,3 +8,9 @@ models/
 config.json
 *.jsonl
 outputs_manga/
+
+# Dados locais (NUNCA versionar)
+.config.json
+uploads/
+crash.log
+manga_reviews.json

@@ -91,6 +91,94 @@ except Exception:
 APP_VERSION = __version__
 APP_VERSION_NAME = __version_name__
 
+# =====================================================================
+# 🔐 CONTROLE DE ACESSO
+# Quando MANGA_STUDIO_TOKEN está definido (ex: Colab + túnel Cloudflare),
+# toda requisição precisa do token (via ?token=, header X-Studio-Token ou cookie).
+# Sem token definido, o servidor só aceita acesso local direto (127.0.0.1)
+# e recusa requisições que chegam por túneis públicos.
+# =====================================================================
+import hmac
+ACCESS_TOKEN = os.environ.get("MANGA_STUDIO_TOKEN", "").strip()
+TOKEN_COOKIE = "ms_token"
+_PUBLIC_PATHS = ("/manifest.json", "/sw.js", "/static/", "/favicon")
+_TUNNEL_HEADERS = ("Cf-Ray", "Cf-Connecting-Ip", "X-Forwarded-For", "Ngrok-Trace-Id")
+
+def _token_ok(candidate):
+    return bool(candidate) and bool(ACCESS_TOKEN) and hmac.compare_digest(str(candidate), ACCESS_TOKEN)
+
+@app.before_request
+def _require_access_token():
+    if request.path.startswith(_PUBLIC_PATHS):
+        return None
+    if not ACCESS_TOKEN:
+        # Sem token: bloqueia qualquer acesso vindo de proxy/túnel público
+        if any(h in request.headers for h in _TUNNEL_HEADERS) or request.remote_addr not in ("127.0.0.1", "::1"):
+            return Response("Acesso remoto bloqueado: defina MANGA_STUDIO_TOKEN para usar o Studio fora deste computador.", status=403)
+        return None
+    cand = request.args.get("token") or request.headers.get("X-Studio-Token") or request.cookies.get(TOKEN_COOKIE)
+    if not _token_ok(cand):
+        return Response("Acesso negado: abra o link completo com ?token=... exibido no Colab.", status=401)
+    return None
+
+@app.after_request
+def _persist_access_token(resp):
+    if _token_ok(request.args.get("token")):
+        resp.set_cookie(TOKEN_COOKIE, ACCESS_TOKEN, httponly=True, samesite="Strict", secure=request.is_secure, max_age=60 * 60 * 24 * 7)
+    return resp
+
+def _allowed_roots():
+    """Pastas onde o Studio pode ler, baixar ou apagar obras."""
+    roots = [BASE_MANGAS_DIR, globals().get("UPLOAD_DIR")]
+    try:
+        cfg = auto_translate.load_config()
+        roots += [cfg.get("raw_mangas_dir"), cfg.get("translated_mangas_dir")]
+    except Exception:
+        pass
+    try:
+        for r in drive_helper.find_drive_roots():
+            raw_dirs, trans_dirs = drive_helper.find_manga_directories(r)
+            roots += list(raw_dirs or []) + list(trans_dirs or [])
+            roots += [os.path.join(r, "MANGAS"), os.path.join(r, "MANGAS [PT-BR]")]
+    except Exception:
+        pass
+    # Pastas do trabalho atual (entrada escolhida pelo usuário e saída gerada)
+    try:
+        with job_lock:
+            if job_state.get("manga_path"):
+                roots.append(os.path.dirname(os.path.abspath(job_state["manga_path"])))
+            res = job_state.get("result") or {}
+            if isinstance(res, dict) and res.get("output_dir"):
+                roots.append(os.path.dirname(os.path.abspath(res["output_dir"])))
+    except Exception:
+        pass
+    out = []
+    for r in roots:
+        if r and os.path.isdir(r):
+            rp = os.path.realpath(r)
+            if rp not in out:
+                out.append(rp)
+    return out
+
+def is_path_allowed(path, allow_root_itself=False):
+    """True se `path` estiver DENTRO de uma das pastas de mangás permitidas."""
+    if not path:
+        return False
+    try:
+        rp = os.path.realpath(os.path.abspath(path))
+    except Exception:
+        return False
+    for root in _allowed_roots():
+        try:
+            if os.path.commonpath([rp, root]) == root and (allow_root_itself or rp != root):
+                return True
+        except ValueError:
+            continue  # drives diferentes no Windows
+    return False
+
+def _forbidden():
+    return jsonify({"success": False, "error": "Caminho fora das pastas de mangás permitidas."}), 403
+
 @app.context_processor
 def inject_version():
     return {
@@ -836,7 +924,9 @@ def api_download_folder():
     path = request.args.get("path", "").strip('\"\'')
     if not path or not os.path.exists(path):
         return jsonify({"error": "Pasta não encontrada"}), 404
-        
+    if not is_path_allowed(path):
+        return _forbidden()
+
     folder_path = os.path.abspath(path)
     if os.path.isfile(folder_path):
         folder_path = os.path.dirname(folder_path)
@@ -864,7 +954,9 @@ def api_download_cbz():
     path = request.args.get("path", "").strip('\"\'')
     if not path:
         return jsonify({"error": "Caminho não fornecido"}), 400
-        
+    if not is_path_allowed(path):
+        return _forbidden()
+
     clean_p = os.path.abspath(path)
     if os.path.isdir(clean_p):
         cbz_candidate = clean_p.rstrip("/\\") + ".cbz"
@@ -893,7 +985,9 @@ def api_reader():
     path = request.args.get("path", "").strip('\"\'')
     if not path or not os.path.exists(path):
         return "Caminho do mangá não encontrado", 404
-        
+    if not is_path_allowed(path):
+        return _forbidden()
+
     folder = os.path.dirname(os.path.abspath(path)) if (os.path.isfile(path) and path.endswith(".html")) else os.path.abspath(path)
     h = get_manga_hash(folder)
     return redirect(f"/read/{h}/")
@@ -931,7 +1025,12 @@ def api_thumb():
     img_path = request.args.get("path", "")
     if not img_path:
         return "", 404
-        
+    if os.path.isfile(img_path) and not img_path.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.zip', '.cbz', '.pdf')):
+        return "", 400
+    # Acesso remoto (token ativo): só miniaturas das pastas de mangás
+    if ACCESS_TOKEN and not is_path_allowed(img_path):
+        return "", 403
+
     try:
         thumb_name = str(abs(hash(img_path))) + ".jpg"
         thumb_dest = os.path.join(THUMB_CACHE_DIR, thumb_name)
@@ -1744,10 +1843,8 @@ def api_config():
         try:
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(new_cfg, f, indent=2, ensure_ascii=False)
-            extra_paths = [
-                r"C:\Users\ja329\tools\manga-translator\config.json",
-                os.path.join(r"C:\Users\ja329\.gemini\antigravity\scratch\SKILL-TRADUCAO-MANGA", "config.json")
-            ]
+            # Espelha o perfil apenas no Google Drive (Colab), nunca em pastas fixas de outra máquina
+            extra_paths = []
             for root in find_drive_roots():
                 extra_paths.append(os.path.join(root, ".manga_studio", "config.json"))
                 extra_paths.append(os.path.join(root, "MANGAS [PT-BR]", ".config.json"))
@@ -1791,6 +1888,9 @@ def api_delete_manga():
     abs_p = os.path.abspath(raw_path)
     if not os.path.exists(abs_p):
         return jsonify({"success": False, "error": "Pasta ou arquivo não encontrado."}), 404
+    # Só apaga obras DENTRO das pastas de mangás (nunca a própria pasta raiz)
+    if not is_path_allowed(abs_p):
+        return _forbidden()
 
     # Proteção de segurança: impede que caminhos críticos do sistema ou raízes sejam apagados
     forbidden_roots = [

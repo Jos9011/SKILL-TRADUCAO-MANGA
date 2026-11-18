@@ -1458,8 +1458,8 @@ def smart_group_bubbles(blocks, img_gray=None):
     bids = [0] * n
     if img_gray is not None and img_gray.size > 0:
         try:
-            id_map, _ = balloon_cavity.build_balloon_map(img_gray)
-            bids = [balloon_cavity.find_box_balloon_id(b["box"], id_map) for b in blocks]
+            id_map, b_infos = balloon_cavity.build_balloon_map(img_gray)
+            bids = [balloon_cavity.find_box_balloon_id(b["box"], id_map, infos=b_infos) for b in blocks]
         except Exception:
             bids = [0] * n
 
@@ -8707,7 +8707,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             if not trans_txt or re.fullmatch(r'\.{2,8}|…+', trans_txt) or not is_valid_translation(b["combined_text"], trans_txt):
                 b["_balloon_id"] = 0
                 continue
-            bid = balloon_cavity.find_box_balloon_id(b["box"], id_map_page)
+            bid = balloon_cavity.find_box_balloon_id(b["box"], id_map_page, infos=balloon_infos_page)
             b["_balloon_id"] = bid
             if bid > 0:
                 bid_usage_count[bid] = bid_usage_count.get(bid, 0) + 1

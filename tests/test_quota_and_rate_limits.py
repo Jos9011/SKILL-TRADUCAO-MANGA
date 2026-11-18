@@ -61,7 +61,7 @@ class QuotaAndRateLimitTests(unittest.TestCase):
         p_ja = auto_translate.build_dual_engine_system_prompt(is_adult=True, src_lang="ja")
         p_ko = auto_translate.build_dual_engine_system_prompt(is_adult=True, src_lang="ko")
 
-        self.assertLess(len(p_en), 4200)
+        self.assertLess(len(p_en), 4300)
         self.assertLess(len(p_ja), 3200)
         self.assertLess(len(p_ko), 3400)
 

@@ -56,6 +56,20 @@ except Exception:
 
 import balloon_cavity
 import typography_ptbr
+try:
+    from dialogue_chunk_mapper import (
+        prepare_chunk_payload,
+        extract_json_from_response,
+        map_ai_response_to_bubbles,
+        tag_connected_balloons
+    )
+except ImportError:
+    from .dialogue_chunk_mapper import (
+        prepare_chunk_payload,
+        extract_json_from_response,
+        map_ai_response_to_bubbles,
+        tag_connected_balloons
+    )
 
 try:
     import wordninja
@@ -4065,6 +4079,19 @@ def clean_ocr_scan_noise(text, src_lang="auto"):
     t = re.sub(r"(?i)\bcome\s+hang\s+ol\s*u\s*it\b", "come hang out", t)
     t = re.sub(r"(?i)\bhang\s+ol\s*u\s*it\b", "hang out", t)
     t = re.sub(r"(?i)\bpee\s*pee\b", "pee-pee", t)
+    # Correção de ruídos de fontes estilizadas e scanlations
+    t = re.sub(r"(?i)\b\$POT\b", "SPOT", t)
+    t = re.sub(r"(?i)\bSPOTO\b", "SPOT", t)
+    t = re.sub(r"\b50{3,}\b", "SOOOOO", t)
+    t = re.sub(r"(?i)\bWHO\s+A\b", "WHOA", t)
+    t = re.sub(r"(?i)\bDREAM\s*[-–—]\s*ING\b", "DREAMING", t)
+    t = re.sub(r"(?i)\bGRO\s*[-–—]\s*CERY\b", "GROCERY", t)
+    t = re.sub(r"(?i)\bSHOP\s*\.\s*PING\b", "SHOPPING", t)
+    t = re.sub(r"(?i)\bGREATLGRANDMA\b", "GREAT-GRANDMA", t)
+    t = re.sub(r"(?i)\bCUCKOLDEP\b", "CUCKOLDED", t)
+    t = re.sub(r"(?i)\bWAlt\b", "Wait", t)
+    t = re.sub(r"(?i)\bMAYBEIT['’]?S\s*A\b", "MAYBE IT'S A", t)
+    t = re.sub(r"(?i)\bKATSUTHOUGHT\b", "Katsu-kun thought", t)
     return t
 
 def clean_ai_translation(text, original_text="", is_adult=True, src_lang="auto"):
@@ -4477,6 +4504,15 @@ def clean_ai_translation(text, original_text="", is_adult=True, src_lang="auto")
         cleaned = re.sub(r'(?i)\bpendurar\b', 'visitar', cleaned)
     if re.search(r'\bhard\b', orig_lower) and re.search(r'\b(?:cock|dick|penis|shaft|erect|erection|boner)\b', orig_lower) and is_adult and re.search(r'\bdif[íi]cil\b', cleaned, re.IGNORECASE):
         cleaned = re.sub(r'(?i)\bdif[íi]cil\b', 'duro', cleaned)
+    if 'woozy' in orig_lower:
+        cleaned = re.sub(r'(?i)\b(?:sensa[çc][ãa]o\s+de\s+)?torneira\b', 'sensação de moleza', cleaned)
+        cleaned = re.sub(r'(?i)\btorneira\b', 'moleza', cleaned)
+    if 'working' in orig_lower and 'hard' in orig_lower:
+        cleaned = re.sub(r'(?i)\btrabalhando\s+t[ãa]o\s+duro\b', 'se esforçando tanto', cleaned)
+        cleaned = re.sub(r'(?i)\btrabalhando\s+duro\b', 'dando duro no trabalho', cleaned)
+    if 'spot' in orig_lower:
+        cleaned = re.sub(r'(?i)\b(?:o\s+)?\$pot\b', 'ponto sensível', cleaned)
+        cleaned = re.sub(r'(?i)\bspoto\b', 'ponto sensível', cleaned)
     if re.search(r'\bcum\b', orig_lower) and is_adult and re.search(r'\bcum\b', cleaned, re.IGNORECASE) and not any(w in cleaned.lower() for w in ['goz', 'porra', 'leite']):
         cleaned = re.sub(r'(?i)\bcum\b', 'gozar', cleaned)
 
@@ -5090,7 +5126,7 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
 
     dos, donts = load_learning_rules(src_lang=src_lang)
     is_asian = str(src_lang or "").lower() in ("ko-kr", "ko", "ja-jp", "ja", "zh-cn", "zh-tw", "zh")
-    do_cap, dont_cap = (14, 10) if is_asian else (10, 8)
+    do_cap, dont_cap = (14, 10) if is_asian else (6, 4)
     learned_compact = ""
     if dos or donts:
         learned_compact = "\nREGRAS APRENDIDAS:\n"
@@ -5140,7 +5176,7 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
             "\nADULTO (+18 SEM CENSURA):\n"
             "- Anatomia: 'pussy/cunt'/'coño/rajita'->'buceta/xoxota' (fem); 'cock/dick/penis'/'pene/verga/polla'->'pau/pinto/rola' (masc); 'asshole'(anal)->'cu/ânus' (NUNCA 'babaca'). Nunca troque o gênero na frase.\n"
             "- Ações: 'came/cum/cumming'/'correrse/me vengo'->'gozou/gozar/gozando' (NUNCA 'veio/chegou'); 'came inside'->'gozou dentro'; 'creampie'->'leitada/gozada dentro'; 'I can't hold it'->'Não aguento mais!'; 'calentura'->'tesão'; 'coger'(ES +18)->'foder/transar'; 'sow'->'porca/vadia'; 'panties'->'calcinha'.\n"
-            "- Armadilhas & gênero: 'he he/hehe'->'hehe/risinhos' (NUNCA 'ele ele'); 'pan'(tapa/som)->'tapa/plap' (NUNCA 'pão'); 'lewd'->'safado/pervertido/delícia' (NUNCA 'nojento'); falante c/ mulher 'so wet/stranger'->'tão molhada/estranha'; filho falando do pai p/ mãe 'Dad'->'O papai/Meu pai' (NUNCA 'Seu pai'); 'act all motherly'->'agir como mãe' (NUNCA 'material'); 'nuisance'->'estorvo/incômodo'; 'come hang out'->'venha me visitar' (NUNCA 'pendurar'); 'it's hard'(erótico)->'tá duro'; 'pee-pee'->'pauzinho'; manter nomes/pratos JP ('Oyakodon', 'Hatsuko', 'Yu-kun' NUNCA 'ONU/Vamos').\n"
+            "- Armadilhas & gênero: 'he he/hehe'->'hehe/risinhos' (NUNCA 'ele ele'); 'pan'(tapa/som)->'tapa/plap' (NUNCA 'pão'); 'lewd'->'safado/pervertido/delícia' (NUNCA 'nojento'); falante c/ mulher 'so wet/stranger'->'tão molhada/estranha'; filho falando do pai p/ mãe 'Dad'->'O papai/Meu pai' (NUNCA 'Seu pai'); 'act all motherly'->'agir como mãe' (NUNCA 'material'); 'nuisance'->'estorvo/incômodo'; 'come hang out'->'venha me visitar' (NUNCA 'pendurar'); 'it's hard'(erótico)->'tá duro'; 'working hard'(trabalho/dia a dia)->'se esforçando tanto' (NUNCA 'trabalhando tão duro' fora de contexto erótico); 'woozy'->'atordoamento/moleza gostosa' (NUNCA 'torneira'); 'pee-pee'->'pauzinho'; manter nomes/pratos JP ('Oyakodon', 'Hatsuko', 'Yu-kun' NUNCA 'ONU/Vamos').\n"
             "- Gemidos ('u u u', 'mph', 'ahn', 'kuh'): mantenha som expressivo ('Ugh...', 'Anh...'); NUNCA 'u'->'você' ou 'Anh'->'irmão'.\n"
         )
 
@@ -5152,8 +5188,9 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
         "3. ZERO espanhol residual ('Muchas gracias'->'Muito obrigado', 'joyas'->'joias', 'tienda'->'loja', 'ropa'->'roupa', 'hoy'->'hoje', 'vengan'->'venham'). Em cena comercial, nunca sexualize palavras comuns ('joyería'->'joalheria', 'cuerpo'->'corpo').\n"
         "4. Reconstrua OCR fragmentado pelo contexto antes de traduzir (ex: 'Wit c H\\'S'->'da bruxa', 'LN ABLE'->'incapaz', 'CONS E-QUE N CES'->'consequências', 'ARE YO LI OKAY'->'você está bem?', 'Fr I END'->'amiga', 'Ch IL DISH'->'infantil').\n"
         "5. Traduza sempre o pronome inglês 'I' (sozinho ou na frase, ex: 'I...', 'I\\'m') como 'Eu'/'Estou' em PT-BR — NUNCA deixe 'I' em inglês solto na tradução.\n"
+        "6. BALÕES CONECTADOS: Quando uma fala for dividida entre múltiplos balões contíguos (ex: balão 1 'FEELS', balão 2 'SOOOOO'/'50000', balão 3 'GOOD!'), compreenda a oração completa ('FEELS SO GOOD!' -> 'É TÃO BOM!' / 'QUE GOSTOSO!') e distribua a tradução naturalmente entre os balões, NUNCA traduza palavras soltas sem sentido.\n"
         f"{adult_clause}{glossary_rules}{learned_compact}"
-        'SAÍDA EXCLUSIVA EM JSON VÁLIDO: {"1": "Tradução 1", "2": "Tradução 2"}'
+        'SAÍDA EXCLUSIVA EM JSON VÁLIDO: Retorne exatamente as chaves numéricas fornecidas no lote: {"1": "Tradução 1", "2": "Tradução 2"}'
     )
 
 def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None, engine_opts=None, is_adult=True, glossary=None, page_w=1200, page_h=1800, src_lang="auto", page_num=1):
@@ -5183,6 +5220,8 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
     if not needed_bubbles:
         return results
 
+    needed_bubbles = tag_connected_balloons(needed_bubbles)
+
     # Agrupamento dinâmico em chunks para manter TPM por chamada bem abaixo de 8k (e evitar HTTP 413 em páginas densas)
     MAX_BUBBLES_PER_CHUNK = 10
     MAX_CHARS_PER_CHUNK = 1600
@@ -5211,19 +5250,12 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
     while pending_queue:
         chunk = pending_queue.pop(0)
         chunk_idx += 1
+        payload_baloes, chunk_dmap, chunk_ordered = prepare_chunk_payload(chunk, src_lang=src_lang)
         dossier_payload = {
             "ordem": "RTL",
             "idioma": dossier["idioma_detectado"],
-            "baloes": [
-                {
-                    "id": b["id"],
-                    "pos": b["pos"],
-                    "tipo": "V" if "vertical" in b["formato"] else ("H" if "retangular" in b["formato"] else "O"),
-                    "max_chars": b["max_chars"],
-                    "texto": b["texto_original"]
-                }
-                for b in chunk
-            ]
+            "total_baloes_lote": len(payload_baloes),
+            "baloes": payload_baloes
         }
         messages = [
             {"role": "system", "content": sys_prompt},
@@ -5232,7 +5264,6 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
 
         has_long_text = any(len(b["texto_original"]) > 60 for b in chunk)
         batch_max_tokens = min(900, max(280, len(chunk) * (110 if has_long_text else 75)))
-        chunk_dmap = {b["id"]: b["orig_raw"] for b in chunk}
 
         try:
             resp_content = execute_translation_request(
@@ -5256,20 +5287,18 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
 
         used_fb_batch = bool(engine_opts.get("_last_used_fallback"))
         resp_clean = _strip_think_tags(resp_content)
-        json_match = re.search(r'\{.*\}', resp_clean, flags=re.DOTALL)
-        if json_match:
+        parsed = extract_json_from_response(resp_clean)
+        if parsed:
             try:
-                parsed = json.loads(json_match.group(0))
+                mapped = map_ai_response_to_bubbles(parsed, chunk_ordered, chunk_dmap)
                 chunk_ok = 0
-                for k, trans in parsed.items():
-                    if k in chunk_dmap:
-                        orig = chunk_dmap[k]
-                        cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult, src_lang=src_lang)
-                        if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
-                            results[orig] = cleaned_trans
-                            chunk_ok += 1
-                            if used_fb_batch:
-                                engine_opts.setdefault("_fallback_originals", set()).add(orig)
+                for orig, trans in mapped.items():
+                    cleaned_trans = clean_ai_translation(trans, original_text=orig, is_adult=is_adult, src_lang=src_lang)
+                    if cleaned_trans and cleaned_trans.strip().lower() != orig.strip().lower():
+                        results[orig] = cleaned_trans
+                        chunk_ok += 1
+                        if used_fb_batch:
+                            engine_opts.setdefault("_fallback_originals", set()).add(orig)
                 if chunk_ok > 0 and not pending_queue:
                     print(f"[+] [Agente 2: Contextualizador] Cena da pág {page_num} contextualizada e traduzida com sucesso.")
             except Exception:

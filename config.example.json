@@ -22,5 +22,8 @@
   "colorize": false,
   "temperature": 0.0,
   "rag_memory": true,
+  "ficha_obra": true,
+  "lider_capitulo": true,
+  "lider_model": "openai/gpt-oss-120b",
   "ntfy_topic": ""
 }

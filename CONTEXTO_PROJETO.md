@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.7.5 Beta` (`0.7.5-beta`)** / APK Android: **`v1.0.9-mobile` (versionCode 10)**
+* **Versão Oficial Atual:** **`v0.7.6 Beta` (`0.7.6-beta`)** / APK Android: **`v1.0.9-mobile` (versionCode 10)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -49,6 +49,13 @@ O sistema é dividido em submódulos cooperativos:
   * Recebe o dossiê da página inteira de uma vez.
   * Compreende gênero dos personagens, duplo sentido, tom emocional e gírias de scanlation em PT-BR sem censura (+18).
   * Gera a tradução de todas as falas em bloco com coerência de cena.
+* **Líder do Capítulo + Ficha da Obra (Fase 1, `lider_capitulo.py` / `ficha_obra.py`):**
+  * Roda uma vez por capítulo, depois do OCR e antes do laço de tradução do `process_manga`.
+  * Lê as falas do capítulo inteiro (sem repetição, cortadas e em partes para caber no limite de ~8k tokens por chamada do Groq) e devolve só novidades: personagens (nome PT-BR, gênero, nota) e termos fixos.
+  * Grava em `ficha_obra.json` na pasta da obra (pai da pasta do capítulo quando o nome parece capítulo). Só acrescenta; nunca sobrescreve; divergências vão para `"conflitos"`.
+  * A ficha entra no prompt de cada lote do Agente 2 (antes do bloco do RAG). A chamada do Líder usa uma cópia do estado do motor, então nunca esgota nem troca o modelo do tradutor.
+  * Config: `"ficha_obra"`, `"lider_capitulo"`, `"lider_model"` (padrão `openai/gpt-oss-120b`); variável `MANGA_FICHA=0` desliga tudo.
+  * Ainda não portado para o `MANGA-STUDIO-ANDROID`.
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

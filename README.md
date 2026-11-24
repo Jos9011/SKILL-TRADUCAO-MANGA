@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.7.4 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.7.5 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.7.4--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.7.5--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -75,6 +75,7 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Dolphin 2.9 Especializado (+18):** Prompt otimizado para a arquitetura Dolphin da Cognitive Computations com diretrizes estritas contra vazamento de mensagens do sistema e suporte a termos adultos e gírias brasileiras (`panties` -> calcinha, `cock` -> pau/pinto, `came inside` -> gozou dentro).
 * **Tradução em Lote por Página (*Context-Aware*):** Submissão em lote JSON para garantir coerência de gênero, tom e nomes entre os personagens que estão dialogando na mesma cena.
 * **Glossário Dinâmico (`glossary.json`):** Respeita nomes fixos de personagens e termos configurados.
+* **Memória por Semelhança (RAG leve, `rag_memory.py`):** A cada lote, busca em `memoria_traducoes.json` as frases já traduzidas mais *parecidas* (não só idênticas, tolerando ruído de OCR) e envia até 8 como exemplo para a IA. Roda em Python puro no PC, Colab e Android. Desligue com `"rag_memory": false` no `config.json` ou `MANGA_RAG=0`. Teste manual: `python rag_memory.py "早安！"`.
 * **Fallback Triplo:** OpenRouter / Ollama Remoto / Local -> MyMemory / Google Translator.
 
 ### 3. Limpeza Cirúrgica de Balões (Borda Preservada)

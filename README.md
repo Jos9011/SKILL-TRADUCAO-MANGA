@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.7.5 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.7.6 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.7.5--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.7.6--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -76,6 +76,7 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Tradução em Lote por Página (*Context-Aware*):** Submissão em lote JSON para garantir coerência de gênero, tom e nomes entre os personagens que estão dialogando na mesma cena.
 * **Glossário Dinâmico (`glossary.json`):** Respeita nomes fixos de personagens e termos configurados.
 * **Memória por Semelhança (RAG leve, `rag_memory.py`):** A cada lote, busca em `memoria_traducoes.json` as frases já traduzidas mais *parecidas* (não só idênticas, tolerando ruído de OCR) e envia até 8 como exemplo para a IA. Roda em Python puro no PC, Colab e Android. Desligue com `"rag_memory": false` no `config.json` ou `MANGA_RAG=0`. Teste manual: `python rag_memory.py "早安！"`.
+* **Ficha da Obra + Líder do Capítulo (`ficha_obra.py`, `lider_capitulo.py`):** Depois do OCR e antes de traduzir, um Líder (`openai/gpt-oss-120b` por padrão, configurável em `"lider_model"`) lê as falas do capítulo inteiro e registra em `ficha_obra.json`, na pasta da obra, só as novidades: personagens novos (nome em PT-BR e gênero) e termos próprios da obra. A ficha vai no prompt de cada lote, para nomes e gêneros ficarem iguais em todos os capítulos. O Líder só acrescenta: nunca muda o que já está na ficha (você pode editar o JSON à mão) e anota divergências em `"conflitos"`. Cada capítulo é lido uma vez (refeito com "Retraduzir"). Desligue com `"ficha_obra": false` no `config.json` ou `MANGA_FICHA=0`; para usar a ficha sem gastar a chamada do Líder, `"lider_capitulo": false`.
 * **Fallback Triplo:** OpenRouter / Ollama Remoto / Local -> MyMemory / Google Translator.
 
 ### 3. Limpeza Cirúrgica de Balões (Borda Preservada)

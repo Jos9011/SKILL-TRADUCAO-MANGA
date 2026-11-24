@@ -61,6 +61,12 @@ try:
 except Exception:
     rag_memory = None
 try:
+    import ficha_obra  # Ficha da Obra: personagens, gêneros e termos fixos; opcional
+    import lider_capitulo  # Líder do capítulo que atualiza a ficha; opcional
+except Exception:
+    ficha_obra = None
+    lider_capitulo = None
+try:
     from dialogue_chunk_mapper import (
         prepare_chunk_payload,
         extract_json_from_response,
@@ -5197,7 +5203,7 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
         'SAÍDA EXCLUSIVA EM JSON VÁLIDO: Retorne exatamente as chaves numéricas fornecidas no lote: {"1": "Tradução 1", "2": "Tradução 2"}'
     )
 
-def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None, engine_opts=None, is_adult=True, glossary=None, page_w=1200, page_h=1800, src_lang="auto", page_num=1):
+def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None, engine_opts=None, is_adult=True, glossary=None, page_w=1200, page_h=1800, src_lang="auto", page_num=1, ficha=None):
     """Traduz falas de uma página via Agente 1 + Agente 2 com chunking dinâmico para TPM e divisão automática contra HTTP 413."""
     if not bubbles_to_trans:
         return {}
@@ -5261,16 +5267,24 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
             "total_baloes_lote": len(payload_baloes),
             "baloes": payload_baloes
         }
-        # RAG: exemplos de traduções antigas PARECIDAS com os balões deste lote (rag_memory.py)
+        # Ficha da Obra: nomes, gêneros e termos fixos da obra, priorizando os que aparecem no lote (ficha_obra.py)
         chunk_sys_prompt = sys_prompt
+        if ficha and ficha_obra is not None:
+            try:
+                ficha_block = ficha_obra.build_prompt_block(ficha, [b["texto_original"] for b in chunk])
+                if ficha_block:
+                    chunk_sys_prompt = sys_prompt + ficha_block
+            except Exception:
+                chunk_sys_prompt = sys_prompt
+        # RAG: exemplos de traduções antigas PARECIDAS com os balões deste lote (rag_memory.py)
         if rag_memory is not None:
             try:
                 rag_block = rag_memory.build_rag_prompt_block([b["texto_original"] for b in chunk])
                 if rag_block:
-                    chunk_sys_prompt = sys_prompt + rag_block
+                    chunk_sys_prompt = chunk_sys_prompt + rag_block
                     print(f"    [RAG] {rag_block.count(chr(10) + '- ')} exemplo(s) da memória anexados ao lote {chunk_idx}")
             except Exception:
-                chunk_sys_prompt = sys_prompt
+                pass
         messages = [
             {"role": "system", "content": chunk_sys_prompt},
             {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, separators=(",", ":"))}
@@ -8633,6 +8647,22 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     else:
         print(f"[*] Modo Fallback de Tradução Nuvem ativado (MyMemory/Google).")
 
+    # Fase 1: o Líder lê o capítulo inteiro (já no OCR) e atualiza a Ficha da Obra antes de traduzir
+    ficha_ctx = None
+    if lider_capitulo is not None:
+        try:
+            chapter_texts = [b["combined_text"] for p in pages_data if not is_credits_page(p["bubbles"]) for b in p["bubbles"]]
+            ficha_ctx = lider_capitulo.run_for_chapter(
+                manga_dir, clean_name, chapter_texts,
+                engine_opts if engine_type is not None else None,
+                execute_translation_request,
+                config=config, src_lang=src_lang, force=retranslate
+            )
+        except Exception as e:
+            print(f"[!] [Líder] Etapa ignorada por erro: {e}")
+            ficha_ctx = None
+    ficha_atual = ficha_ctx["ficha"] if ficha_ctx else None
+
     # Traduz página por página com coerência narrativa e suporte a glossário
     try:
         for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
@@ -8663,7 +8693,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                     page_w=p.get("width", 1200),
                     page_h=p.get("height", 1800),
                     src_lang=src_lang,
-                    page_num=p.get("page", 1)
+                    page_num=p.get("page", 1),
+                    ficha=ficha_atual
                 )
                 for orig, trans in batch_res.items():
                     if trans and is_valid_translation(orig, trans):
@@ -8688,6 +8719,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 update_global_translation_memory(ai_approved_cache)
         except Exception as e:
             print(f"[!] Aviso: Não foi possível salvar o cache: {e}")
+        if lider_capitulo is not None and ficha_ctx:
+            try:
+                lider_capitulo.save_if_changed(ficha_ctx)
+            except Exception as e:
+                print(f"[!] [Ficha] Não foi possível salvar a ficha da obra: {e}")
 
     for p in pages_data:
         for b in p["bubbles"]:

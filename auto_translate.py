@@ -57,6 +57,10 @@ except Exception:
 import balloon_cavity
 import typography_ptbr
 try:
+    import rag_memory  # Memória por semelhança (RAG leve); opcional
+except Exception:
+    rag_memory = None
+try:
     from dialogue_chunk_mapper import (
         prepare_chunk_payload,
         extract_json_from_response,
@@ -5257,8 +5261,18 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
             "total_baloes_lote": len(payload_baloes),
             "baloes": payload_baloes
         }
+        # RAG: exemplos de traduções antigas PARECIDAS com os balões deste lote (rag_memory.py)
+        chunk_sys_prompt = sys_prompt
+        if rag_memory is not None:
+            try:
+                rag_block = rag_memory.build_rag_prompt_block([b["texto_original"] for b in chunk])
+                if rag_block:
+                    chunk_sys_prompt = sys_prompt + rag_block
+                    print(f"    [RAG] {rag_block.count(chr(10) + '- ')} exemplo(s) da memória anexados ao lote {chunk_idx}")
+            except Exception:
+                chunk_sys_prompt = sys_prompt
         messages = [
-            {"role": "system", "content": sys_prompt},
+            {"role": "system", "content": chunk_sys_prompt},
             {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, separators=(",", ":"))}
         ]
 

@@ -1757,6 +1757,10 @@ def clean_speech_bubble(img, box, balloon_mask=None, in_balloon=True):
         if bg_luma < 236:
             halo_wide = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1) > 0
             halo_ring = halo_ring | (halo_wide & ((gray_ctx.astype(np.int16) - bg_luma) > 26))
+        elif bg_luma >= 245:
+            # Papel branco puro: a borda antisserrilhada da letra (236-252) ficava como "sombra" do texto antigo
+            halo_soft = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1) > 0
+            halo_ring = halo_ring | (halo_soft & (luma_diff > 3))
         final_mask = ((dil_clean > 0) | (edge_clean_mask > 0) | halo_ring).astype(np.uint8) * 255
 
         # Nunca pinta fora de erase_box (e respeita balloon_mask se fornecida)
@@ -9005,6 +9009,14 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 if max_avail_w > 30:
                     target_w = min(target_w, max_avail_w)
 
+            # Região do balão desalinhada do texto original (ex.: quadros de narração encostados viram uma área só):
+            # centraliza onde o texto original estava e usa a largura que ele ocupava como piso da quebra de linha.
+            ob = [float(v) for v in b["box"]]
+            ocr_cx = (ob[0] + ob[2]) / 2.0
+            if band_prof and abs(safe_cx - ocr_cx) > max(12.0, 0.2 * (ob[2] - ob[0])):
+                safe_cx = ocr_cx
+            min_line_w = max(0.0, 2.0 * min(ob[2] - safe_cx, safe_cx - ob[0])) * 0.95
+
             if b.get("_over_art"):
                 # Texto solto sobre o desenho: ocupa o lugar do original (centro e tamanho da caixa OCR)
                 ob = [float(v) for v in b["box"]]
@@ -9030,6 +9042,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 band_profile=band_prof,
                 page_w=w_img,
                 is_display=is_display,
+                min_line_w=min_line_w,
             )
             if not lines:
                 continue

@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.7.10 Beta` (`0.7.10-beta`)** / APK Android: **`v1.0.13-mobile` (versionCode 14)**
+* **Versão Oficial Atual:** **`v0.7.11 Beta` (`0.7.11-beta`)** / APK Android: **`v1.0.13-mobile` (versionCode 14)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**

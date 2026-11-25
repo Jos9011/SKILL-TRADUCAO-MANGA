@@ -172,7 +172,25 @@ class TestTextOverArt(unittest.TestCase):
         self.assertFalse(auto_translate.is_text_over_art(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), box))
         self.assertEqual(auto_translate.clean_speech_bubble(img, box, in_balloon=False), "paper")
         x0, y0, x1, y1 = box
-        self.assertGreater(float(np.mean(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[y0:y1, x0:x1] > 200)), 0.97)
+        region = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[y0:y1, x0:x1]
+        self.assertGreater(float(np.mean(region > 200)), 0.97)
+
+    def test_no_ghost_of_old_text_on_white_paper(self):
+        """Balão branco com texto preto antisserrilhado: a borda cinza-clara (236-252) não pode ficar."""
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (320, 160), "white")
+        d = ImageDraw.Draw(img)
+        font = ImageFont.truetype(auto_translate.select_font_for_bubble("X"), 26)
+        d.text((60, 60), "PRETTY NICE", font=font, fill=(0, 0, 0))
+        box = list(d.textbbox((60, 60), "PRETTY NICE", font=font))
+        # Borda suave como nas páginas escaneadas (era ela que virava "sombra" do texto antigo)
+        arr = cv2.GaussianBlur(np.array(img)[:, :, ::-1].copy(), (5, 5), 1.2)
+        auto_translate.clean_speech_bubble(arr, box, in_balloon=False)
+        region = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)[box[1]:box[3], box[0]:box[2]]
+        # Antes sobravam tons até 244 desenhando as letras; agora o que sobra é quase branco (>= 250), invisível
+        self.assertGreaterEqual(int(region.min()), 250)
 
     def test_inside_detected_balloon_never_uses_art_mode(self):
         img, box = _page_with_text(over_art=True)

@@ -15,6 +15,8 @@ ocr_text_fix.py - Correções do texto lido pelo OCR e checagem de inglês resid
    palavras coladas (wordninja) não deve quebrar ("TOKITO" virava "TOKI TO").
 6. fix_ocr_confusions: em CAIXA ALTA, o RapidOCR lê U como L ("QLITE", "YOLR", "PENT-LP");
    também "...?" lido como "2?" e parênteses/colchetes soltos ("(SO", "[WHAT!").
+7. is_credit_text: créditos de scan ocidentais ("TRANSLATED BY DOUJINS.COM", "discord.gg/...",
+   "Traduzido por X Scans"), que ficam como estão na página (sem traduzir nem apagar).
 
 Regra de Ouro: Coeso, desacoplado e estritamente < 300 linhas.
 """
@@ -232,3 +234,28 @@ def fix_ocr_confusions(lines):
         elif joined.count(close_c) and not joined.count(open_c):
             out = [l.replace(close_c, "") for l in out]
     return [re.sub(r"\s{2,}", " ", l).strip() for l in out]
+
+
+# ---------------------------------------------------------------------------
+# 7. Créditos de scan
+# ---------------------------------------------------------------------------
+_DOMAIN_RE = re.compile(r"[a-z0-9-]+\.(?:com|net|org|io|gg|xyz|to|me|cc|info|club|site|online|moe|top|app|br)\b", re.I)
+_CREDIT_RE = re.compile(
+    r"(?i)^\s*(?:translated|scanlated|cleaned|typeset(?:ted)?|proofread|redrawn|edited|raws?|tl|ts|pr|cl)\s*(?:by\b|:)"
+    r"|(?:traduzid[oa]|tradu[cç][aã]o|traducid[oa]|traducci[oó]n)\s+(?:por|by)\b"
+    r"|discord\.gg|patreon\.com|ko-fi\.com|mangadex|\bscanlations?\b|\bscans\b\s*$"
+)
+
+
+def is_credit_text(text):
+    """True para créditos de scan/sites em blocos curtos (até 8 palavras)."""
+    t = str(text or "").strip()
+    if not t or _CJK_RE.search(t):
+        return False
+    if len(t.split()) > 8:
+        return False
+    if _CREDIT_RE.search(t):
+        return True
+    # "TRANSLATEDBYDOUJINS.COM", "www.site.net": o bloco é praticamente só um endereço
+    dom = _DOMAIN_RE.search(t)
+    return bool(dom) and len(re.sub(r"[^a-z0-9]", "", t.lower())) <= len(re.sub(r"[^a-z0-9]", "", dom.group(0).lower())) + 22

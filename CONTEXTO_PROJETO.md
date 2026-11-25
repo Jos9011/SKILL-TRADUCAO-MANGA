@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.7.9 Beta` (`0.7.9-beta`)** / APK Android: **`v1.0.13-mobile` (versionCode 14)**
+* **Versão Oficial Atual:** **`v0.7.10 Beta` (`0.7.10-beta`)** / APK Android: **`v1.0.13-mobile` (versionCode 14)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -56,6 +56,7 @@ O sistema é dividido em submódulos cooperativos:
   * O Líder registra nomes completos ("Manabu Tokito"), põe apelidos na nota de quem os recebe e descarta palpites ("possível", "talvez").
   * Atenção: a lista do WebUI mostra a pasta da obra, não as subpastas de capítulo; por isso o padrão recomendado é pastas soltas por capítulo.
 * **Correções de OCR (`ocr_text_fix.py`):** ordem das linhas por sobreposição vertical real (não mais faixas fixas de 22 px), caixa alta ("OTAKu" -> "OTAKU"), filtro de lixo ("h3") e rejeição de inglês residual em `is_valid_translation`. Também: U lido como L ("QLITE"), "2?" -> "...?", parênteses sem par, e proteção de nomes romanizados contra o wordninja ("TOKITO").
+* **Texto sobre o desenho (v0.7.10, `is_text_over_art` / `clean_speech_bubble(..., in_balloon=)`):** fora de balão detectado e com menos de 50% de entorno claro, a limpeza recompõe o desenho por inpainting (em vez de pintar de branco) e o texto é desenhado no lugar da caixa OCR com contorno branco. Créditos ocidentais (`ocr_text_fix.is_credit_text`) não são traduzidos nem apagados.
 * **Tipografia de quadros estreitos (`typography_ptbr.py`):** `wrap_balanced_ptbr` aceita mais de 8 linhas quando o quadro é alto e estreito (altura útil >= 1,8x a largura); o último recurso usa `wrap_hard_ptbr`, que nunca passa da largura (antes devolvia o texto numa linha só).
   * A ficha entra no prompt de cada lote do Agente 2 (antes do bloco do RAG). A chamada do Líder usa uma cópia do estado do motor, então nunca esgota nem troca o modelo do tradutor.
   * Config: `"ficha_obra"`, `"lider_capitulo"`, `"lider_model"` (padrão `openai/gpt-oss-120b`); variável `MANGA_FICHA=0` desliga tudo.

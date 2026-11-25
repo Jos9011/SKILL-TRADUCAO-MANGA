@@ -1290,11 +1290,12 @@ def repair_glued_text(text, src_lang="en-US"):
     # 1. Corrige quebras de linha com hífens preservando honoríficos japoneses
     honorifics = {'san', 'sama', 'kun', 'chan', 'dono', 'senpai', 'sensei', 'tan'}
     def _fix_hyphen(m):
-        w1, w2 = m.group(1), m.group(2)
-        if w2.lower() in honorifics:
-            return f"{w1}-{w2}"
-        return f"{w1}{w2}"
-    text = re.sub(r'([A-Za-z]+)-\s+([A-Za-z]+)', _fix_hyphen, text)
+        lead, w1, w2 = m.group(1), m.group(2), m.group(3)
+        # Palavra composta que continua na outra linha ("STATE-OF-" + "THE-ART"): mantém o hífen
+        if w2.lower() in honorifics or lead == "-":
+            return f"{lead}{w1}-{w2}"
+        return f"{lead}{w1}{w2}"
+    text = re.sub(r'(-?)([A-Za-z]+)-\s+([A-Za-z]+)', _fix_hyphen, text)
 
     # 2. Corrige pronomes e nomes divididos erroneamente pelo OCR
     text = re.sub(r'\bS\s+he\b', 'She', text)
@@ -1350,7 +1351,11 @@ def smart_join_lines(lines, is_cjk=False, preserve_spaces=False):
         if text.endswith('-'):
             clean_nxt = nxt.lstrip('-').strip()
             first_w = re.sub(r'[^a-zA-Z]', '', clean_nxt.split()[0]).lower() if clean_nxt else ''
+            last_tok = text.split()[-1] if text.split() else ""
             if first_w in honorifics or (len(first_w) >= 3 and first_w.startswith('s') and all(c == 'a' for c in first_w[1:-1])):
+                text = text + clean_nxt
+            elif "-" in last_tok[:-1]:
+                # Palavra composta que continua na linha seguinte ("STATE-OF-" + "THE-ART"): mantém o hífen
                 text = text + clean_nxt
             else:
                 text = text[:-1] + clean_nxt
@@ -1587,7 +1592,27 @@ def smart_group_bubbles(blocks, img_gray=None):
     bubbles.sort(key=lambda b: (b["box"][1], b["box"][0]))
     return bubbles
 
-def clean_speech_bubble(img, box, balloon_mask=None):
+def is_text_over_art(gray_img, box, ctx_pad=22, min_bright_ring=0.5):
+    """
+    Texto solto sobre o desenho (fora de balão), ex.: "HERE! PJS!" com contorno branco por cima do cabelo.
+    Olha o ENTORNO da caixa OCR: em balão/quadro de papel a maior parte é clara (>= ~56% nos testes);
+    sobre a arte, menos da metade. Nesses casos a limpeza deve recompor o desenho, não pintar de branco.
+    """
+    ih, iw = gray_img.shape[:2]
+    x0, y0, x1, y1 = [int(round(v)) for v in box]
+    cx0, cy0, cx1, cy1 = max(0, x0 - ctx_pad), max(0, y0 - ctx_pad), min(iw, x1 + ctx_pad), min(ih, y1 + ctx_pad)
+    ctx = gray_img[cy0:cy1, cx0:cx1]
+    if ctx.size == 0:
+        return False
+    ring = np.ones(ctx.shape, dtype=bool)
+    ring[max(0, y0 - cy0 - 3):max(0, y1 - cy0 + 3), max(0, x0 - cx0 - 3):max(0, x1 - cx0 + 3)] = False
+    ring_px = ctx[ring]
+    if ring_px.size < 40:
+        return False
+    return float(np.mean(ring_px >= 215)) < min_bright_ring
+
+
+def clean_speech_bubble(img, box, balloon_mask=None, in_balloon=True):
     """Limpeza cirúrgica em multi-camadas:
     - Isola estritamente o entorno da caixa OCR (evita destruir bordas, cabelos e arte externa com padding gigante).
     - Adapta-se à cor real do papel/balão (sem chapar branco puro #FFFFFF em balões off-white ou creme).
@@ -1636,7 +1661,10 @@ def clean_speech_bubble(img, box, balloon_mask=None):
     rh, rw = gray_ctx.shape
 
     white_ratio_erase = float(np.mean(gray_ocr > 188))
-    if white_ratio_erase > 0.45:
+    # Texto com contorno branco sobre o desenho (fora de balão) parece "claro" por dentro da caixa,
+    # mas pintá-lo de branco deixa um retângulo sobre a arte: usa a CAMADA B (recompõe o desenho).
+    over_art = (not in_balloon) and is_text_over_art(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), box)
+    if white_ratio_erase > 0.45 and not over_art:
         # --- CAMADA A: BALÃO CLARO / BRANCO / OFF-WHITE / TINTADO ---
         # Amostra a cor real do papel priorizando o anel interno ao redor da caixa OCR para não confundir contorno branco (#FFF) de letra com papel cinza/tintado
         sample_gray = gray_erase if gray_erase.size >= 16 else gray_ctx
@@ -1740,6 +1768,7 @@ def clean_speech_bubble(img, box, balloon_mask=None):
                 erase_gate &= ((bmask_crop > 0).astype(np.uint8) * 255)
         final_mask &= erase_gate
         ctx_roi[final_mask > 0] = fill_bgr
+        return "paper"
     else:
         # --- CAMADA B: CARTÕES ESCUROS / TEXTURAS / RETÍCULAS / SFX COLORIDOS ---
         # Amostra a moldura periférica fora da caixa OCR (para inferir polaridade e cor base)
@@ -1797,6 +1826,19 @@ def clean_speech_bubble(img, box, balloon_mask=None):
         if np.sum(keep_mask > 0) < 6:
             keep_mask = cand_mask & inner_ocr_mask
 
+        if over_art:
+            # Letras escuras dentro da caixa OCR + ~4 px em volta (pega o contorno branco inteiro);
+            # o inpainting recompõe o desenho a partir da arte ao redor, sem deixar halo claro.
+            dark_letters = ((gray_ctx < 120).astype(np.uint8) * 255) & inner_ocr_mask
+            art_mask = cv2.dilate(dark_letters, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)), iterations=1)
+            art_gate = np.zeros_like(cand_mask)
+            art_gate[max(0, oy0 - 6):min(rh, oy1 + 6), max(0, ox0 - 6):min(rw, ox1 + 6)] = 255
+            art_mask &= art_gate
+            if np.any(art_mask > 0):
+                inpainted = cv2.inpaint(ctx_roi, art_mask, inpaintRadius=6, flags=cv2.INPAINT_TELEA)
+                ctx_roi[:] = inpainted
+            return "art"
+
         # Confina estritamente à erase_box (pad 5-10px): ZERO pixels borrados fora do texto!
         erase_gate = np.zeros_like(cand_mask)
         erase_gate[ly0:ly1, lx0:lx1] = 255
@@ -1809,6 +1851,7 @@ def clean_speech_bubble(img, box, balloon_mask=None):
             else:
                 inpainted = cv2.inpaint(ctx_roi, final_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
                 img[ey0:ey1, ex0:ex1] = inpainted[ly0:ly1, lx0:lx1]
+        return "art" if over_art else "texture"
 
 def analyze_safe_balloon(cleaned_gray, orig_gray, box, limits):
     """
@@ -8269,6 +8312,9 @@ def is_scan_watermark(text):
         return True
     if re.match(r'^(?:春卷\s*)?社具[券费]号[：:]?\s*\d+$', t):
         return True
+    # Créditos ocidentais: "TRANSLATED BY DOUJINS.COM", "discord.gg/...", "Traduzido por X Scans"
+    if ocr_text_fix is not None and ocr_text_fix.is_credit_text(t):
+        return True
     return False
 
 def is_credits_page(bubbles):
@@ -8702,6 +8748,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             untranslated = []
             for b in p["bubbles"]:
                 orig_text = b["combined_text"].strip()
+                if is_scan_watermark(orig_text):
+                    continue  # crédito de scan: fica como está na página (sem traduzir nem apagar)
                 # 1. Consulta memória global persistente de tradução aprendida
                 if orig_text not in cache or not is_valid_translation(orig_text, cache.get(orig_text, "")):
                     mem_hit = lookup_translation_memory(orig_text)
@@ -8834,8 +8882,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 balloon_cavity.sweep_balloon_interior(cleaned, balloon_infos_page[bid], erode_px=2)
                 swept_bids.add(bid)
             r_boxes = b.get("raw_boxes") or [b["box"]]
-            for r_box in r_boxes:
-                clean_speech_bubble(cleaned, r_box)
+            modes = [clean_speech_bubble(cleaned, r_box, in_balloon=(bid > 0)) for r_box in r_boxes]
+            b["_over_art"] = "art" in modes
                 
         # 4.2 Desenhar texto traduzido com geometria anti-extravasamento e escala consistente
         cleaned_gray = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
@@ -8957,6 +9005,16 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 if max_avail_w > 30:
                     target_w = min(target_w, max_avail_w)
 
+            if b.get("_over_art"):
+                # Texto solto sobre o desenho: ocupa o lugar do original (centro e tamanho da caixa OCR)
+                ob = [float(v) for v in b["box"]]
+                safe_cx, safe_cy = (ob[0] + ob[2]) / 2.0, (ob[1] + ob[3]) / 2.0
+                target_w = max(40.0, (ob[2] - ob[0]) * 1.35)
+                target_h = max(28.0, (ob[3] - ob[1]) * 1.25)
+                safe_min_y, safe_max_y = safe_cy - target_h / 2.0, safe_cy + target_h / 2.0
+                band_prof = None
+                is_white_bg = False
+
             is_display = bool(
                 orig_line_h >= (w_img * 0.030)
                 or (len(text.split()) <= 2 and (text.endswith("!!") or text.endswith("!?") or orig_line_h >= w_img * 0.025))
@@ -9005,6 +9063,11 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 text_fill = (255, 255, 255)
                 stroke_fill = (15, 15, 15)
                 stroke_w = max(2, int(round(font_size * 0.09)))
+            elif b.get("_over_art"):
+                # Texto solto sobre o desenho: letra escura com contorno branco, como no original
+                text_fill = (0, 0, 0)
+                stroke_fill = (255, 255, 255)
+                stroke_w = max(2, int(round(font_size * 0.10)))
             else:
                 text_fill = (15, 15, 15) if is_white_bg else (0, 0, 0)
                 stroke_fill = (255, 255, 255)

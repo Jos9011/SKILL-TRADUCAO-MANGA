@@ -136,5 +136,68 @@ class TestRomajiAndConfusions(unittest.TestCase):
         self.assertEqual(r("WHENI WAS 17"), "WHEN I WAS 17")
 
 
+def _page_with_text(over_art):
+    """Página sintética: texto preto com contorno branco sobre hachura (arte) ou sobre papel branco."""
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGB", (320, 220), "white")
+    d = ImageDraw.Draw(img)
+    if over_art:
+        img.paste((150, 150, 150), (0, 0, 320, 220))
+        for x in range(0, 320, 7):
+            d.line([(x, 0), (x - 60, 220)], fill=(40, 40, 40), width=2)
+    font = ImageFont.truetype(auto_translate.select_font_for_bubble("HI"), 46)
+    d.text((110, 80), "HEY!", font=font, fill=(0, 0, 0), stroke_width=4, stroke_fill=(255, 255, 255))
+    bbox = d.textbbox((110, 80), "HEY!", font=font)
+    return np.array(img)[:, :, ::-1].copy(), [bbox[0], bbox[1], bbox[2], bbox[3]]
+
+
+class TestTextOverArt(unittest.TestCase):
+    def test_outlined_text_on_art_is_inpainted_not_painted_white(self):
+        import cv2
+        import numpy as np
+        img, box = _page_with_text(over_art=True)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        self.assertTrue(auto_translate.is_text_over_art(gray, box))
+        self.assertEqual(auto_translate.clean_speech_bubble(img, box, in_balloon=False), "art")
+        x0, y0, x1, y1 = box
+        region = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[y0:y1, x0:x1]
+        self.assertLess(float(np.mean(region >= 245)), 0.2)  # antes: retângulo quase todo branco
+        self.assertLess(float(np.mean(region < 60)), 0.25)    # letras pretas removidas
+
+    def test_text_on_white_paper_keeps_paper_mode(self):
+        import cv2
+        import numpy as np
+        img, box = _page_with_text(over_art=False)
+        self.assertFalse(auto_translate.is_text_over_art(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), box))
+        self.assertEqual(auto_translate.clean_speech_bubble(img, box, in_balloon=False), "paper")
+        x0, y0, x1, y1 = box
+        self.assertGreater(float(np.mean(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[y0:y1, x0:x1] > 200)), 0.97)
+
+    def test_inside_detected_balloon_never_uses_art_mode(self):
+        img, box = _page_with_text(over_art=True)
+        self.assertNotEqual(auto_translate.clean_speech_bubble(img, box, in_balloon=True), "art")
+
+
+class TestCreditsAndHyphens(unittest.TestCase):
+    def test_scan_credits_are_not_translated(self):
+        for t in ("TRANSLATEDBYDOUJINS.COM", "TRANSLATED BY DOUJINS.COM", "Traduzido por XYZ Scans",
+                  "discord.gg/abc", "www.mangadex.org", "TL: Fulano"):
+            self.assertTrue(auto_translate.is_scan_watermark(t), t)
+        for t in ("MORNING, OTAKU.", "I graduated from T University!", "SO MUCH HAS CHANGED", "YEP!",
+                  "Visit the shop, it is great.com and more words here that go long", "早安"):
+            self.assertFalse(auto_translate.is_scan_watermark(t), t)
+
+    def test_line_break_hyphens(self):
+        r = auto_translate.repair_glued_text
+        self.assertEqual(r("WHAT WAS THEN A STATE-OF- THE-ART"), "WHAT WAS THEN A STATE-OF-THE-ART")
+        self.assertEqual(r("MY FAMILY'S CONGLO- MERATE"), "MY FAMILY'S CONGLOMERATE")
+        self.assertEqual(r("YU- KUN"), "YU-KUN")
+        j = auto_translate.smart_join_lines
+        self.assertEqual(j(["STATE-OF-", "THE-ART"], is_cjk=False, preserve_spaces=False), "STATE-OF-THE-ART")
+        self.assertEqual(j(["CONGLO-", "MERATE,"], is_cjk=False, preserve_spaces=False), "CONGLOMERATE,")
+        self.assertEqual(j(["YU-", "KUN!"], is_cjk=False, preserve_spaces=False), "YU-KUN!")
+
+
 if __name__ == "__main__":
     unittest.main()

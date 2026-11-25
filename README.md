@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.7.9 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.7.10 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.7.9--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.7.10--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -80,6 +80,7 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Correções do OCR e anti-inglês (`ocr_text_fix.py`):** linhas de cada balão ordenadas pela sobreposição vertical real (antes, quadros de narração com linhas próximas saíam embaralhados: "MUCH SO HAS CHANGED"); minúsculas soltas corrigidas em balões em CAIXA ALTA ("OTAKu" -> "OTAKU"); blocos de lixo como "h3" (efeito sonoro desenhado lido errado) não são traduzidos nem apagados; traduções com palavras inglesas copiadas do original ("YOU'RE SO inteligente") são rejeitadas e refeitas. Também corrige U lido como L em CAIXA ALTA ("QLITE" -> "QUITE", "YOLR" -> "YOUR"), "...?" lido como "2?", parênteses soltos, e impede que o separador de palavras quebre nomes japoneses ("TOKITO" virava "TOKI TO").
 * **Quadros de narração estreitos (`typography_ptbr.py`):** quadros altos e estreitos aceitam mais de 8 linhas, e o último recurso nunca passa da largura do quadro (antes o texto podia sair numa linha só, minúscula, atravessando a página).
 * **Busca na Biblioteca:** campo de busca fixo no topo da aba Biblioteca que procura nas obras traduzidas e nas originais, ignorando maiúsculas, acentos e pontuação e aceitando as palavras em qualquer ordem ("gal kuro" ou "toshiue ch1" encontram "Toshiue no Kuro Gal ... Ch.1"). Mostra quantas obras foram encontradas, avisa quando nada foi encontrado e tem botão ✕ (ou ESC) para limpar. A janela de escolher obra do Google Drive usa a mesma busca.
+* **Texto solto sobre o desenho e créditos (v0.7.10):** texto fora de balão com contorno branco por cima da arte (ex.: "HERE! PJS!") não vira mais um retângulo branco: as letras são apagadas, o desenho é recomposto (inpainting) e a tradução é escrita no mesmo lugar com contorno branco. Créditos de scan ("TRANSLATED BY DOUJINS.COM", "discord.gg", "Traduzido por ...") ficam intactos, sem tradução. Palavras compostas quebradas na linha ("STATE-OF-" / "THE-ART") mantêm o hífen.
 * **Fallback Triplo:** OpenRouter / Ollama Remoto / Local -> MyMemory / Google Translator.
 
 ### 3. Limpeza Cirúrgica de Balões (Borda Preservada)

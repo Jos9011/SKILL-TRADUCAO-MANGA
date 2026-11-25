@@ -679,6 +679,46 @@
       align-items: center;
       gap: 12px;
       margin-bottom: 20px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      padding: 10px 0;
+      background: rgba(18, 18, 18, 0.94);
+      backdrop-filter: blur(6px);
+    }
+
+    .search-clear-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-subdued, #a7a7a7);
+      font-size: 1.05rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 2px 4px;
+      display: none;
+    }
+
+    .search-clear-btn.visible {
+      display: inline-block;
+    }
+
+    #library-search::-webkit-search-cancel-button {
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .library-search-info {
+      width: 100%;
+      font-size: 0.82rem;
+      color: var(--text-subdued, #a7a7a7);
+      min-height: 1em;
+    }
+
+    .library-empty {
+      grid-column: 1 / -1;
+      color: var(--text-subdued, #a7a7a7);
+      font-size: 0.9rem;
+      padding: 18px 4px;
     }
 
     .search-bar {
@@ -1598,6 +1638,23 @@
         text-align: center;
       }
 
+      /* Busca e "Atualizar" na mesma linha: a barra fixa no topo fica baixa no celular */
+      .library-header {
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .library-header .search-bar {
+        width: auto;
+        flex: 1 1 180px;
+      }
+
+      .library-header .library-refresh-btn {
+        width: auto;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
       /* Quotas & Rules & Settings responsive headers */
       .section-header-row > button,
       .section-header-row > .btn-spotify {
@@ -1875,7 +1932,7 @@
         <div style="display: flex; flex-direction: column; min-width: 0;">
           <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
             <span style="line-height: 1.1; font-weight: 800; font-size: 1.12rem;">Manga Studio</span>
-            <span class="version-tag">{{ app_version | default('v0.7.8 Beta') }}</span>
+            <span class="version-tag">{{ app_version | default('v0.7.9 Beta') }}</span>
           </div>
           <span style="font-size: 0.65rem; color: var(--spotify-green); font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">AI TRANSLATOR</span>
         </div>
@@ -1922,7 +1979,7 @@
           <h1 id="view-title">Traduzir Mangá</h1>
         </div>
         <div class="header-actions">
-          <div class="version-pill" title="Manga Studio - Versão Oficial">{{ app_version | default('v0.7.8 Beta') }}</div>
+          <div class="version-pill" title="Manga Studio - Versão Oficial">{{ app_version | default('v0.7.9 Beta') }}</div>
           <button id="btn-install-pwa" class="btn-secondary" style="display: none; padding: 7px 14px; font-size: 0.82rem; border-color: rgba(29, 185, 84, 0.5); color: var(--spotify-green);" onclick="installPWA()" title="Instalar Manga Studio como App">
             📲 Instalar App
           </button>
@@ -2112,9 +2169,11 @@
         <div class="library-header">
           <div class="search-bar">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-            <input type="text" id="library-search" placeholder="Buscar em suas obras traduzidas..." oninput="filterLibrary()">
+            <input type="search" id="library-search" placeholder="Buscar mangá pelo nome..." oninput="filterLibrary()" onkeydown="if (event.key === 'Escape') clearLibrarySearch()" autocomplete="off" aria-label="Buscar mangá pelo nome">
+            <button type="button" class="search-clear-btn" id="library-search-clear" onclick="clearLibrarySearch()" title="Limpar busca" aria-label="Limpar busca">✕</button>
           </div>
-          <button class="btn-secondary" onclick="loadLibrary()">Atualizar Biblioteca</button>
+          <button class="btn-secondary library-refresh-btn" onclick="loadLibrary()" title="Atualizar Biblioteca">↻ Atualizar</button>
+          <div class="library-search-info" id="library-search-info"></div>
         </div>
 
         <h3 style="font-size: 1.25rem; font-weight: 800; margin-bottom: 16px;">Obras Traduzidas [PT-BR]</h3>
@@ -2420,12 +2479,12 @@
           <div class="quota-card-header">
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <h3 style="margin: 0;">ℹ️ Sobre o Manga Studio</h3>
-              <span class="version-tag" style="background: var(--spotify-green); color: #000; font-weight: 800; font-size: 0.72rem; padding: 3px 8px; border-radius: 6px;">{{ app_version | default('v0.7.8 Beta') }}</span>
+              <span class="version-tag" style="background: var(--spotify-green); color: #000; font-weight: 800; font-size: 0.72rem; padding: 3px 8px; border-radius: 6px;">{{ app_version | default('v0.7.9 Beta') }}</span>
             </div>
             <span class="meta-badge highlight">Release Oficial</span>
           </div>
           <p style="font-size: 0.88rem; color: var(--text-subdued); margin-bottom: 16px; line-height: 1.6;">
-            <strong>Manga Studio {{ app_version | default('v0.7.8 Beta') }}</strong> é uma plataforma moderna e completa de tradução de mangás, manhwas e PDFs em alta fidelidade com <strong>Arquitetura Cooperativa de Duas IAs</strong>, <strong>OCR Coreano PP-OCRv5</strong> e modo <strong>IA Vision Híbrido</strong>.
+            <strong>Manga Studio {{ app_version | default('v0.7.9 Beta') }}</strong> é uma plataforma moderna e completa de tradução de mangás, manhwas e PDFs em alta fidelidade com <strong>Arquitetura Cooperativa de Duas IAs</strong>, <strong>OCR Coreano PP-OCRv5</strong> e modo <strong>IA Vision Híbrido</strong>.
           </p>
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 14px; font-size: 0.82rem;">
             <div style="background: rgba(255,255,255,0.03); padding: 14px; border-radius: 8px; border: 1px solid var(--border-subtle);">
@@ -2443,7 +2502,7 @@
           </div>
           <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: var(--text-muted); flex-wrap: wrap; gap: 8px;">
             <span>Desenvolvido com foco em qualidade editorial e fidelidade anatômica/narrativa.</span>
-            <span>Versão Oficial: <strong style="color: white;">{{ app_version_code | default('0.7.8-beta') }}</strong></span>
+            <span>Versão Oficial: <strong style="color: white;">{{ app_version_code | default('0.7.9-beta') }}</strong></span>
           </div>
         </div>
       </section>
@@ -2656,7 +2715,7 @@
       const searchInp = document.getElementById('drive-modal-search');
       if (!listBox) return;
       const q = (searchInp ? searchInp.value : '').trim().toLowerCase();
-      const filtered = cachedDriveFolders.filter(f => (f.name || '').toLowerCase().includes(q));
+      const filtered = cachedDriveFolders.filter(f => mangaMatchesSearch(f.name, q));
       if (filtered.length === 0) {
         listBox.innerHTML = '<div style="color: var(--text-subdued); padding: 16px; text-align: center; font-size: 0.88rem;">Nenhuma obra correspondente encontrada na pasta MANGAS do Drive. Você pode informar o caminho manual abaixo.</div>';
         return;
@@ -3526,11 +3585,11 @@
     }
 
     function renderLibraryGrid() {
-      const q = (document.getElementById('library-search')?.value || '').toLowerCase();
+      const q = (document.getElementById('library-search')?.value || '').trim();
       const grid = document.getElementById('library-grid');
       const rawGrid = document.getElementById('raw-library-grid');
 
-      const filteredTrans = libraryData.translated.filter(m => m.name.toLowerCase().includes(q));
+      const filteredTrans = libraryData.translated.filter(m => mangaMatchesSearch(m.name, q) || mangaMatchesSearch(m.clean_name, q));
       grid.innerHTML = filteredTrans.map(m => `
         <div class="manga-card" onclick="openReader('${escapeQuotes(m.path)}', '${escapeQuotes(m.reader_url)}'); updatePlayerCover('${escapeQuotes(m.first_img)}', '${escapeQuotes(m.clean_name)}', '${m.pages} páginas • Traduzido');">
           <div class="card-thumb">
@@ -3567,9 +3626,9 @@
             </div>
           </div>
         </div>
-      `).join('');
+      `).join('') || `<div class="library-empty">${q ? `Nenhuma obra traduzida encontrada para "${escapeHtml(q)}".` : 'Nenhuma obra traduzida ainda.'}</div>`;
 
-      const filteredRaw = libraryData.raw.filter(m => m.name.toLowerCase().includes(q));
+      const filteredRaw = libraryData.raw.filter(m => mangaMatchesSearch(m.name, q));
       rawGrid.innerHTML = filteredRaw.map(m => `
         <div class="manga-card" onclick="inspectFolder('${escapeQuotes(m.path)}'); switchTab('translate');">
           <div class="card-thumb">
@@ -3597,7 +3656,42 @@
             </div>
           </div>
         </div>
-      `).join('');
+      `).join('') || `<div class="library-empty">${q ? `Nenhuma obra original encontrada para "${escapeHtml(q)}".` : 'Nenhuma obra original encontrada na pasta MANGAS.'}</div>`;
+
+      const info = document.getElementById('library-search-info');
+      if (info) {
+        info.textContent = q
+          ? `Encontrados: ${filteredTrans.length} de ${libraryData.translated.length} traduzidos • ${filteredRaw.length} de ${libraryData.raw.length} originais`
+          : '';
+      }
+      const clearBtn = document.getElementById('library-search-clear');
+      if (clearBtn) clearBtn.classList.toggle('visible', !!q);
+    }
+
+    // Busca de mangás: ignora maiúsculas, acentos e pontuação; aceita palavras em qualquer ordem
+    // ("gal kuro" e "toshiue ch1" encontram "Toshiue no Kuro Gal ... Ch.1").
+    function normalizeMangaSearch(text) {
+      return String(text || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+/g, ' ')
+        .trim();
+    }
+
+    function mangaMatchesSearch(name, query) {
+      const q = normalizeMangaSearch(query);
+      if (!q) return true;
+      const n = normalizeMangaSearch(name);
+      const compact = n.replace(/ /g, '');
+      return q.split(' ').every(t => n.includes(t) || compact.includes(t));
+    }
+
+    function clearLibrarySearch() {
+      const inp = document.getElementById('library-search');
+      if (!inp) return;
+      inp.value = '';
+      renderLibraryGrid();
+      inp.focus();
     }
 
     function renderSidebarRecents() {

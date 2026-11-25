@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.7.7 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.7.8 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.7.7--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.7.8--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -77,7 +77,8 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Glossário Dinâmico (`glossary.json`):** Respeita nomes fixos de personagens e termos configurados.
 * **Memória por Semelhança (RAG leve, `rag_memory.py`):** A cada lote, busca em `memoria_traducoes.json` as frases já traduzidas mais *parecidas* (não só idênticas, tolerando ruído de OCR) e envia até 8 como exemplo para a IA. Roda em Python puro no PC, Colab e Android. Desligue com `"rag_memory": false` no `config.json` ou `MANGA_RAG=0`. Teste manual: `python rag_memory.py "早安！"`.
 * **Ficha da Obra + Líder do Capítulo (`ficha_obra.py`, `ficha_caminho.py`, `lider_capitulo.py`):** Depois do OCR e antes de traduzir, um Líder (`openai/gpt-oss-120b` por padrão, configurável em `"lider_model"`) lê as falas do capítulo inteiro e registra só as novidades: personagens com nome completo e gênero (apelidos vão na nota de quem os recebe) e termos próprios da obra. Palpites ("possível...", "talvez...") são descartados. A ficha vai no prompt de cada lote, para nomes e gêneros ficarem iguais em todos os capítulos. Não é preciso reorganizar as pastas: capítulos em pastas soltas ("Obra Ch.1", "Obra Ch.2", "Lesson 3"...) compartilham `.fichas_obra/<nome da obra>.json` na pasta que os contém; com subpastas (`Obra/Cap 1`), a ficha fica em `Obra/ficha_obra.json`. O Líder só acrescenta: nunca muda o que já está na ficha (você pode editar o JSON à mão) e anota divergências em `"conflitos"`. Cada capítulo é lido uma vez; para ler de novo, apague o capítulo de `"capitulos_lidos"`. Desligue com `"ficha_obra": false` ou `MANGA_FICHA=0`; para usar a ficha sem gastar a chamada do Líder, `"lider_capitulo": false`.
-* **Correções do OCR e anti-inglês (`ocr_text_fix.py`):** linhas de cada balão ordenadas pela sobreposição vertical real (antes, quadros de narração com linhas próximas saíam embaralhados: "MUCH SO HAS CHANGED"); minúsculas soltas corrigidas em balões em CAIXA ALTA ("OTAKu" -> "OTAKU"); blocos de lixo como "h3" (efeito sonoro desenhado lido errado) não são traduzidos nem apagados; traduções com palavras inglesas copiadas do original ("YOU'RE SO inteligente") são rejeitadas e refeitas.
+* **Correções do OCR e anti-inglês (`ocr_text_fix.py`):** linhas de cada balão ordenadas pela sobreposição vertical real (antes, quadros de narração com linhas próximas saíam embaralhados: "MUCH SO HAS CHANGED"); minúsculas soltas corrigidas em balões em CAIXA ALTA ("OTAKu" -> "OTAKU"); blocos de lixo como "h3" (efeito sonoro desenhado lido errado) não são traduzidos nem apagados; traduções com palavras inglesas copiadas do original ("YOU'RE SO inteligente") são rejeitadas e refeitas. Também corrige U lido como L em CAIXA ALTA ("QLITE" -> "QUITE", "YOLR" -> "YOUR"), "...?" lido como "2?", parênteses soltos, e impede que o separador de palavras quebre nomes japoneses ("TOKITO" virava "TOKI TO").
+* **Quadros de narração estreitos (`typography_ptbr.py`):** quadros altos e estreitos aceitam mais de 8 linhas, e o último recurso nunca passa da largura do quadro (antes o texto podia sair numa linha só, minúscula, atravessando a página).
 * **Fallback Triplo:** OpenRouter / Ollama Remoto / Local -> MyMemory / Google Translator.
 
 ### 3. Limpeza Cirúrgica de Balões (Borda Preservada)

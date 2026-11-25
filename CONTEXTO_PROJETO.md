@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.7.7 Beta` (`0.7.7-beta`)** / APK Android: **`v1.0.9-mobile` (versionCode 10)**
+* **Versão Oficial Atual:** **`v0.7.8 Beta` (`0.7.8-beta`)** / APK Android: **`v1.0.9-mobile` (versionCode 10)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -55,7 +55,8 @@ O sistema é dividido em submódulos cooperativos:
   * Onde grava (`ficha_caminho.py`): pastas soltas por capítulo ("Obra Ch.1", "Obra Ch.2") compartilham `.fichas_obra/<obra>.json` na pasta que as contém (nome da obra = nome da pasta sem "Ch.1", "Lesson 10", "Vol. 3", números e tags); com `Obra/Cap 1`, grava em `Obra/ficha_obra.json`; uma `ficha_obra.json` antiga na pasta do capítulo continua valendo. Só acrescenta; nunca sobrescreve; divergências vão para `"conflitos"`.
   * O Líder registra nomes completos ("Manabu Tokito"), põe apelidos na nota de quem os recebe e descarta palpites ("possível", "talvez").
   * Atenção: a lista do WebUI mostra a pasta da obra, não as subpastas de capítulo; por isso o padrão recomendado é pastas soltas por capítulo.
-* **Correções de OCR (`ocr_text_fix.py`):** ordem das linhas por sobreposição vertical real (não mais faixas fixas de 22 px), caixa alta ("OTAKu" -> "OTAKU"), filtro de lixo ("h3") e rejeição de inglês residual em `is_valid_translation`.
+* **Correções de OCR (`ocr_text_fix.py`):** ordem das linhas por sobreposição vertical real (não mais faixas fixas de 22 px), caixa alta ("OTAKu" -> "OTAKU"), filtro de lixo ("h3") e rejeição de inglês residual em `is_valid_translation`. Também: U lido como L ("QLITE"), "2?" -> "...?", parênteses sem par, e proteção de nomes romanizados contra o wordninja ("TOKITO").
+* **Tipografia de quadros estreitos (`typography_ptbr.py`):** `wrap_balanced_ptbr` aceita mais de 8 linhas quando o quadro é alto e estreito (altura útil >= 1,8x a largura); o último recurso usa `wrap_hard_ptbr`, que nunca passa da largura (antes devolvia o texto numa linha só).
   * A ficha entra no prompt de cada lote do Agente 2 (antes do bloco do RAG). A chamada do Líder usa uma cópia do estado do motor, então nunca esgota nem troca o modelo do tradutor.
   * Config: `"ficha_obra"`, `"lider_capitulo"`, `"lider_model"` (padrão `openai/gpt-oss-120b`); variável `MANGA_FICHA=0` desliga tudo.
   * Ainda não portado para o `MANGA-STUDIO-ANDROID`.

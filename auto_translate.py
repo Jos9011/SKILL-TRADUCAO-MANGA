@@ -1205,6 +1205,10 @@ def _split_glued_latin_token(token, lm):
         if long_cnt == 0 or (long_cnt == 1 and max(part_costs) > 10.5):
             return token
 
+    # Nome japonês romanizado ("TOKITO" -> "TOKI TO"): não quebra se algum pedaço for palavra rara
+    if ocr_text_fix is not None and ocr_text_fix.looks_like_romaji(core) and max(part_costs) > 12.8:
+        return token
+
     min_c = min(part_costs)
     avg_c = sum(part_costs) / float(len(part_costs))
     if min_c <= 10.0 and avg_c <= 11.4 and (whole_cost >= 11.9 or (len(core) <= 5 and avg_c <= 6.8)):
@@ -8566,6 +8570,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             lines = blk.get("lines", [])
             if ocr_text_fix is not None:
                 lines = ocr_text_fix.normalize_case_lines(lines)  # "OTAKu" -> "OTAKU" em balões em CAIXA ALTA
+                lines = ocr_text_fix.fix_ocr_confusions(lines)  # "QLITE" -> "QUITE", "2?" -> "...?", "(SO" -> "SO"
             is_cjk_blk = is_majority_cjk(lines)
             is_ko_blk = is_majority_hangul(lines)
             text = smart_join_lines(lines, is_cjk=is_cjk_blk, preserve_spaces=is_ko_blk).strip()

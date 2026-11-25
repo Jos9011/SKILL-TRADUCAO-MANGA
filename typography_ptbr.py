@@ -82,10 +82,7 @@ def _hyphenate_long_word(draw, word, font, max_w, measure_fn, stroke_width=0, mi
 
 def wrap_balanced_ptbr(draw, text, font, max_w, measure_fn, stroke_width=0,
                        band_profile=None, allow_hyphen=False, max_k=8):
-    """
-    Quebra o texto buscando linhas equilibradas (formato diamante/oval)
-    e respeitando o perfil de largura real do balão.
-    """
+    """Linhas equilibradas (formato diamante/oval) respeitando o perfil de largura real do balão."""
     words = text.split()
     if not words:
         return []
@@ -167,11 +164,8 @@ def wrap_balanced_ptbr(draw, text, font, max_w, measure_fn, stroke_width=0,
 
 
 def fit_text_ptbr(draw, text, max_w, max_h, font_path, measure_fn,
-                  stroke_width=1, band_profile=None, page_w=1280, is_display=False):
-    """
-    Calcula (font, lines, line_h) com escala consistente na página,
-    respiro garantido para acentos PT-BR e zero hifenização desnecessária.
-    """
+                  stroke_width=1, band_profile=None, page_w=1280, is_display=False, min_line_w=None):
+    """(font, lines, line_h) com escala consistente, respiro para acentos PT-BR e sem hífen desnecessário."""
     clean = (text or "").strip()
     if not clean:
         f = ImageFont.truetype(font_path, 16)
@@ -225,35 +219,59 @@ def fit_text_ptbr(draw, text, max_w, max_h, font_path, measure_fn,
     if res:
         return res
 
-    # 4. Último recurso: quebra simples que NUNCA passa da largura do balão (antes devolvia uma linha só,
-    #    que atravessava a página em quadros estreitos). Fonte mínima 9.
+    # 4. Último recurso: nunca passa da largura do balão (antes saía uma linha só atravessando a página)
     safe_w = usable_w
     if scaled_prof:  # balão que afina (oval, degrau): usa a largura segura, não a maior
         safe_w = min(usable_w, max(26.0, float(np.percentile([pw for _, pw in scaled_prof], 25))))
-    font = None
-    for fs in range(11, 8, -1):
-        font = ImageFont.truetype(font_path, fs)
-        line_h = measure_ptbr_line_height(draw, font, 1.10)
-        lines = wrap_hard_ptbr(draw, clean, font, safe_w, measure_fn, stroke_width)
-        if lines and len(lines) * line_h <= usable_h + 2.0:
-            return font, lines, line_h
-    line_h = measure_ptbr_line_height(draw, font, 1.10)
-    return font, wrap_hard_ptbr(draw, clean, font, safe_w, measure_fn, stroke_width) or [clean], line_h
+    if min_line_w:  # a largura que o texto original ocupava cabe no quadro (o perfil pode juntar quadros vizinhos)
+        safe_w = max(safe_w, min(usable_w, float(min_line_w)))
+    # Ordem: palavras inteiras (fonte 11 -> 9) > hífen por sílaba > corte por letras (último caso)
+    font, line_h, lines = None, 0.0, []
+    for mode in ("none", "syllable", "chars"):
+        for fs in range(11, 8, -1):
+            font = ImageFont.truetype(font_path, fs)
+            line_h = measure_ptbr_line_height(draw, font, 1.10)
+            lines = wrap_hard_ptbr(draw, clean, font, safe_w, measure_fn, stroke_width, split_mode=mode)
+            fits_w = all(measure_fn(draw, ln, font, stroke_width) <= safe_w + 0.5 for ln in lines)
+            if lines and fits_w and len(lines) * line_h <= usable_h + 2.0:
+                return font, lines, line_h
+    return font, lines or [clean], line_h
 
 
-def _split_word_to_width(draw, word, font, max_w, measure_fn, stroke_width=0):
-    """Divide uma palavra larga demais: hifenização PT-BR quando possível, senão por letras."""
+def _syllable_split(draw, word, font, max_w, measure_fn, stroke_width=0):
+    """Maior prefixo de sílabas (>= 2 letras, sobrando >= 2) que cabe com hífen: 'MU-' + 'DARAM.'"""
+    if not _HYPHEN_DIC:
+        return None
+    parts = _HYPHEN_DIC.inserted(word).split("-")
+    best = None
+    for idx in range(1, len(parts)):
+        left, right = "".join(parts[:idx]), "".join(parts[idx:])
+        if sum(c.isalpha() for c in left) < 2 or sum(c.isalpha() for c in right) < 2:
+            continue
+        if measure_fn(draw, left + "-", font, stroke_width) <= max_w:
+            best = (left + "-", right)
+        else:
+            break
+    return best
+
+
+def _split_word_to_width(draw, word, font, max_w, measure_fn, stroke_width=0, split_mode="chars"):
+    """Divide uma palavra larga demais: por sílaba (PT-BR) e, se permitido, por letras (>= 3 de cada lado)."""
+    if split_mode == "none":
+        return [word]
     pieces, rest = [], word
     while rest and measure_fn(draw, rest, font, stroke_width) > max_w:
-        hyph = _hyphenate_long_word(draw, rest, font, max_w, measure_fn, stroke_width, min_len=5)
-        if hyph:
-            pieces.append(hyph[0])
-            rest = hyph[1]
+        syl = _syllable_split(draw, rest, font, max_w, measure_fn, stroke_width)
+        if syl:
+            pieces.append(syl[0])
+            rest = syl[1]
             continue
-        cut = len(rest) - 1
-        while cut > 1 and measure_fn(draw, rest[:cut] + "-", font, stroke_width) > max_w:
+        if split_mode != "chars":
+            break
+        cut = len(rest) - 3
+        while cut >= 3 and measure_fn(draw, rest[:cut] + "-", font, stroke_width) > max_w:
             cut -= 1
-        if cut <= 1:
+        if cut < 3:
             break
         pieces.append(rest[:cut] + "-")
         rest = rest[cut:]
@@ -262,11 +280,11 @@ def _split_word_to_width(draw, word, font, max_w, measure_fn, stroke_width=0):
     return pieces
 
 
-def wrap_hard_ptbr(draw, text, font, max_w, measure_fn, stroke_width=0):
-    """Quebra gulosa por palavras que respeita max_w; palavras largas demais são divididas."""
+def wrap_hard_ptbr(draw, text, font, max_w, measure_fn, stroke_width=0, split_mode="chars"):
+    """Quebra gulosa por palavras que respeita max_w. split_mode: 'none', 'syllable' ou 'chars'."""
     lines, curr = [], ""
     for word in (text or "").split():
-        for piece in _split_word_to_width(draw, word, font, max_w, measure_fn, stroke_width):
+        for piece in _split_word_to_width(draw, word, font, max_w, measure_fn, stroke_width, split_mode):
             cand = f"{curr} {piece}" if curr else piece
             if curr and (curr.endswith("-") or measure_fn(draw, cand, font, stroke_width) > max_w):
                 lines.append(curr)

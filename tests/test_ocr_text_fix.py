@@ -104,5 +104,37 @@ class TestEnglishResidue(unittest.TestCase):
         self.assertIn("ZERO inglês residual", auto_translate.build_dual_engine_system_prompt(src_lang="en"))
 
 
+class TestRomajiAndConfusions(unittest.TestCase):
+    def test_romaji_names(self):
+        for w in ("TOKITO", "MANABU", "KIRARA", "SHINJUKU", "NAKAMURA"):
+            self.assertTrue(f.looks_like_romaji(w), w)
+        for w in ("CONGLOMERATE", "HAPPENED", "WHENI", "OTA", "SMART"):
+            self.assertFalse(f.looks_like_romaji(w), w)
+
+    def test_l_read_instead_of_u(self):
+        self.assertEqual(f.fix_ocr_confusions(["CHANGED", "QLITE", "A BIT."]), ["CHANGED", "QUITE", "A BIT."])
+        self.assertEqual(f.fix_ocr_confusions(["YOLR TEN YEARS'", "PENT-LP"]), ["YOUR TEN YEARS'", "PENT-UP"])
+        self.assertEqual(f.fix_ocr_confusions(["YOU COLLDN'T", "HELP IT!"]), ["YOU COULDN'T", "HELP IT!"])
+        self.assertEqual(f.fix_ocr_confusions(["TRLE TO KIRARA'S WORD"]), ["TRUE TO KIRARA'S WORD"])
+        same = ["CALL ME", "ALL", "LOT", "LULU", "HELLO", "LIKE", "ALONE", "FULL", "LEFT", "WILL", "You look nice"]
+        self.assertEqual(f.fix_ocr_confusions(same), same)
+
+    def test_punctuation_noise(self):
+        self.assertEqual(f.fix_ocr_confusions(["WHO", "ARE", "YOU", "2?"]), ["WHO", "ARE", "YOU", "...?"])
+        self.assertEqual(f.fix_ocr_confusions(["YOU'RE!", "(SO", "SMART, OTAKU!"]), ["YOU'RE!", "SO", "SMART, OTAKU!"])
+        self.assertEqual(f.fix_ocr_confusions(["[WHAT!", "P!"]), ["WHAT!", "P!"])
+        self.assertEqual(f.fix_ocr_confusions(["(WHISPER)", "HELLO"]), ["(WHISPER)", "HELLO"])
+        self.assertEqual(f.fix_ocr_confusions(["17"]), ["17"])
+        self.assertEqual(f.fix_ocr_confusions(["早安？"]), ["早安？"])
+
+    @unittest.skipIf(auto_translate.wordninja is None, "wordninja não instalado")
+    def test_word_splitter_keeps_japanese_names(self):
+        r = auto_translate.repair_glued_text
+        self.assertEqual(r("MANABU TOKITO"), "MANABU TOKITO")
+        self.assertEqual(r("KIRARA SAITO"), "KIRARA SAITO")
+        self.assertEqual(r("YOUWOKE UP"), "YOU WOKE UP")
+        self.assertEqual(r("WHENI WAS 17"), "WHEN I WAS 17")
+
+
 if __name__ == "__main__":
     unittest.main()

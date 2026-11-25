@@ -11,6 +11,10 @@ ocr_text_fix.py - Correções do texto lido pelo OCR e checagem de inglês resid
    desenhado), que não deve ser traduzido nem apagado da página.
 4. english_residue: palavras inglesas comuns que a IA copiou do original para a tradução
    ("YOU'RE SO inteligente", "tinha sido UNDER"). Nomes próprios não contam.
+5. looks_like_romaji: nomes japoneses romanizados ("TOKITO", "MANABU") que o separador de
+   palavras coladas (wordninja) não deve quebrar ("TOKITO" virava "TOKI TO").
+6. fix_ocr_confusions: em CAIXA ALTA, o RapidOCR lê U como L ("QLITE", "YOLR", "PENT-LP");
+   também "...?" lido como "2?" e parênteses/colchetes soltos ("(SO", "[WHAT!").
 
 Regra de Ouro: Coeso, desacoplado e estritamente < 300 linhas.
 """
@@ -152,3 +156,79 @@ def english_residue(orig_text, trans_text, protected=()):
         if w in _EN_COMMON and w in orig_words and w not in keep and w not in found:
             found.append(w)
     return found
+
+
+# ---------------------------------------------------------------------------
+# 5. Nomes japoneses romanizados
+# ---------------------------------------------------------------------------
+_ROMAJI_RE = re.compile(
+    r"^(?:(?:kk|ss|tt|pp|cch)?(?:ky|gy|sh|ch|ny|hy|by|py|my|ry|ts|[kgsztdnhbpmyrwfj])?[aeiou]+|n(?![aeiouy]))+$",
+    re.IGNORECASE,
+)
+
+
+def looks_like_romaji(word, min_len=5):
+    """True para palavras formadas só por sílabas japonesas (ma-na-bu, to-ki-to, ki-ra-ra)."""
+    w = str(word or "")
+    return len(w) >= min_len and w.isalpha() and bool(_ROMAJI_RE.match(w))
+
+
+# ---------------------------------------------------------------------------
+# 6. Confusões típicas do OCR
+# ---------------------------------------------------------------------------
+_FALLBACK_VOCAB = _EN_COMMON | set("quite your true up couldn shouldn wouldn until used hurry cure "
+                                   "turn suck cum out but just must sure us guy sound found".split())
+
+
+def _word_cost(word):
+    """Custo da palavra no dicionário do wordninja (menor = mais comum). 99 = desconhecida."""
+    try:
+        import wordninja
+        return wordninja.DEFAULT_LANGUAGE_MODEL._wordcost.get(word, 99.0)
+    except Exception:
+        return 9.0 if word in _FALLBACK_VOCAB else 99.0
+
+
+def _fix_l_as_u(word):
+    """'QLITE' -> 'QUITE', 'YOLR' -> 'YOUR', 'LP' -> 'UP': troca L por U só se vira palavra bem mais comum."""
+    if not word.isupper() or "L" not in word or len(word) < 2:
+        return word
+    low = word.lower()
+    orig_cost = _word_cost(low)
+    positions = [i for i, c in enumerate(word) if c == "L"][:3]
+    best, best_cost = word, orig_cost
+    for mask in range(1, 2 ** len(positions)):
+        chars = list(low)
+        for bit, pos in enumerate(positions):
+            if mask >> bit & 1:
+                chars[pos] = "u"
+        cand = "".join(chars)
+        cost = _word_cost(cand)
+        if cost < best_cost:
+            best, best_cost = cand.upper(), cost
+    rare_to_common = orig_cost >= 13.5 and best_cost <= 12.5
+    much_more_common = best_cost <= 9.0 and best_cost + 4.5 <= orig_cost
+    return best if best != word and (rare_to_common or much_more_common) else word
+
+
+def _fix_token(tok):
+    base, sep, tail = tok.partition("'")  # "COLLDN'T": avalia só "COLLDN"
+    return _fix_l_as_u(base) + sep + tail
+
+
+def fix_ocr_confusions(lines):
+    """Corrige U lido como L (só em CAIXA ALTA), '2?' final e parênteses/colchetes sem par."""
+    lines = [str(l or "") for l in (lines or [])]
+    joined = " ".join(lines)
+    if not joined.strip() or _CJK_RE.search(joined):
+        return lines
+    out = [re.sub(r"[A-Z]+(?:'[A-Z]+)?", lambda m: _fix_token(m.group(0)), l) for l in lines]
+    if len(out) >= 2 and re.fullmatch(r"\s*[2Z]\s*([?!]+)\s*", out[-1]):
+        out[-1] = "..." + out[-1].strip()[1:]
+    joined = " ".join(out)
+    for open_c, close_c in (("(", ")"), ("[", "]")):
+        if joined.count(open_c) and not joined.count(close_c):
+            out = [l.replace(open_c, "") for l in out]
+        elif joined.count(close_c) and not joined.count(open_c):
+            out = [l.replace(close_c, "") for l in out]
+    return [re.sub(r"\s{2,}", " ", l).strip() for l in out]

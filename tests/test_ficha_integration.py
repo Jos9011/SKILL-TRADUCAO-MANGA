@@ -93,10 +93,12 @@ class TestProcessMangaFlow(unittest.TestCase):
     def fake_ocr(self, manga_dir, out_path, **kw):
         self.events.append("ocr")
         pages = []
-        texts = [["Welcome home, Yu-kun!"], ["Yu-kun, are you okay?"]]
+        texts = getattr(self, "ocr_texts", None) or [["Welcome home, Yu-kun!"], ["Yu-kun, are you okay?"]]
         for i, lines in enumerate(texts, 1):
-            pages.append({"img_path": f"{i:03d}.png", "img_width": 800, "img_height": 1200,
-                          "blocks": [{"box": [200, 200, 600, 360], "lines": lines, "vertical": False}]})
+            blocks = [{"box": [200, 200, 600, 360], "lines": lines, "vertical": False}]
+            if getattr(self, "add_noise", False):
+                blocks.append({"box": [300, 700, 420, 780], "lines": ["h3"], "vertical": False})
+            pages.append({"img_path": f"{i:03d}.png", "img_width": 800, "img_height": 1200, "blocks": blocks})
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump({"version": "rapidocr", "pages": pages}, f)
 
@@ -139,6 +141,30 @@ class TestProcessMangaFlow(unittest.TestCase):
         self.assertEqual(saved["obra"], "Obra Teste")
         self.assertEqual(saved["capitulos_lidos"], ["Cap 1"])
         self.assertEqual(saved["personagens"][0]["genero"], "M")
+
+    def test_ocr_noise_and_lowercase_fixes_reach_leader_and_translator(self):
+        self.ocr_texts = [["MORNING,", "OTAKu."], ["TEASING ME WITH", '"OTAKu."']]
+        self.add_noise = True
+        self.translated = []
+        orig_exec = self.fake_exec
+
+        def spy(messages, engine_opts=None, dialogue_map=None, **kw):
+            self.translated.extend((dialogue_map or {}).values())
+            return orig_exec(messages, engine_opts=engine_opts, dialogue_map=dialogue_map, **kw)
+
+        self.fake_exec = spy
+        self._process()
+        self.assertIn("MORNING, OTAKU.", self.leader_input)
+        self.assertNotIn("OTAKu", self.leader_input)
+        self.assertNotIn("h3", self.leader_input)
+        self.assertTrue(self.translated)
+        self.assertTrue(all("h3" not in t and "OTAKu" not in t for t in self.translated))
+        # A área do "h3" não foi apagada nem recebeu texto: a página continua igual ali
+        out_dir = os.path.join(self.out, "Cap 1 [PT-BR]")
+        out_imgs = sorted(f for f in os.listdir(out_dir) if f.lower().endswith((".png", ".jpg", ".webp")))
+        self.assertTrue(out_imgs)
+        region = Image.open(os.path.join(out_dir, out_imgs[0])).convert("L").crop((300, 700, 420, 780))
+        self.assertEqual(region.getextrema(), (255, 255))
 
     def test_disabled_in_config_skips_everything(self):
         self._process({"ficha_obra": False})

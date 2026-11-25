@@ -31,13 +31,14 @@ class TestResolvePath(unittest.TestCase):
             cap = self._mk(self.obra, name)
             self.assertEqual(fo.resolve_ficha_path(cap), os.path.join(self.obra, fo.FICHA_FILENAME), name)
 
-    def test_single_folder_work_uses_itself(self):
+    def test_single_folder_work_uses_shared_fichas_dir(self):
         self._mk(self.obra)
-        self.assertEqual(fo.resolve_ficha_path(self.obra), os.path.join(self.obra, fo.FICHA_FILENAME))
+        expected = os.path.join(self.tmp, "MANGAS", ".fichas_obra", "minha obra.json")
+        self.assertEqual(fo.resolve_ficha_path(self.obra), expected)
 
-    def test_chapter_directly_under_mangas_root_stays_local(self):
+    def test_chapter_directly_under_mangas_root_uses_fichas_dir(self):
         cap = self._mk(self.tmp, "MANGAS", "015")
-        self.assertEqual(fo.resolve_ficha_path(cap), os.path.join(cap, fo.FICHA_FILENAME))
+        self.assertEqual(fo.resolve_ficha_path(cap), os.path.join(self.tmp, "MANGAS", ".fichas_obra", "015.json"))
 
     def test_existing_files_win(self):
         cap = self._mk(self.obra, "Chainsaw")  # não parece capítulo

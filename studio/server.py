@@ -85,8 +85,8 @@ app.jinja_env.auto_reload = True
 try:
     from version import __version__, __version_name__, get_version_info
 except Exception:
-    __version__ = "0.7.8-beta"
-    __version_name__ = "v0.7.8 Beta"
+    __version__ = "0.7.9-beta"
+    __version_name__ = "v0.7.9 Beta"
 
 APP_VERSION = __version__
 APP_VERSION_NAME = __version_name__

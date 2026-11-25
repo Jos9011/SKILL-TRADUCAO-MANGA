@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.7.6 Beta` (`0.7.6-beta`)** / APK Android: **`v1.0.9-mobile` (versionCode 10)**
+* **Versão Oficial Atual:** **`v0.7.7 Beta` (`0.7.7-beta`)** / APK Android: **`v1.0.9-mobile` (versionCode 10)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -52,7 +52,10 @@ O sistema é dividido em submódulos cooperativos:
 * **Líder do Capítulo + Ficha da Obra (Fase 1, `lider_capitulo.py` / `ficha_obra.py`):**
   * Roda uma vez por capítulo, depois do OCR e antes do laço de tradução do `process_manga`.
   * Lê as falas do capítulo inteiro (sem repetição, cortadas e em partes para caber no limite de ~8k tokens por chamada do Groq) e devolve só novidades: personagens (nome PT-BR, gênero, nota) e termos fixos.
-  * Grava em `ficha_obra.json` na pasta da obra (pai da pasta do capítulo quando o nome parece capítulo). Só acrescenta; nunca sobrescreve; divergências vão para `"conflitos"`.
+  * Onde grava (`ficha_caminho.py`): pastas soltas por capítulo ("Obra Ch.1", "Obra Ch.2") compartilham `.fichas_obra/<obra>.json` na pasta que as contém (nome da obra = nome da pasta sem "Ch.1", "Lesson 10", "Vol. 3", números e tags); com `Obra/Cap 1`, grava em `Obra/ficha_obra.json`; uma `ficha_obra.json` antiga na pasta do capítulo continua valendo. Só acrescenta; nunca sobrescreve; divergências vão para `"conflitos"`.
+  * O Líder registra nomes completos ("Manabu Tokito"), põe apelidos na nota de quem os recebe e descarta palpites ("possível", "talvez").
+  * Atenção: a lista do WebUI mostra a pasta da obra, não as subpastas de capítulo; por isso o padrão recomendado é pastas soltas por capítulo.
+* **Correções de OCR (`ocr_text_fix.py`):** ordem das linhas por sobreposição vertical real (não mais faixas fixas de 22 px), caixa alta ("OTAKu" -> "OTAKU"), filtro de lixo ("h3") e rejeição de inglês residual em `is_valid_translation`.
   * A ficha entra no prompt de cada lote do Agente 2 (antes do bloco do RAG). A chamada do Líder usa uma cópia do estado do motor, então nunca esgota nem troca o modelo do tradutor.
   * Config: `"ficha_obra"`, `"lider_capitulo"`, `"lider_model"` (padrão `openai/gpt-oss-120b`); variável `MANGA_FICHA=0` desliga tudo.
   * Ainda não portado para o `MANGA-STUDIO-ANDROID`.

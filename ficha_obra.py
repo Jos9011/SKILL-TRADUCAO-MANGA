@@ -7,8 +7,8 @@ da obra. O Líder do capítulo (lider_capitulo.py) só ACRESCENTA novidades; nun
 sobrescreve o que já está na ficha. Divergências vão para "conflitos" para revisão
 manual. O usuário pode editar o JSON à mão: a ficha manda.
 
-- Onde fica: na pasta da obra (pai da pasta do capítulo, se o nome parecer capítulo,
-  ex: "Cap 12", "Chapter 3", "015") ou na própria pasta do mangá.
+- Onde fica: ver ficha_caminho.py. Com pastas soltas ("Obra Ch.1", "Obra Ch.2"), todos os
+  capítulos usam .fichas_obra/<obra>.json na pasta que os contém.
 - Desligar: "ficha_obra": false no config.json ou variável de ambiente MANGA_FICHA=0.
 - Qualquer erro aqui é engolido: a ficha nunca pode quebrar a tradução.
 Regra de Ouro: Coeso, desacoplado e estritamente < 300 linhas.
@@ -22,7 +22,8 @@ import tempfile
 import time
 import unicodedata
 
-FICHA_FILENAME = "ficha_obra.json"
+from ficha_caminho import FICHA_FILENAME, looks_like_chapter, resolve_ficha_path  # noqa: F401 (reexportados)
+
 FICHA_VERSION = 1
 MAX_PERSONAGENS = 150
 MAX_TERMOS = 300
@@ -33,11 +34,6 @@ MAX_NOTA_LEN = 80
 DEFAULT_PROMPT_MAX_CHARS = 900
 
 _CJK_RE = re.compile(r'[぀-ヿ㐀-䶿一-鿿가-힯ᄀ-ᇿ㄰-㆏]')
-_CHAPTER_RE = re.compile(
-    r"(?i)(?:^|[\s_\-.\[(#])(?:cap(?:[ií]tulo)?|ch(?:apter|ap)?|ep(?:is[oó]dio|isode)?|vol(?:ume)?|parte?|"
-    r"chương|第)[\s_\-.#]*\d|^\s*\d+(?:[.,]\d+)?\s*$"
-)
-_ROOT_NAMES = {"", "mangas", "mangas [pt-br]", "mydrive", "meu drive", "drive", "content"}
 _GENERO_MAP = {
     "m": "M", "masc": "M", "masculino": "M", "male": "M", "homem": "M", "h": "M", "menino": "M",
     "f": "F", "fem": "F", "feminino": "F", "female": "F", "mulher": "F", "menina": "F",
@@ -76,27 +72,8 @@ def mentions(key, norm_text):
 
 
 # ---------------------------------------------------------------------------
-# Arquivo: onde fica, ler e salvar
+# Arquivo: ler e salvar (onde fica: ficha_caminho.py)
 # ---------------------------------------------------------------------------
-def looks_like_chapter(folder_name):
-    return bool(_CHAPTER_RE.search(str(folder_name or "")))
-
-def resolve_ficha_path(manga_dir):
-    """Escolhe o ficha_obra.json da obra: um já existente (pasta ou pai) ou o lugar certo para criar."""
-    d = os.path.abspath(str(manga_dir or "."))
-    parent = os.path.dirname(d)
-    local = os.path.join(d, FICHA_FILENAME)
-    parent_f = os.path.join(parent, FICHA_FILENAME)
-    if os.path.exists(local):
-        return local
-    if parent != d and os.path.exists(parent_f):
-        return parent_f
-    parent_name = os.path.basename(parent).strip().lower()
-    if parent != d and looks_like_chapter(os.path.basename(d)) and parent_name not in _ROOT_NAMES:
-        return parent_f
-    return local
-
-
 def empty_ficha(obra=""):
     return {"versao": FICHA_VERSION, "obra": str(obra or ""), "atualizado_em": "",
             "capitulos_lidos": [], "personagens": [], "termos": [], "conflitos": []}
@@ -185,6 +162,20 @@ def _add_conflito(ficha, texto, capitulo):
     return True
 
 
+def _find_personagem(pers_idx, key):
+    """Mesmo personagem: nome igual ou um contido no outro por palavras ('MANABU' e 'MANABU TOKITO')."""
+    if key in pers_idx:
+        return pers_idx[key]
+    words = set(key.split())
+    if not words or _CJK_RE.search(key):
+        return None
+    for k, p in pers_idx.items():
+        kw = set(k.split())
+        if kw and not _CJK_RE.search(k) and (words <= kw or kw <= words):
+            return p
+    return None
+
+
 def merge_novidades(ficha, novidades, capitulo=""):
     """Acrescenta personagens/termos novos; completa gênero '?'; registra divergências."""
     report = {"personagens_novos": [], "termos_novos": [], "generos_completados": [], "conflitos": []}
@@ -200,7 +191,7 @@ def merge_novidades(ficha, novidades, capitulo=""):
         new = clean_personagem(item)
         if not new:
             continue
-        cur = pers_idx.get(normalize_key(new["original"]))
+        cur = _find_personagem(pers_idx, normalize_key(new["original"]))
         if cur is None:
             if len(ficha["personagens"]) < MAX_PERSONAGENS:
                 ficha["personagens"].append(new)

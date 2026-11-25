@@ -61,6 +61,10 @@ try:
 except Exception:
     rag_memory = None
 try:
+    import ocr_text_fix  # Ordem das linhas, caixa alta, lixo do OCR e inglês residual; opcional
+except Exception:
+    ocr_text_fix = None
+try:
     import ficha_obra  # Ficha da Obra: personagens, gêneros e termos fixos; opcional
     import lider_capitulo  # Líder do capítulo que atualiza a ficha; opcional
 except Exception:
@@ -1531,8 +1535,11 @@ def smart_group_bubbles(blocks, img_gray=None):
             # Leitura oriental: Direita para Esquerda (X descrescente), Topo para Baixo
             comp_blocks.sort(key=lambda b: (-b["box"][2], b["box"][1]))
         else:
-            # Leitura ocidental: faixas verticais de ~22px, depois Esquerda para Direita
-            comp_blocks.sort(key=lambda b: (int(b["box"][1] // 22), b["box"][0]))
+            # Leitura ocidental: de cima para baixo; mesma fileira só com sobreposição vertical real (ocr_text_fix.py)
+            if ocr_text_fix is not None:
+                comp_blocks = ocr_text_fix.order_horizontal_lines(comp_blocks)
+            else:
+                comp_blocks.sort(key=lambda b: (int(b["box"][1] // 22), b["box"][0]))
         
         xmin = min(b["box"][0] for b in comp_blocks)
         ymin = min(b["box"][1] for b in comp_blocks)
@@ -4653,6 +4660,7 @@ def build_translation_system_prompt(is_adult=True, is_batch=False, glossary=None
 
     common_rules = (
         "- PT-BR coloquial, ágil e conciso (caber em balões pequenos); mantenha pontuação (!, ?, ..., ~, ♡) e nomes próprios.\n"
+        "- ZERO inglês residual: traduza todas as palavras, inclusive as em destaque (só nomes próprios e apelidos ficam).\n"
         "- ZERO espanhol/portunhol ('joyería'='joalheria', NUNCA 'buceta'; 'cuerpo'='corpo'; 'tienda'='loja'; 'hoy'='hoje').\n"
         "- Reconstrua mentalmente palavras quebradas por OCR antes de traduzir.\n"
     )
@@ -5195,7 +5203,8 @@ def build_dual_engine_system_prompt(is_adult=True, glossary=None, src_lang="auto
         "REGRAS:\n"
         "1. Leia todos os balões na ordem RTL p/ manter continuidade, sujeito e gênero (adjetivos/pronomes corretos).\n"
         "2. Seja conciso p/ caber em 'max_chars'; preserve (!, ?, ..., ~, ♡). ZERO notas ou comentários.\n"
-        "3. ZERO espanhol residual ('Muchas gracias'->'Muito obrigado', 'joyas'->'joias', 'tienda'->'loja', 'ropa'->'roupa', 'hoy'->'hoje', 'vengan'->'venham'). Em cena comercial, nunca sexualize palavras comuns ('joyería'->'joalheria', 'cuerpo'->'corpo').\n"
+        "3. ZERO inglês residual, inclusive palavras em negrito ('GONE UNDER'->'FALIU', 'ROUGH'->'DIFÍCIL'); só nomes e apelidos ficam.\n"
+        "3b. ZERO espanhol residual ('Muchas gracias'->'Muito obrigado', 'joyas'->'joias', 'tienda'->'loja', 'ropa'->'roupa', 'hoy'->'hoje', 'vengan'->'venham'). Em cena comercial, nunca sexualize palavras comuns ('joyería'->'joalheria', 'cuerpo'->'corpo').\n"
         "4. Reconstrua OCR fragmentado pelo contexto antes de traduzir (ex: 'Wit c H\\'S'->'da bruxa', 'LN ABLE'->'incapaz', 'CONS E-QUE N CES'->'consequências', 'ARE YO LI OKAY'->'você está bem?', 'Fr I END'->'amiga', 'Ch IL DISH'->'infantil').\n"
         "5. Traduza sempre o pronome inglês 'I' (sozinho ou na frase, ex: 'I...', 'I\\'m') como 'Eu'/'Estou' em PT-BR — NUNCA deixe 'I' em inglês solto na tradução.\n"
         "6. BALÕES CONECTADOS: Quando uma fala for dividida entre múltiplos balões contíguos (ex: balão 1 'FEELS', balão 2 'SOOOOO'/'50000', balão 3 'GOOD!'), compreenda a oração completa ('FEELS SO GOOD!' -> 'É TÃO BOM!' / 'QUE GOSTOSO!') e distribua a tradução naturalmente entre os balões, NUNCA traduza palavras soltas sem sentido.\n"
@@ -8316,6 +8325,14 @@ def is_valid_translation(orig_text, trans_text):
     if any(cm in ct_lower for cm in corrupt_markers) or ct_lower in ('auto', '[auto]'):
         return False
 
+    # Rejeita tradução com palavras inglesas copiadas do original ("YOU'RE SO inteligente", "tinha sido UNDER")
+    if ocr_text_fix is not None:
+        try:
+            if ocr_text_fix.english_residue(clean_orig, clean_trans):
+                return False
+        except Exception:
+            pass
+
     return True
 
 def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=False, retranslate=False, is_adult=True, config=None, progress_cb=None, colorize=None, color_reference=None):
@@ -8547,10 +8564,15 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             xmin, ymin, xmax, ymax = [int(round(float(v))) for v in blk.get("box", [0, 0, 0, 0])]
             is_vertical = blk.get("vertical", True)
             lines = blk.get("lines", [])
+            if ocr_text_fix is not None:
+                lines = ocr_text_fix.normalize_case_lines(lines)  # "OTAKu" -> "OTAKU" em balões em CAIXA ALTA
             is_cjk_blk = is_majority_cjk(lines)
             is_ko_blk = is_majority_hangul(lines)
             text = smart_join_lines(lines, is_cjk=is_cjk_blk, preserve_spaces=is_ko_blk).strip()
             if not text:
+                continue
+            if ocr_text_fix is not None and ocr_text_fix.is_noise_text(text):
+                print(f"    [OCR] Bloco ignorado como ruído (não traduz nem apaga): {text!r}")
                 continue
             if not is_cjk_blk and is_pregrouped_ocr:
                 text = repair_glued_text(text)

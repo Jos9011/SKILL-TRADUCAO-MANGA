@@ -22,6 +22,7 @@ import json
 import os
 import re
 
+import ficha_caminho
 import ficha_obra
 
 DEFAULT_LEADER_MODEL = "openai/gpt-oss-120b"
@@ -35,18 +36,26 @@ MAX_NOVOS_TERMOS = 25
 SYSTEM_PROMPT = (
     "Você é o LÍDER de tradução de uma obra (mangá/manhwa/manhua) para PT-BR.\n"
     "Você recebe a FICHA ATUAL da obra e as FALAS ORIGINAIS de um capítulo (texto de OCR, pode ter ruído).\n"
-    "Sua tarefa: devolver SOMENTE as NOVIDADES que ainda não estão na ficha:\n"
-    "1. personagens novos: nome como aparece no original, nome em PT-BR (romanização padrão; "
-    "mantenha nomes próprios e honoríficos como -kun/-san/-sama), gênero (M, F ou ?) e nota curta "
-    "(papel ou relação, ex: 'irmã mais velha do protagonista');\n"
-    "2. personagens que já estão na ficha com gênero '?', se o capítulo deixar o gênero claro;\n"
-    "3. termos recorrentes próprios da obra (técnicas, lugares, títulos, organizações, apelidos) "
-    "com uma tradução fixa em PT-BR.\n"
-    "NÃO invente: inclua só o que aparece nas falas. NÃO traduza as falas. Ignore onomatopeias, "
-    "palavras comuns e créditos de scan.\n"
+    "Devolva SOMENTE as NOVIDADES que ainda não estão na ficha:\n"
+    "1. PERSONAGENS: só pessoas com NOME PRÓPRIO escrito nas falas. Use o nome COMPLETO como aparece "
+    "(ex: 'MANABU TOKITO', não só 'MANABU'); em 'pt', escreva com maiúscula só nas iniciais "
+    "('Manabu Tokito'); mantenha honoríficos (-kun/-san/-sama). Gênero M, F ou ?: deduza pelo contexto "
+    "(um nome em quadro de narração junto de falas em 1ª pessoa costuma ser o narrador; pronomes he/she, "
+    "his/her, 'woman', 'girl' etc.). Nota curta e CERTA (papel ou relação, ex: 'protagonista e narrador').\n"
+    "2. APELIDOS (ex: 'Otaku', 'Ota') NÃO são personagens: registre na nota de quem RECEBE o apelido "
+    "(ex: nota de Manabu: 'Kirara o chama de \"Otaku\"'). Cuidado com quem chama e quem é chamado.\n"
+    "3. Personagens da ficha com gênero '?', se o capítulo deixar o gênero claro.\n"
+    "4. TERMOS próprios da obra (técnicas, lugares, organizações, títulos) que se repetem, com tradução "
+    "fixa. NÃO inclua palavras comuns de dicionário.\n"
+    "NÃO chute: se não tiver certeza de algo, deixe de fora (nada de 'possível', 'talvez', 'provavelmente'). "
+    "NÃO traduza as falas. Ignore onomatopeias, títulos da obra e créditos de scan.\n"
     'Responda APENAS JSON válido: {"personagens":[{"original":"","pt":"","genero":"M|F|?","nota":""}],'
     '"termos":[{"original":"","pt":"","nota":""}]}\n'
     'Sem novidades: {"personagens":[],"termos":[]}'
+)
+_SPECULATIVE_RE = re.compile(
+    r"(?i)\b(poss[ií]vel|possivelmente|talvez|provavelmente|parece ser|pode ser|suposto|incerto|"
+    r"maybe|possibly|probably|perhaps|unclear|unknown)\b"
 )
 
 
@@ -132,15 +141,28 @@ def parse_response(text):
             "termos": terms if isinstance(terms, list) else []}
 
 
+def _tidy_item(item, kind):
+    """Descarta palpites ('possível...', '?') e acerta a caixa de nomes em CAIXA ALTA ('MANABU' -> 'Manabu')."""
+    text = " ".join(str(item.get(k) or "") for k in ("original", "pt", "nota"))
+    if _SPECULATIVE_RE.search(text) or "?" in str(item.get("original") or "") + str(item.get("pt") or ""):
+        return None
+    item = dict(item)
+    pt = str(item.get("pt") or item.get("original") or "").strip()
+    if kind == "personagens" and len(pt) > 2 and pt.isupper():
+        item["pt"] = " ".join(w[:1] + w[1:].lower() for w in pt.split(" "))
+    return item
+
+
 def filter_grounded(novidades, lines):
-    """Mantém só nomes/termos cujo original aparece de fato nas falas (anti-alucinação)."""
+    """Mantém só nomes/termos que aparecem de fato nas falas (anti-alucinação) e sem palpites."""
     norm_text = ficha_obra.normalize_key("\n".join(lines))
     out = {"personagens": [], "termos": []}
     for kind, limit in (("personagens", MAX_NOVOS_PERSONAGENS), ("termos", MAX_NOVOS_TERMOS)):
         for item in (novidades or {}).get(kind) or []:
             if not isinstance(item, dict):
                 continue
-            if ficha_obra.mentions(ficha_obra.normalize_key(item.get("original")), norm_text):
+            item = _tidy_item(item, kind)
+            if item and ficha_obra.mentions(ficha_obra.normalize_key(item.get("original")), norm_text):
                 out[kind].append(item)
             if len(out[kind]) >= limit:
                 break
@@ -226,8 +248,7 @@ def run_for_chapter(manga_dir, obra_nome, texts, engine_opts, execute_fn, config
     d = os.path.abspath(str(manga_dir))
     path = ficha_obra.resolve_ficha_path(d)
     capitulo = os.path.basename(d)
-    if os.path.dirname(path) != d:
-        obra_nome = os.path.basename(os.path.dirname(path)) or obra_nome
+    obra_nome = ficha_caminho.obra_display_name(d, path, fallback=obra_nome)
     ficha = ficha_obra.load_ficha(path, obra=obra_nome)
     ctx = {"ficha": ficha, "path": path, "changed": False}
 

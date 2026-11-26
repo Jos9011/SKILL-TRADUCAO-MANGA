@@ -262,18 +262,18 @@ def compute_safe_text_region(balloon_info, pad_x=14, pad_y=12):
     eff_pad_x = min(pad_x, max(6, int(body_w * 0.06)))
     sy0, sy1 = min_y + eff_pad_y, max(min_y + eff_pad_y + 12, max_y - eff_pad_y)
 
-    profile, cx_samples = [], []
+    rows = []
     for k in range(9):
         frac = k / 8.0
         yy = min(lh - 1, max(0, int(round(sy0 + frac * (sy1 - sy0)))))
         row_xs = np.where(body[yy, :] > 0)[0]
         if row_xs.size >= 4:
-            rw = max(24.0, float(row_xs.max() - row_xs.min() + 1) - 2.0 * eff_pad_x)
-            profile.append((frac, rw))
-            if 0.25 <= frac <= 0.75:
-                cx_samples.append(px0 + (float(row_xs.min()) + float(row_xs.max())) / 2.0)
-
-    safe_cx = float(np.median(cx_samples)) if cx_samples else (px0 + (min_x + max_x) / 2.0)
+            rows.append((frac, float(row_xs.min()), float(row_xs.max())))
+    cx_samples = [(x0 + x1) / 2.0 for f, x0, x1 in rows if 0.25 <= f <= 0.75]
+    cx_loc = float(np.median(cx_samples)) if cx_samples else (min_x + max_x) / 2.0
+    safe_cx = px0 + cx_loc
+    # Largura simétrica em volta do eixo do texto (balão em "L" ou com recorte não pode ser invadido)
+    profile = [(f, max(24.0, 2.0 * min(cx_loc - x0, x1 - cx_loc) + 1.0 - 2.0 * eff_pad_x)) for f, x0, x1 in rows]
     safe_cy = py0 + (sy0 + sy1) / 2.0
     max_w = max(32.0, max((w for _, w in profile), default=float(body_w - 2 * eff_pad_x)))
     max_h = max(24.0, float(sy1 - sy0 + 1))

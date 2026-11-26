@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 typography_ptbr.py - Motor de Tipografia Calibrada para Mangás em Português (PT-BR)
 Garante métrica correta para acentos em CAIXA ALTA (ÁÇÃÊÓÚ), entrelinha limpa,
@@ -18,19 +17,9 @@ except Exception:
 
 
 def select_clean_font(text, fonts_map, is_shout=False, is_thought=False):
-    """
-    Seleciona fonte consistente para o balão:
-    - Evita trocar para fonte de grito em saudações normais com um único '!'.
-    - Mantém a mesma identidade visual nos diálogos da página.
-    """
+    """Fonte consistente na página; fonte de grito só para "!!", "!?" e "?!" (não para um único '!')."""
     clean = (text or "").strip()
-    is_real_shout = bool(
-        is_shout
-        or clean.endswith("!!")
-        or clean.endswith("!?")
-        or clean.endswith("?!")
-        or clean.endswith("!?!")
-    )
+    is_real_shout = bool(is_shout or clean.endswith(("!!", "!?", "?!", "!?!")))
     if is_real_shout:
         for k in ("shout", "komika", "anime_ace", "dialogue"):
             p = fonts_map.get(k)
@@ -81,7 +70,7 @@ def _hyphenate_long_word(draw, word, font, max_w, measure_fn, stroke_width=0, mi
 
 
 def wrap_balanced_ptbr(draw, text, font, max_w, measure_fn, stroke_width=0,
-                       band_profile=None, allow_hyphen=False, max_k=8):
+                       band_profile=None, allow_hyphen=False, max_k=8, line_h=None, span_h=None, center=0.5):
     """Linhas equilibradas (formato diamante/oval) respeitando o perfil de largura real do balão."""
     words = text.split()
     if not words:
@@ -90,10 +79,21 @@ def wrap_balanced_ptbr(draw, text, font, max_w, measure_fn, stroke_width=0,
     def _allowed_w(line_idx, total_lines):
         if not band_profile or total_lines <= 1:
             return max_w
-        frac = (line_idx + 0.5) / float(total_lines)
         ys = [p[0] for p in band_profile]
         ws = [p[1] for p in band_profile]
-        return min(max_w, float(np.interp(frac, ys, ws)))
+        if not (line_h and span_h):
+            return min(max_w, float(np.interp((line_idx + 0.5) / float(total_lines), ys, ws)))
+        # Posição real da linha (bloco centrado em `center`); vale a parte mais estreita que ela ocupa
+        step = line_h / float(span_h)
+        block_top = min(max(0.0, center - total_lines * step / 2.0), max(0.0, 1.0 - total_lines * step))
+        top = block_top + line_idx * step  # como o desenho: o bloco nunca sai do topo/base do balão
+        bot = top + step
+        cands = [float(np.interp(min(1.0, max(0.0, (top + bot) / 2.0)), ys, ws))]
+        for i in range(len(ys) - 1):  # degrau no miolo (quadro em "L"): a linha não pode passar do lado estreito
+            lo, hi = min(ws[i], ws[i + 1]), max(ws[i], ws[i + 1])
+            if 0.12 <= ys[i] and ys[i + 1] <= 0.88 and hi > 1.25 * lo and ys[i] <= bot and ys[i + 1] >= top:
+                cands.append(lo)
+        return min(max_w, min(cands))
 
     best_lines = None
     best_score = float("inf")
@@ -164,7 +164,8 @@ def wrap_balanced_ptbr(draw, text, font, max_w, measure_fn, stroke_width=0,
 
 
 def fit_text_ptbr(draw, text, max_w, max_h, font_path, measure_fn,
-                  stroke_width=1, band_profile=None, page_w=1280, is_display=False, min_line_w=None):
+                  stroke_width=1, band_profile=None, page_w=1280, is_display=False, min_line_w=None,
+                  band_center=0.5):
     """(font, lines, line_h) com escala consistente, respiro para acentos PT-BR e sem hífen desnecessário."""
     clean = (text or "").strip()
     if not clean:
@@ -196,7 +197,7 @@ def fit_text_ptbr(draw, text, max_w, max_h, font_path, measure_fn,
                 stroke_width=stroke_width,
                 band_profile=scaled_prof,
                 allow_hyphen=allow_hyphen,
-                max_k=max_k,
+                max_k=max_k, line_h=line_h, span_h=float(max_h), center=band_center,
             )
             if lines and len(lines) <= max_lines:
                 total_h = len(lines) * line_h

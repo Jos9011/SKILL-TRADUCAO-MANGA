@@ -41,9 +41,10 @@ function Escolher-Plano($gpu, $ramGB) {
     $vram = 0; $fab = "nenhuma"
     if ($gpu) { $vram = $gpu.VramGB; if ($gpu.Nome -match 'NVIDIA|GeForce|RTX|GTX') { $fab = "nvidia" } elseif ($gpu.Nome -match 'AMD|Radeon') { $fab = "amd" } else { $fab = "outra" } }
     if ($vram -ge 14) { return @{ Modelo = "qwen3:14b"; Ctx = 16384; Prioridade = "first"; Reserva = "qwen3:8b"; Fab = $fab; Vram = $vram } }
-    if ($vram -ge 10) { return @{ Modelo = "qwen3:8b"; Ctx = 16384; Prioridade = "first"; Reserva = "qwen3:4b"; Fab = $fab; Vram = $vram } }
-    if ($vram -ge 6 -and $ramGB -ge 12) { return @{ Modelo = "qwen3:8b"; Ctx = 8192; Prioridade = "fallback"; Reserva = "qwen3:4b"; Fab = $fab; Vram = $vram } }
-    return @{ Modelo = "qwen3:4b"; Ctx = 8192; Prioridade = "fallback"; Reserva = ""; Fab = $fab; Vram = $vram }
+    # qwen3:4b (versão 2507) só funciona raciocinando: 1 min por balão. Modelo pequeno = gemma3:4b, que responde direto.
+    if ($vram -ge 10) { return @{ Modelo = "qwen3:8b"; Ctx = 16384; Prioridade = "first"; Reserva = "gemma3:4b"; Fab = $fab; Vram = $vram } }
+    if ($vram -ge 6 -and $ramGB -ge 12) { return @{ Modelo = "qwen3:8b"; Ctx = 8192; Prioridade = "fallback"; Reserva = "gemma3:4b"; Fab = $fab; Vram = $vram } }
+    return @{ Modelo = "gemma3:4b"; Ctx = 8192; Prioridade = "fallback"; Reserva = ""; Fab = $fab; Vram = $vram }
 }
 
 # ---------- 2. Vulkan: qual número é a placa dedicada (AMD sem ROCm, ex.: RX 5000) ----------

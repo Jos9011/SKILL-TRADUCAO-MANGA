@@ -20,6 +20,7 @@ import urllib.request
 DEFAULT_NUM_CTX = 16384
 DEFAULT_TIMEOUT = 240
 STATUS_TTL = 300  # segundos que o resultado de "servidor ligado + modelo escolhido" vale
+HEARTBEAT_SECS = 30  # de quanto em quanto tempo o registro avisa que a IA local ainda está trabalhando
 
 # Ordem de preferência para tradução (o nome escolhido em Configurações sempre vence)
 PREFERRED_MODELS = ("qwen3", "translategemma", "gemma3", "qwen2.5", "mistral-small", "llama3.1", "gemma2",
@@ -65,11 +66,18 @@ def pick_model(models, custom_model="", prefer_uncensored=False):
             low = m.lower()
             if any(t in low for t in ("abliterated", "uncensored")) and any(p in low for p in order[:4]):
                 return m
+    # qwen3:4b atual (2507) e variantes "-thinking" não desligam o raciocínio: só se não houver outro
+    usable = [m for m in text_models if not _thinking_only(m)] or text_models
     for pref in order:
-        for m in text_models:
+        for m in usable:
             if pref in m.lower():
                 return m
-    return text_models[0]
+    return usable[0]
+
+
+def _thinking_only(model):
+    low = model.lower()
+    return "-thinking" in low or low.split(":latest")[0] in ("qwen3:4b",)
 
 
 def list_models(host, timeout=8):
@@ -79,9 +87,15 @@ def list_models(host, timeout=8):
     return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
 
 
+def _status_key(host, custom_model, prefer_uncensored):
+    custom = (custom_model or "").strip().lower()
+    # Com o modelo fixo em Configurações, o modo adulto não muda a escolha: um aquecimento só
+    return host.rstrip("/"), custom, bool(prefer_uncensored) and not custom
+
+
 def cached_status(host, custom_model="", prefer_uncensored=False):
     """(ok, modelo) guardado há menos de STATUS_TTL segundos, ou None."""
-    key = (host.rstrip("/"), (custom_model or "").lower(), bool(prefer_uncensored))
+    key = _status_key(host, custom_model, prefer_uncensored)
     with _cache_lock:
         hit = _status_cache.get(key)
     if hit and time.time() - hit[0] < STATUS_TTL:
@@ -90,7 +104,7 @@ def cached_status(host, custom_model="", prefer_uncensored=False):
 
 
 def remember_status(host, custom_model, prefer_uncensored, ok, model):
-    key = (host.rstrip("/"), (custom_model or "").lower(), bool(prefer_uncensored))
+    key = _status_key(host, custom_model, prefer_uncensored)
     with _cache_lock:
         _status_cache[key] = (time.time(), ok, model)
 
@@ -104,10 +118,33 @@ def forget_status(host=None):
                 _status_cache.pop(k, None)
 
 
+def _no_think(messages, model):
+    """Qwen3 híbrido pensa em voz alta mesmo com "think": false em algumas versões do Ollama.
+    "/no_think" na mensagem de sistema (ou na última do usuário) é a chave oficial do Qwen3 para desligar."""
+    if "qwen3" not in (model or "").lower():
+        return messages
+    out = [dict(m) for m in messages]
+    idx = next((i for i, m in enumerate(out) if m.get("role") == "system"), None)
+    if idx is None:
+        idx = next((i for i in range(len(out) - 1, -1, -1) if out[i].get("role") == "user"), None)
+    if idx is not None and "/no_think" not in str(out[idx].get("content", "")):
+        out[idx]["content"] = f"{out[idx].get('content', '')}\n/no_think"
+    return out
+
+
+def clean_answer(text):
+    """Tira o raciocínio do Qwen3; se ele ficou pela metade (limite de tokens), não sobra tradução."""
+    text = _THINK_RE.sub("", text or "")
+    cut = text.lower().find("<think>")
+    if cut >= 0:
+        text = text[:cut]
+    return text.strip()
+
+
 def _payload(messages, model, temperature, num_predict, num_ctx):
     return {
         "model": model,
-        "messages": messages,
+        "messages": _no_think(messages, model),
         "stream": False,
         "think": False,
         "keep_alive": "60m",
@@ -134,12 +171,95 @@ def _post(host, payload, timeout):
         raise
 
 
-def chat(messages, model, host, temperature=0.0, num_predict=1024, cfg=None, timeout=None):
-    """Resposta de texto do modelo, sem blocos <think>."""
-    data = _post(host, _payload(messages, model, temperature, num_predict, num_ctx_from(cfg)),
-                 timeout or timeout_from(cfg))
-    content = (data.get("message") or {}).get("content", "")
-    return _THINK_RE.sub("", content).strip()
+def _open(host, payload, timeout):
+    """Abre o pedido em streaming. O tempo de espera vale por trecho recebido, não pela resposta inteira."""
+    req = urllib.request.Request(f"{host.rstrip('/')}/api/chat", data=json.dumps(payload).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        if e.code == 400 and "think" in body.lower() and "think" in payload:
+            return _open(host, {k: v for k, v in payload.items() if k != "think"}, timeout)
+        raise
+
+
+def _read_stream(resp):
+    """Junta os trechos da resposta. Devolve (texto, último objeto com as estatísticas)."""
+    parts, final = [], {}
+    with resp:
+        for raw in resp:
+            line = raw.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if obj.get("error"):
+                raise RuntimeError(f"Ollama: {obj['error']}")
+            parts.append((obj.get("message") or {}).get("content", ""))
+            final = obj
+            if obj.get("done"):
+                break
+    return "".join(parts), final
+
+
+def _heartbeat(stop, label, t0):
+    while not stop.wait(HEARTBEAT_SECS):
+        print(f"    [IA local] {label} ainda trabalhando ({int(time.time() - t0)} s)...", flush=True)
+
+
+def _summary(label, final, secs):
+    n_out = final.get("eval_count") or 0
+    dur = (final.get("eval_duration") or 0) / 1e9
+    speed = f" a {n_out / dur:.1f} tokens/s" if dur else ""
+    return (f"    [IA local] {label} respondeu em {secs:.0f} s (leu {final.get('prompt_eval_count') or 0} tokens, "
+            f"escreveu {n_out}{speed}).")
+
+
+def chat(messages, model, host, temperature=0.0, num_predict=1024, cfg=None, timeout=None, label=""):
+    """Resposta de texto do modelo, sem blocos <think>. Com 'label', escreve o andamento no registro."""
+    payload = _payload(messages, model, temperature, num_predict, num_ctx_from(cfg))
+    payload["stream"] = True
+    t0 = time.time()
+    stop = threading.Event()
+    if label:
+        print(f"    [IA local] {label} traduzindo... (sem placa de vídeo pode levar alguns minutos)", flush=True)
+        threading.Thread(target=_heartbeat, args=(stop, label, t0), daemon=True).start()
+    try:
+        content, final = _read_stream(_open(host, payload, timeout or timeout_from(cfg)))
+    finally:
+        stop.set()
+    if label:
+        print(_summary(label, final, time.time() - t0), flush=True)
+    return clean_answer(content)
+
+
+def gpu_share(host, model, timeout=5):
+    """Parte do modelo (0 a 1) que está na memória da placa de vídeo, ou None se não der para saber."""
+    try:
+        with urllib.request.urlopen(f"{host.rstrip('/')}/api/ps", timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    for m in data.get("models", []):
+        if model in (m.get("name"), m.get("model")):
+            size = m.get("size") or 0
+            return (m.get("size_vram") or 0) / size if size else None
+    return None
+
+
+def describe_placement(model, share):
+    """Linha para o registro dizendo se o modelo roda na placa de vídeo ou no processador."""
+    if share is None:
+        return ""
+    if share >= 0.99:
+        return f"[+] IA local '{model}' rodando 100% na placa de vídeo."
+    cpu = round((1 - share) * 100)
+    return (f"[!] IA local '{model}': {cpu}% do modelo ficou no processador, então cada página pode levar minutos. "
+            "Feche jogos e programas pesados, ou rode Instalar_IA_Local.bat de novo.")
 
 
 def speed_test(host, model, cfg=None):
@@ -152,7 +272,7 @@ def speed_test(host, model, cfg=None):
     n_tok = data.get("eval_count") or 0
     dur_ns = data.get("eval_duration") or 0
     tok_s = (n_tok / (dur_ns / 1e9)) if dur_ns else (n_tok / secs if secs else 0)
-    sample = _THINK_RE.sub("", (data.get("message") or {}).get("content", "")).strip()
+    sample = clean_answer((data.get("message") or {}).get("content", ""))
     return {"ok": bool(sample), "tok_s": round(tok_s, 1), "seconds": round(secs, 1), "sample": sample[:120]}
 
 

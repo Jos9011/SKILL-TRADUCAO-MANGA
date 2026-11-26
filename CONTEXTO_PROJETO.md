@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.2 Beta` (`0.8.2-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.3 Beta` (`0.8.3-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -87,7 +87,7 @@ O sistema é dividido em submódulos cooperativos:
 * **Arquivos:** `Instalar_IA_Local.bat` chama `instalar_ia_local.ps1` (PowerShell 5.1, UTF-8 com BOM, CRLF).
 * **O que o script faz:**
   * detecta a placa de vídeo dedicada e a VRAM (pelo registro);
-  * escolhe o plano: 14 GB ou mais = qwen3:14b/16k/first; 10 GB = qwen3:8b/16k/first; 6 GB com 12 GB ou mais de RAM = qwen3:8b/8k/fallback; abaixo disso = qwen3:4b/8k/fallback;
+  * escolhe o plano: 14 GB ou mais = qwen3:14b/16k/first; 10 GB = qwen3:8b/16k/first; 6 GB com 12 GB ou mais de RAM = qwen3:8b/8k/fallback; abaixo disso = gemma3:4b/8k/fallback (reserva dos planos 8b também é gemma3:4b; v0.8.3);
   * instala o Ollama (winget ou OllamaSetup.exe);
   * em AMD, liga `OLLAMA_VULKAN=1` e `GGML_VK_VISIBLE_DEVICES` com a GPU dedicada (via vulkaninfo);
   * baixa o modelo, mede tokens/s e troca para o modelo reserva abaixo de 6 tok/s;
@@ -95,6 +95,21 @@ O sistema é dividido em submódulos cooperativos:
 * **Onde grava:** no config da pasta do projeto, se houver. No `%APPDATA%\MangaStudio\config.json` só se ele já existir ou se o script estiver junto do .exe, para não atrapalhar a migração da 1ª execução.
 * **`-Simular`:** só detecta e mostra o plano. O GitHub Actions roda esse modo no Windows.
 * **`ollama_priority`:** `"first"` (padrão) põe a IA local antes da nuvem no modo Automático. `"fallback"` deixa a nuvem primeiro, e o roteador tenta o Ollama antes de esperar a cota.
+
+### A5. Andamento da IA local (v0.8.3)
+* **Sintoma:** com a cota da nuvem esgotada, o registro parava em "Modelo 'qwen3:4b' ativo com sucesso!" e parecia travado.
+* **Causa:** o pedido ao Ollama era sem streaming e sem nenhum log até a resposta. Num modelo parcial na CPU, uma página leva minutos.
+* **`ollama_client.chat(..., label=modelo)`:**
+  * usa streaming; o timeout vale por trecho recebido;
+  * escreve "traduzindo...", um aviso a cada `HEARTBEAT_SECS` (30 s) e um resumo no fim (segundos, `prompt_eval_count`, `eval_count`, tokens/s);
+  * um `{"error": ...}` no meio do stream vira RuntimeError.
+* **`gpu_share()` + `describe_placement()`:** lê `/api/ps` (`size_vram`/`size`) depois do aquecimento e avisa quanto do modelo ficou no processador.
+* **Cache de status:** com `ollama_model` fixo, ignora o modo adulto na chave, para não aquecer duas vezes.
+* **Lote fora do formato JSON:** `translate_page_dialogue` avisa no registro antes de traduzir balão por balão.
+* **Qwen3 pensando em voz alta:** confirmado no PC do usuário (Ollama ignorava `"think": false`). Cada balão batia nos 350 tokens de raciocínio (~64 s a 5,4 tok/s), a tradução saía cortada e era refeita.
+  * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
+  * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
+  * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

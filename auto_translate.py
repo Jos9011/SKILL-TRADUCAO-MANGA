@@ -133,8 +133,10 @@ except Exception:
 # Diretório padrão fixo de saída solicitado pelo usuário
 BASE_OUTPUT_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
+import app_paths  # pasta do código x pasta de dados (no .exe os dados ficam em %APPDATA%\MangaStudio)
+SCRIPT_DIR = app_paths.CODE_DIR
+DATA_DIR = app_paths.DATA_DIR
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
 def load_config(cli_args=None):
     """Carrega as configurações com prioridade: CLI > Variáveis de Ambiente > config.json > Padrões."""
@@ -601,7 +603,7 @@ def load_project_glossary(manga_dir):
     candidates = [
         os.path.join(manga_dir, "glossary.json"),
         os.path.join(manga_dir, "termos.txt"),
-        os.path.join(SCRIPT_DIR, "glossary.json"),
+        os.path.join(DATA_DIR, "glossary.json"),
         os.path.join(r"C:\Users\ja329\tools\manga-translator", "glossary.json"),
         os.path.join(r"C:\Users\ja329\OneDrive\Documentos\MANGAS\SKILL-TRADUCAO-MANGA-main", "glossary.json")
     ]
@@ -631,8 +633,8 @@ def load_project_glossary(manga_dir):
                 print(f"[*] Aviso ao ler glossário ({c}): {e}")
     return glossary
 
-LEARNED_RULES_TXT = os.path.join(SCRIPT_DIR, "aprendizado.txt")
-GLOBAL_TRANSLATION_MEMORY = os.path.join(SCRIPT_DIR, "memoria_traducoes.json")
+LEARNED_RULES_TXT = os.path.join(DATA_DIR, "aprendizado.txt")
+GLOBAL_TRANSLATION_MEMORY = os.path.join(DATA_DIR, "memoria_traducoes.json")
 
 def _normalize_src_lang_tag(src_lang):
     """Normaliza códigos de idioma (ex: 'en' -> 'en-US', 'ja' -> 'ja-JP') para seleção de regras e prompts."""
@@ -2412,7 +2414,7 @@ def fit_text_to_box(draw, text, max_w, max_h, font_path, stroke_width=1, shape_t
     )
     return font, lines
 
-QUOTA_STATE_FILE = os.path.join(SCRIPT_DIR, ".temp", "quota_state.json")
+QUOTA_STATE_FILE = os.path.join(DATA_DIR, ".temp", "quota_state.json")
 GROQ_MIN_PAGE_TOKENS = 2200
 _QUOTA_LOCK = threading.RLock()
 
@@ -5849,11 +5851,11 @@ def create_html_reader(images_dir, title):
         f.write(html_content)
     print(f"[+] Leitor interativo criado: {leitor_file}")
 
-KOREAN_MODEL_DIR = os.path.join(SCRIPT_DIR, "models", "korean")
+KOREAN_MODEL_DIR = os.path.join(app_paths.MODELS_DIR, "korean")
 KOREAN_REC_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_PP-OCRv5_rec_infer.onnx")
 KOREAN_DICT_PATH = os.path.join(KOREAN_MODEL_DIR, "korean_v5_dict.txt")
 
-JAPANESE_MODEL_DIR = os.path.join(SCRIPT_DIR, "models", "japanese")
+JAPANESE_MODEL_DIR = os.path.join(app_paths.MODELS_DIR, "japanese")
 JAPANESE_DET_PATH = os.path.join(JAPANESE_MODEL_DIR, "manga_det.onnx")
 JAPANESE_REC_PATH = os.path.join(JAPANESE_MODEL_DIR, "manga_rec.onnx")
 JAPANESE_DICT_PATH = os.path.join(JAPANESE_MODEL_DIR, "ppocrv6_dict.txt")
@@ -9453,8 +9455,7 @@ def audit_manga_translation(manga_dir, rating=None, user_comment="", auto_heal=T
         except Exception:
             pass
             
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        mem_path = os.path.join(base_dir, "memoria_traducoes.json")
+        mem_path = os.path.join(DATA_DIR, "memoria_traducoes.json")
         if os.path.exists(mem_path):
             try:
                 with open(mem_path, "r", encoding="utf-8") as mf:
@@ -9468,7 +9469,7 @@ def audit_manga_translation(manga_dir, rating=None, user_comment="", auto_heal=T
 
     # Auto-Learning: Atualiza aprendizado.txt e glossary.json
     learned_rules_count = 0
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = DATA_DIR
     aprendizado_file = os.path.join(base_dir, "aprendizado.txt")
     if os.path.exists(aprendizado_file) and issues:
         try:

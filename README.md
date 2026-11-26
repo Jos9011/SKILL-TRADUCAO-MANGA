@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.7.12 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.8.0 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.7.12--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.8.0--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -19,6 +19,20 @@ Plataforma profissional de scanlation para tradução, OCR e diagramação de ma
 1. **Agente 1 (Cartógrafo Espacial):** Mapeia a geometria dos balões, aspect ratio, ordem oriental de leitura (Direita para Esquerda, Topo para Baixo) e calcula o orçamento máximo de caracteres (`max_chars`) para evitar vazamento ou sobreposição de arte.
 2. **Agente 2 (Sintetizador Literário & Narrativo):** Analisa a cena completa, concordância de gênero estrita, dinâmicas interpessoais e gírias de scanlation brasileira sem censura, respeitando rigorosamente a capacidade calculada pelo Agente 1.
 3. **Gerenciador de Biblioteca & Perfil Persistente (Novo no v0.2.0):** Exclusão direta de obras com um clique, e retenção permanente de chaves de API com sincronização híbrida entre Google Drive e navegador.
+
+---
+
+## 🪟 Baixar para Windows (.exe, sem instalar Python)
+
+1. Abra a página [Releases](https://github.com/Jos9011/SKILL-TRADUCAO-MANGA/releases) e baixe o arquivo `MangaStudio-v…-windows.zip` mais recente.
+2. Clique com o botão direito no `.zip`, escolha **Extrair tudo** e abra a pasta `MangaStudio`.
+3. Clique duas vezes em `MangaStudio.exe`. Ele abre numa janela própria (Chrome ou Edge).
+   Na primeira vez o Windows pode avisar "O Windows protegeu o computador": clique em **Mais informações** e **Executar assim mesmo**.
+4. Para fechar, use **Encerrar Manga Studio** no rodapé da barra lateral.
+
+Seus dados (chaves, memória de traduções, regras e glossário) ficam em `%APPDATA%\MangaStudio`. Quem já usava o sistema pelo código tem esses arquivos copiados na primeira execução. Cada versão nova publicada no `main` gera um `.zip` novo automaticamente (GitHub Actions, `.github/workflows/build-exe.yml`).
+
+Para montar o `.exe` no seu PC: `pip install -r requirements-desktop.txt pyinstaller` e `pyinstaller manga_studio.spec` (sai em `dist\MangaStudio`).
 
 ---
 
@@ -81,6 +95,7 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Quadros de narração estreitos (`typography_ptbr.py`):** quadros altos e estreitos aceitam mais de 8 linhas, e o último recurso nunca passa da largura do quadro (antes o texto podia sair numa linha só, minúscula, atravessando a página).
 * **Busca na Biblioteca:** campo de busca fixo no topo da aba Biblioteca que procura nas obras traduzidas e nas originais, ignorando maiúsculas, acentos e pontuação e aceitando as palavras em qualquer ordem ("gal kuro" ou "toshiue ch1" encontram "Toshiue no Kuro Gal ... Ch.1"). Mostra quantas obras foram encontradas, avisa quando nada foi encontrado e tem botão ✕ (ou ESC) para limpar. A janela de escolher obra do Google Drive usa a mesma busca.
 * **Texto solto sobre o desenho e créditos (v0.7.10):** texto fora de balão com contorno branco por cima da arte (ex.: "HERE! PJS!") não vira mais um retângulo branco: as letras são apagadas, o desenho é recomposto (inpainting) e a tradução é escrita no mesmo lugar com contorno branco. Créditos de scan ("TRANSLATED BY DOUJINS.COM", "discord.gg", "Traduzido por ...") ficam intactos, sem tradução. Palavras compostas quebradas na linha ("STATE-OF-" / "THE-ART") mantêm o hífen.
+* **Interface nova e versão .exe (v0.8.0):** visual de mesa de desenho (papel, nanquim e lápis azul) com modo escuro; Traduzir em três etapas com atalhos para os capítulos da pasta de originais; Biblioteca com capas e menu "Mais"; Cotas por conta com barras de uso; Configurações com índice lateral e botão Salvar sempre visível; botão "Encerrar Manga Studio". O programa também sai como `MangaStudio.exe` para Windows.
 * **Limpeza do balão inteiro e balões coloridos (v0.7.12):** a varredura completa do balão agora roda na maioria dos balões (antes, uma trava recusava balões altos com pouco texto e balões com duas falas; na página de teste, 25 de 37). Balões coloridos (rosa, azul, amarelo, cinza médio) também são reconhecidos e limpos por inteiro, inclusive letras que o OCR não leu. Reticências soltas numa linha ("...") que o OCR não lê voltam para o texto traduzido em vez de sumir. Com a área real do balão, o texto fica maior; quadros em degrau ou com recorte não são mais invadidos.
 * **Acabamento dos balões (v0.7.11):** sem "sombra" do texto original em balões brancos (a borda antisserrilhada das letras também é limpa); em quadros pequenos, o texto tenta caber com palavras inteiras antes de hifenizar, e o hífen respeita as sílabas ("MU-DARAM", nunca "MUD-ARAM" ou "ESTÃ-O"); quadros de narração encostados não empurram mais o texto para fora do quadro.
 * **Fallback Triplo:** OpenRouter / Ollama Remoto / Local -> MyMemory / Google Translator.

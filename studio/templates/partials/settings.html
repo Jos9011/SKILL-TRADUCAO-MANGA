@@ -1,0 +1,178 @@
+<!-- Aba Configurações: índice lateral + seções -->
+<section class="tab-view" id="tab-settings">
+  <div class="save-bar">
+    <span id="profile-sync-msg"></span>
+    <button class="btn-spotify" onclick="saveConfig()">Salvar configurações</button>
+  </div>
+
+  <div class="settings-layout">
+    <nav class="settings-index" aria-label="Seções das configurações">
+      <a href="#set-backup">Chaves e backup</a>
+      <a href="#set-folders">Pastas</a>
+      <a href="#set-groq">Groq</a>
+      <a href="#set-openrouter">OpenRouter</a>
+      <a href="#set-vision">Leitura por imagem</a>
+      <a href="#set-ollama">IA local (Ollama)</a>
+      <a href="#set-training">Treinar modelo próprio</a>
+      <a href="#set-about">Sobre</a>
+    </nav>
+
+    <div class="settings-sections">
+      <section class="settings-section" id="set-backup">
+        <h2>Chaves e backup <span class="tag info" id="profile-drive-badge">Perfil local</span></h2>
+        <p>As chaves ficam salvas neste computador e, se o Google Drive estiver ligado, na pasta <code>.manga_studio</code> do Drive. Assim o PC, o Colab e o celular usam as mesmas chaves.</p>
+        <div class="settings-row">
+          <button class="btn-secondary" onclick="saveConfig(true)" title="Salva no servidor e no perfil deste navegador">Salvar chaves no perfil</button>
+          <button class="btn-secondary" onclick="syncBrowserProfileToServer()" title="Envia ao servidor as chaves guardadas neste navegador">Recuperar chaves do navegador</button>
+          <button class="btn-quiet" onclick="exportProfileJson()">Exportar backup (.json)</button>
+          <button class="btn-quiet" onclick="document.getElementById('import-profile-input').click()">Importar backup</button>
+          <input type="file" id="import-profile-input" accept=".json" hidden onchange="importProfileJson(event)">
+        </div>
+      </section>
+
+      <section class="settings-section" id="set-folders">
+        <h2>Pastas</h2>
+        <p>Onde ficam os capítulos originais e onde o sistema salva as traduções, o leitor e os arquivos CBZ.</p>
+        <div class="settings-grid-2">
+          <div>
+            <label class="option-label" for="cfg-raw-mangas-dir">Originais</label>
+            <div class="dir-input-row">
+              <input type="text" id="cfg-raw-mangas-dir" placeholder="C:\Users\...\Documentos\MANGAS">
+              <button class="btn-secondary" onclick="browseFolder('raw')">Procurar</button>
+            </div>
+            <span class="field-hint">Capítulos em japonês, coreano, inglês...</span>
+          </div>
+          <div>
+            <label class="option-label" for="cfg-translated-mangas-dir">Traduzidos</label>
+            <div class="dir-input-row">
+              <input type="text" id="cfg-translated-mangas-dir" placeholder="C:\Users\...\Documentos\MANGAS [PT-BR]">
+              <button class="btn-secondary" onclick="browseFolder('translated')">Procurar</button>
+            </div>
+            <span class="field-hint">Recebe as pastas traduzidas, o leitor e os CBZ.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section" id="set-groq">
+        <h2>Groq</h2>
+        <p>Cada conta gratuita dá cerca de 1.000 pedidos por dia. Com várias chaves, o sistema troca sozinho quando uma acaba.</p>
+        <div class="key-list" id="groq-key-list"></div>
+        <div class="add-key-form">
+          <input type="text" id="new-groq-key" placeholder="Cole uma chave Groq (gsk_...)" aria-label="Nova chave Groq">
+          <button class="btn-secondary" onclick="addGroqKey()">Adicionar chave</button>
+        </div>
+        <div class="settings-field" style="margin-top: 16px;">
+          <label class="option-label" for="cfg-groq-model">Modelo</label>
+          <select id="cfg-groq-model">
+            <option value="qwen/qwen3.8-27b">Qwen 3.8 (27B), recomendado e mais rápido</option>
+            <option value="openai/gpt-oss-120b">GPT-OSS (120B), mais forte</option>
+            <option value="openai/gpt-oss-20b">GPT-OSS (20B), leve</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-section" id="set-openrouter">
+        <h2>OpenRouter</h2>
+        <p>Chave gratuita: cerca de 50 pedidos por dia nos modelos <code>:free</code>. Com saldo pago, não há esse limite.</p>
+        <div class="key-list" id="openrouter-key-list"></div>
+        <div class="add-key-form">
+          <input type="text" id="new-openrouter-key" placeholder="Cole uma chave OpenRouter (sk-or-v1-...)" aria-label="Nova chave OpenRouter">
+          <button class="btn-secondary" onclick="addOpenRouterKey()">Adicionar chave</button>
+        </div>
+        <div class="settings-field" style="margin-top: 16px;">
+          <label class="option-label" for="cfg-openrouter-model">Modelo</label>
+          <select id="cfg-openrouter-model">
+            <option value="nvidia/nemotron-3.5-lightning:free">Nvidia Nemotron 3.5 (grátis, muito rápido)</option>
+            <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B Instruct (grátis)</option>
+            <option value="cognitivecomputations/dolphin-mistral-24b-venice-edition">Dolphin Mistral 24B Venice (sem censura)</option>
+            <option value="nousresearch/hermes-3-llama-3.1-70b">Hermes 3 Llama 70B (narrativo)</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-section" id="set-vision">
+        <h2>Leitura por imagem (IA Vision)</h2>
+        <p>Para letras estilizadas ou difíceis: um detector local acha os balões e a IA lê o texto direto da imagem. Se a nuvem recusar uma página, o OCR comum assume.</p>
+        <div class="settings-field">
+          <label class="option-label" for="cfg-vision-provider">Ordem de uso</label>
+          <select id="cfg-vision-provider">
+            <option value="auto">Automático (Gemini, depois Groq, OpenRouter e Ollama)</option>
+            <option value="groq">Groq Vision (Qwen 3.8)</option>
+            <option value="gemini">Google Gemini (precisa de chave AIza...)</option>
+            <option value="openrouter">OpenRouter Vision (usa suas chaves OpenRouter)</option>
+            <option value="ollama">Ollama Vision (local ou Colab)</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <span class="option-label">Chaves do Google Gemini (opcional)</span>
+          <div class="key-list" id="gemini-key-list"></div>
+          <div class="add-key-form">
+            <input type="text" id="new-gemini-key" placeholder="Cole uma chave Gemini (AIza...)" aria-label="Nova chave Gemini">
+            <button class="btn-secondary" onclick="addGeminiKey()">Adicionar chave</button>
+          </div>
+        </div>
+        <div class="settings-grid-2 settings-field">
+          <div>
+            <label class="option-label" for="cfg-gemini-model">Modelo Gemini</label>
+            <select id="cfg-gemini-model">
+              <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (recomendado)</option>
+              <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
+              <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (contas antigas)</option>
+              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+            </select>
+          </div>
+          <div>
+            <label class="option-label" for="cfg-openrouter-vision-model">Modelo OpenRouter Vision</label>
+            <select id="cfg-openrouter-vision-model">
+              <option value="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free">Nemotron 3 Nano Omni 30B (grátis)</option>
+              <option value="nvidia/nemotron-3.5-super-vl:free">Nemotron 3.5 Super VL (grátis)</option>
+              <option value="google/gemma-4-31b-it:free">Gemma 4 31B (grátis)</option>
+              <option value="google/gemma-4-26b-a4b-it:free">Gemma 4 26B A4B (grátis)</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section" id="set-ollama">
+        <h2>IA local (Ollama)</h2>
+        <p>Usa uma IA rodando no seu PC ou no Colab, sem cota.</p>
+        <div class="settings-grid-2">
+          <div>
+            <label class="option-label" for="cfg-ollama-host">Endereço</label>
+            <input type="text" id="cfg-ollama-host" value="http://localhost:11434" class="mono">
+          </div>
+          <div>
+            <label class="option-label" for="cfg-ollama-vision-model">Modelo de leitura por imagem (opcional)</label>
+            <input type="text" id="cfg-ollama-vision-model" placeholder="Automático (ex.: qwen2.5vl:7b, gemma3:12b)">
+          </div>
+        </div>
+        <div class="settings-row" style="margin-top: 14px;">
+          <button class="btn-secondary" onclick="testOllamaHost()">Testar conexão</button>
+          <span id="ollama-test-result"></span>
+        </div>
+      </section>
+
+      <section class="settings-section" id="set-training">
+        <h2>Treinar modelo próprio</h2>
+        <p>Exporta suas traduções revisadas e regras num formato de treino (ShareGPT) para treinar um modelo seu de graça no Colab.</p>
+        <div class="settings-row">
+          <button class="btn-secondary" type="button" onclick="exportTrainingDataset()">Exportar dados de treino</button>
+          <a class="btn-quiet" href="https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb" target="_blank" rel="noopener">Abrir o notebook de treino no Colab</a>
+          <span id="dataset-export-status"></span>
+        </div>
+      </section>
+
+      <section class="settings-section" id="set-about">
+        <h2>Sobre <span class="tag">{{ app_version | default('v0.8.0 Beta') }}</span></h2>
+        <p>Manga Studio traduz mangás, manhwas e PDFs para português do Brasil: lê o texto, traduz com contexto da obra, limpa os balões e escreve a tradução no lugar.</p>
+        <div class="about-grid">
+          <div><h4>Leitura da página</h4><p>Acha os balões, a ordem de leitura e quanto texto cabe em cada um.</p></div>
+          <div><h4>Tradução com contexto</h4><p>Lê a página inteira, respeita gênero, apelidos e gírias de scanlation.</p></div>
+          <div><h4>Nuvem ou local</h4><p>Groq e OpenRouter na nuvem, ou Ollama no PC e no Colab.</p></div>
+        </div>
+        <p class="about-foot">Versão {{ app_version_code | default('0.8.0-beta') }}</p>
+      </section>
+    </div>
+  </div>
+</section>

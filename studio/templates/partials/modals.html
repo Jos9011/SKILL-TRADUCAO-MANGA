@@ -1,0 +1,75 @@
+<!-- Nome da pasta ao enviar imagens soltas -->
+<div id="images-name-modal" class="drive-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="images-modal-title" onclick="if (event.target === this) closeImagesNameModal()">
+  <div class="drive-modal-card" style="max-width: 440px;">
+    <div class="modal-head">
+      <h3 id="images-modal-title">Nome do capítulo <span id="images-modal-count" class="tag info">0 páginas</span></h3>
+      <button type="button" class="modal-close" onclick="closeImagesNameModal()" aria-label="Fechar">&times;</button>
+    </div>
+    <label class="option-label" for="images-folder-name-input">As páginas vão para uma pasta com este nome</label>
+    <input type="text" id="images-folder-name-input" onkeydown="if (event.key === 'Enter') confirmImagesNameModal()">
+    <div class="modal-actions">
+      <button type="button" class="btn-secondary" onclick="closeImagesNameModal()">Cancelar</button>
+      <button type="button" class="btn-spotify" onclick="confirmImagesNameModal()">Enviar imagens</button>
+    </div>
+  </div>
+</div>
+
+<!-- Escolher obra do Google Drive -->
+<div id="drive-picker-modal" class="drive-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="drive-modal-title" onclick="if (event.target === this) closeDriveModal()">
+  <div class="drive-modal-card">
+    <div class="modal-head">
+      <h3 id="drive-modal-title">Obras no Google Drive</h3>
+      <button type="button" class="modal-close" onclick="closeDriveModal()" aria-label="Fechar">&times;</button>
+    </div>
+    <input type="search" id="drive-modal-search" placeholder="Filtrar pelo nome" oninput="renderDriveModalList()" aria-label="Filtrar obras do Drive">
+    <div class="drive-list-box" id="drive-modal-list"></div>
+    <div class="modal-foot">
+      <label class="option-label" for="drive-manual-path-input">Ou digite o caminho no Drive</label>
+      <div class="dir-input-row">
+        <input type="text" id="drive-manual-path-input" placeholder="/content/drive/MyDrive/MANGAS/NomeDaObra">
+        <button type="button" class="btn-spotify" onclick="confirmDriveManualPath()">Abrir</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Avaliar a tradução e revisar com IA -->
+<div id="audit-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="audit-manga-title" onclick="if (event.target === this) closeAuditModal()">
+  <div class="audit-modal-card">
+    <div class="modal-head">
+      <h3 id="audit-manga-title">Avaliar tradução</h3>
+      <button type="button" class="modal-close" onclick="closeAuditModal()" aria-label="Fechar">&times;</button>
+    </div>
+    <p class="lede" style="margin-bottom: 16px;">Dê uma nota à leitura. Com nota baixa ou erros apontados, a IA revisa nomes, cortes de OCR e gírias e corrige o cache para a próxima tradução.</p>
+
+    <div class="field-block">
+      <span class="option-label">Sua nota</span>
+      <div id="audit-stars-row">
+        <span class="star-btn" data-val="1" onclick="setAuditRating(1)">★</span>
+        <span class="star-btn" data-val="2" onclick="setAuditRating(2)">★</span>
+        <span class="star-btn" data-val="3" onclick="setAuditRating(3)">★</span>
+        <span class="star-btn" data-val="4" onclick="setAuditRating(4)">★</span>
+        <span class="star-btn" data-val="5" onclick="setAuditRating(5)">★</span>
+      </div>
+      <span id="audit-rating-desc">3 estrelas: razoável (a IA vai revisar)</span>
+    </div>
+
+    <div class="field-block">
+      <label class="option-label" for="audit-feedback-input">Erros que você notou (opcional)</label>
+      <textarea id="audit-feedback-input" placeholder="Ex.: o nome Yu-kun virou ONU; 'pee pee' ficou sem traduzir"></textarea>
+    </div>
+
+    <button id="btn-run-audit" class="btn-spotify" style="width: 100%;" onclick="submitAuditRating()">Enviar nota e revisar</button>
+
+    <div id="audit-results-box">
+      <div class="modal-head" style="margin-bottom: 0;">
+        <h4>Resultado da revisão</h4>
+        <span id="audit-health-badge" class="tag">Saúde: 0%</span>
+      </div>
+      <div id="audit-categories-row" class="audit-cats"></div>
+      <span class="option-label">Problemas encontrados e corrigidos no cache</span>
+      <div id="audit-issues-list"></div>
+      <button id="btn-retranslate-audit" class="btn-spotify" style="width: 100%; margin-top: 14px;" onclick="retranslateAfterAudit()">Traduzir de novo com as correções</button>
+    </div>
+  </div>
+</div>

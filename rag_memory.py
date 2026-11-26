@@ -19,7 +19,9 @@ import re
 import unicodedata
 from collections import Counter
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+import app_paths
+
+SCRIPT_DIR = app_paths.DATA_DIR
 DEFAULT_MEMORY_PATH = os.path.join(SCRIPT_DIR, "memoria_traducoes.json")
 _CONFIG_PATHS = (
     "/content/drive/MyDrive/.manga_studio/config.json",

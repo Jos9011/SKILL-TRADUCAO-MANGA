@@ -1,0 +1,146 @@
+<!-- Aba Traduzir: escolher capítulo -> ajustar -> traduzir -->
+<section class="tab-view active" id="tab-translate">
+  <ol class="steps" aria-label="Etapas">
+    <li><span>Escolher capítulo</span></li>
+    <li><span>Ajustar opções</span></li>
+    <li><span>Traduzir</span></li>
+  </ol>
+
+  <div class="dropzone-container" id="dropzone">
+    <input type="file" id="browser-folder-input" webkitdirectory directory multiple hidden>
+    <input type="file" id="browser-images-input" accept="image/*" multiple hidden>
+    <input type="file" id="browser-zip-input" accept=".zip,.cbz,.pdf,application/pdf,application/zip,application/x-zip-compressed,application/x-cbz,application/octet-stream" hidden>
+
+    <div class="dropzone-title">Solte o capítulo aqui</div>
+    <p class="dropzone-subtitle">Uma pasta com as páginas, um PDF, ZIP ou CBZ. O idioma é detectado sozinho.</p>
+
+    <div class="dropzone-actions">
+      <button class="btn-spotify" type="button" onclick="triggerFolderSelect()">
+        <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
+        Escolher pasta
+      </button>
+      <button class="btn-secondary" type="button" onclick="triggerImagesSelect()">Enviar imagens</button>
+      <button class="btn-secondary" type="button" onclick="triggerZipSelect()">Enviar PDF, ZIP ou CBZ</button>
+      <button id="btn-drive-pick" class="btn-secondary btn-drive" type="button" style="display: none;" onclick="openDrivePicker()">Abrir do Google Drive</button>
+    </div>
+
+    <div id="upload-progress-box" class="upload-progress" style="display: none;">
+      <div class="upload-progress-row">
+        <span id="upload-status-text">Enviando arquivos...</span>
+        <b id="upload-pct-text">0%</b>
+      </div>
+      <div class="meter-bar"><div class="meter-fill" id="upload-progress-fill" style="width: 0%;"></div></div>
+    </div>
+  </div>
+
+  <div id="quick-picks-section" hidden>
+    <div class="lib-section-head">
+      <h2>Na pasta de originais</h2>
+      <span class="hint">Clique para escolher</span>
+      <button class="btn-quiet push" onclick="switchTab('library')">Ver todos</button>
+    </div>
+    <div class="manga-grid quick-picks" id="quick-picks"></div>
+  </div>
+
+  <div class="selection-panel" id="selection-card" style="display: none;">
+    <div class="manga-cover-preview" id="manga-preview-box">
+      <img id="manga-preview-img" src="" alt="Primeira página">
+    </div>
+    <div class="selection-details">
+      <div class="selection-header">
+        <h3 id="selected-manga-title">Nome da obra</h3>
+        <div class="selection-meta">
+          <span class="tag info" id="selected-pages-badge">0 páginas</span>
+          <span class="tag" id="selected-lang-badge">Detectando idioma...</span>
+          <span class="tag path" id="selected-path-badge" title="Pasta do capítulo">Caminho</span>
+        </div>
+      </div>
+
+      <div class="options-grid">
+        <div class="option-card">
+          <span class="option-label">Leitura do texto (OCR)</span>
+          <div class="pill-selector" id="ocr-selector">
+            <div class="pill-btn active" onclick="setOption('ocr', 'auto')">Automático</div>
+            <div class="pill-btn" onclick="setOption('ocr', 'rapidocr')">Inglês e outros</div>
+            <div class="pill-btn" onclick="setOption('ocr', 'mokuro')">Japonês</div>
+            <div class="pill-btn" onclick="setOption('ocr', 'korean')">Coreano</div>
+            <div class="pill-btn" onclick="setOption('ocr', 'ai_vision')" title="Detector local de balões + IA que lê a imagem (Gemini, Groq, OpenRouter ou Ollama)">IA Vision</div>
+          </div>
+        </div>
+
+        <div class="option-card">
+          <span class="option-label">Motor de tradução</span>
+          <div class="pill-selector" id="provider-selector">
+            <div class="pill-btn active" onclick="setOption('provider', 'groq')">Groq</div>
+            <div class="pill-btn" onclick="setOption('provider', 'ollama')">IA local (Ollama)</div>
+            <div class="pill-btn" onclick="setOption('provider', 'openrouter')">OpenRouter</div>
+          </div>
+        </div>
+
+        <div class="option-card">
+          <span class="option-label">Conteúdo</span>
+          <div class="pill-selector" id="adult-selector">
+            <div class="pill-btn active" onclick="setOption('adult', true)">Adulto (+18)</div>
+            <div class="pill-btn" onclick="setOption('adult', false)">Geral</div>
+          </div>
+          <p class="option-help">No modo adulto a IA traduz sem suavizar o texto.</p>
+        </div>
+
+        <div class="option-card">
+          <span class="option-label">Cores</span>
+          <div class="pill-selector" id="colorize-selector">
+            <div class="pill-btn active" onclick="setOption('colorize', false)">Manter original</div>
+            <div class="pill-btn" onclick="setOption('colorize', true)" title="Colore as páginas com uma rede neural leve (ONNX)">Colorir páginas</div>
+          </div>
+          <div id="color-reference-container" style="display: none;">
+            <input type="text" id="color-reference-path" placeholder="Imagem ou pasta de referência de cores (opcional)">
+          </div>
+        </div>
+      </div>
+
+      <div class="selection-actions">
+        <button class="btn-spotify btn-large" id="btn-start" onclick="startTranslation()">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          Traduzir capítulo
+        </button>
+        <button class="btn-secondary" id="btn-colorize-only" onclick="startColorizeOnly()" title="Colore todas as páginas sem traduzir">Só colorir</button>
+        <button class="btn-secondary" onclick="resetSelection()">Trocar capítulo</button>
+        <span class="spacer"></span>
+        <button class="btn-danger" onclick="deleteSelectedManga()" title="Apaga os arquivos deste capítulo">Excluir capítulo</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="live-progress-section" style="display: none;">
+    <div class="active-job-card" id="active-job-card">
+      <div class="active-job-cover">
+        <img id="live-cover-img" src="" alt="" style="display: none;">
+        <div id="live-cover-placeholder"><img src="/static/favicon.svg" alt=""></div>
+      </div>
+      <div class="active-job-info">
+        <div class="line">
+          <span class="tag info" id="live-stage-badge">OCR</span>
+          <span id="live-engine-label">Processando</span>
+        </div>
+        <h3 id="live-manga-title">Nome do mangá</h3>
+        <p id="live-status-desc">Iniciando...</p>
+      </div>
+      <div id="job-control-actions">
+        <button type="button" class="btn-secondary" id="btn-pause-job" onclick="togglePauseJob()">Pausar</button>
+        <button type="button" class="btn-danger" id="btn-stop-job" onclick="stopActiveJob()">Parar</button>
+      </div>
+      <div class="equalizer-container" id="equalizer-anim"></div>
+    </div>
+
+    <div class="progress-headline">
+      <span id="progress-status-badge">Processando...</span>
+      <span id="main-progress-pct">0%</span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="main-progress-bar"></div></div>
+
+    <details class="log-details">
+      <summary>Ver registro detalhado</summary>
+      <div class="logs-panel" id="terminal-logs"></div>
+    </details>
+  </div>
+</section>

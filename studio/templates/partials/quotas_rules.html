@@ -1,0 +1,31 @@
+<!-- Aba Cotas de IA -->
+<section class="tab-view" id="tab-quotas">
+  <div class="section-header-row">
+    <div>
+      <p>Quanto ainda dá para traduzir hoje em cada conta de IA.</p>
+    </div>
+    <div class="settings-row">
+      <button class="btn-secondary" onclick="loadStatus(true)" title="Faz um pedido de teste (~2 mil tokens) para confirmar a cota diária real">Testar cota real</button>
+      <button class="btn-spotify" onclick="loadStatus(false)">Atualizar</button>
+    </div>
+  </div>
+  <div class="quota-grid" id="quota-cards-container"></div>
+</section>
+
+<!-- Aba Regras e glossário -->
+<section class="tab-view" id="tab-rules">
+  <div class="section-header-row">
+    <div>
+      <p>Instruções que a IA lê antes de cada tradução: termos, nomes e o jeito de falar.</p>
+    </div>
+    <button class="btn-spotify" onclick="saveRules()">Salvar regras</button>
+  </div>
+
+  <div class="rules-toolbar">
+    <div class="pill-selector">
+      <div class="pill-btn active" id="tab-rule-aprendizado" onclick="switchRulesEditor('aprendizado')">Regras (aprendizado.txt)</div>
+      <div class="pill-btn" id="tab-rule-glossary" onclick="switchRulesEditor('glossary')">Glossário (glossary.json)</div>
+    </div>
+  </div>
+  <textarea id="rules-editor" spellcheck="false" aria-label="Editor de regras"></textarea>
+</section>

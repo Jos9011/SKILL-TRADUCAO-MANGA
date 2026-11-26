@@ -14,3 +14,9 @@ outputs_manga/
 uploads/
 crash.log
 manga_reviews.json
+
+# Montagem do .exe (PyInstaller)
+/build/
+/dist/
+crash.log
+/logs/

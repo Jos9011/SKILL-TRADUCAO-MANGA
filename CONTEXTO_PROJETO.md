@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.7.12 Beta` (`0.7.12-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.0 Beta` (`0.8.0-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -63,6 +63,11 @@ O sistema é dividido em submódulos cooperativos:
   * A ficha entra no prompt de cada lote do Agente 2 (antes do bloco do RAG). A chamada do Líder usa uma cópia do estado do motor, então nunca esgota nem troca o modelo do tradutor.
   * Config: `"ficha_obra"`, `"lider_capitulo"`, `"lider_model"` (padrão `openai/gpt-oss-120b`); variável `MANGA_FICHA=0` desliga tudo.
   * Ainda não portado para o `MANGA-STUDIO-ANDROID`.
+
+### A2. Interface (v0.8.0) e versão Windows (.exe)
+* **Interface:** `studio/templates/index.html` só monta a página; as telas ficam em `studio/templates/partials/*.html`, o estilo em `studio/static/css/*.css` (cores em `base.css`, modo escuro por `data-theme`/sistema) e a lógica em `studio/static/js/*.js` (scripts clássicos, funções globais, carregados em ordem no fim do `<body>`). Todo ID usado pelo JS precisa existir no HTML (`tests/test_library_search.py` confere). Fonte dos títulos: `studio/static/fonts/animeace2_reg.ttf` (sem Google Fonts: o .exe roda sem internet).
+* **Pastas (`app_paths.py`):** `CODE_DIR` (código e recursos) e `DATA_DIR` (config, memória, regras, glossário, envios, caches, `models/`). Pelo código as duas são a pasta do projeto; no .exe, `DATA_DIR = %APPDATA%\MangaStudio` (ou `MANGA_STUDIO_DATA`) e a 1ª execução copia os dados de uma instalação antiga ("SISTEMA DE TRADUÇÃO"/"SKILL-TRADUCAO-MANGA" em Documentos) sem sobrescrever nada.
+* **.exe:** `manga_studio_app.py` (entrada; `--pick-folder` abre o seletor de pastas, `--self-test` confere o pacote), `manga_studio.spec` (PyInstaller, pasta com o .exe), `requirements-desktop.txt` (RapidOCR fixo em 1.2.3) e `.github/workflows/build-exe.yml` (windows-latest: monta, roda o autoteste e publica `MangaStudio-vX.Y.Z-windows.zip` em Releases a cada push no `main`). `POST /api/shutdown` encerra o servidor (só local, sem tradução rodando).
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

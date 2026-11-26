@@ -23,7 +23,8 @@ _SESSION_LOCK = threading.Lock()
 
 
 def get_default_model_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), MODEL_SUBDIR, MODEL_FILENAME)
+    import app_paths
+    return os.path.join(app_paths.MODELS_DIR, "colorizer", MODEL_FILENAME)
 
 
 def download_model_if_needed(target_path=None, verbose=True):

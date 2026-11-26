@@ -63,6 +63,7 @@ async function loadConfig() {
     setSelectValueSafe('cfg-gemini-model', currentConfig.gemini_model, 'gemini-2.5-flash');
     setSelectValueSafe('cfg-openrouter-vision-model', currentConfig.openrouter_vision_model, 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free');
     document.getElementById('cfg-ollama-host').value = currentConfig.ollama_host || 'http://localhost:11434';
+    loadTranslationSettings();
     if (document.getElementById('cfg-ollama-vision-model')) {
       document.getElementById('cfg-ollama-vision-model').value = currentConfig.ollama_vision_model || '';
     }
@@ -180,6 +181,7 @@ async function saveConfig(showProfileMsg = false) {
     currentConfig.groq_model = document.getElementById('cfg-groq-model').value;
     currentConfig.openrouter_model = document.getElementById('cfg-openrouter-model').value;
     currentConfig.ollama_host = document.getElementById('cfg-ollama-host').value.trim();
+    readTranslationSettings();
 
     const visionProvEl = document.getElementById('cfg-vision-provider');
     if (visionProvEl) currentConfig.vision_provider = visionProvEl.value || 'auto';
@@ -225,4 +227,26 @@ async function saveConfig(showProfileMsg = false) {
   } catch (e) {
     alert("Erro de conexão ao salvar configurações.");
   }
+}
+
+// v0.8.1: seção "Tradução" e campos novos da IA local
+function loadTranslationSettings() {
+  const c = currentConfig;
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  set('cfg-quota-fallback', c.quota_fallback || 'wait');
+  set('cfg-context-pages', String(c.context_pages != null ? c.context_pages : 2));
+  set('cfg-ollama-model', c.ollama_model === 'dolphin-llama3:latest' ? '' : (c.ollama_model || ''));  // padrão antigo = automático
+  set('cfg-ollama-num-ctx', String(c.ollama_num_ctx || 16384));
+  const chk = document.getElementById('cfg-gemini-chapter');
+  if (chk) chk.checked = c.gemini_chapter !== false;
+}
+
+function readTranslationSettings() {
+  const val = id => { const el = document.getElementById(id); return el ? el.value : null; };
+  if (val('cfg-quota-fallback')) currentConfig.quota_fallback = val('cfg-quota-fallback');
+  if (val('cfg-context-pages') !== null) currentConfig.context_pages = parseInt(val('cfg-context-pages'), 10);
+  if (val('cfg-ollama-model') !== null) currentConfig.ollama_model = val('cfg-ollama-model').trim();
+  if (val('cfg-ollama-num-ctx')) currentConfig.ollama_num_ctx = parseInt(val('cfg-ollama-num-ctx'), 10);
+  const chk = document.getElementById('cfg-gemini-chapter');
+  if (chk) currentConfig.gemini_chapter = chk.checked;
 }

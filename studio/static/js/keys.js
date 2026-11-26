@@ -140,19 +140,23 @@ async function testKey(provider, key, btnEl) {
 }
 
 async function testOllamaHost() {
-  const host = document.getElementById('cfg-ollama-host').value.trim();
   const resSpan = document.getElementById('ollama-test-result');
-  resSpan.innerText = "Conectando...";
+  const body = {
+    host: document.getElementById('cfg-ollama-host').value.trim(),
+    model: (document.getElementById('cfg-ollama-model') || {}).value || '',
+    num_ctx: parseInt((document.getElementById('cfg-ollama-num-ctx') || {}).value || '16384', 10)
+  };
+  resSpan.innerText = 'Conectando e medindo a velocidade (pode levar até 1 minuto na primeira vez)...';
   try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    if (data.ollama && data.ollama.status === 'online') {
-      resSpan.innerHTML = '<span class="tag ok">Ligado</span> ' + escapeHtml(data.ollama.models.join(', '));
+    const res = await fetch('/api/test_ollama', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await res.json();
+    if (d.ok) {
+      resSpan.innerHTML = `<span class="tag ok">Ligado</span> ${escapeHtml(d.model)}: ${d.tok_s} tokens/s, ${escapeHtml(d.speed_label)}. Exemplo: "${escapeHtml(d.sample)}"`;
     } else {
-      resSpan.innerHTML = '<span class="tag warn">Desligado</span> Nenhum servidor respondendo neste endereço.';
+      resSpan.innerHTML = `<span class="tag warn">Não funcionou</span> ${escapeHtml(d.error || 'Sem resposta.')}`;
     }
   } catch (e) {
-    resSpan.innerText = "Erro ao testar.";
+    resSpan.innerHTML = '<span class="tag err">Erro</span> Não foi possível testar agora.';
   }
 }
 

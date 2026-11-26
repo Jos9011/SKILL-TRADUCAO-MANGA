@@ -56,6 +56,11 @@ except Exception:
 
 import balloon_cavity
 import balloon_assign
+import ollama_client  # IA local (Ollama): contexto maior, sem "pensar" em voz alta, status em cache
+import gemini_text  # Gemini como tradutor de texto (cota grátis grande)
+import quota_wait  # sem cota: esperar e continuar em vez de traduzir literal
+import chapter_context  # falas das páginas anteriores no prompt
+import chapter_translator  # Gemini traduz o capítulo inteiro de uma vez
 import typography_ptbr
 try:
     import rag_memory  # Memória por semelhança (RAG leve); opcional
@@ -3707,65 +3712,27 @@ def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434
     """Verifica se o servidor Ollama (local ou remoto) está ativo e seleciona o modelo ideal priorizando Dolphin 2.9 em modo sem censura."""
     try:
         host = host.rstrip('/')
+        cached = ollama_client.cached_status(host, custom_model, prefer_uncensored)
+        if cached is not None:
+            return cached
         req = urllib.request.Request(f"{host}/api/tags")
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=8) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
                 models = [m["name"] for m in data.get("models", [])]
                 if models:
-                    selected_model = None
-
-                    # 1. Se foi pedido um modelo específico na config
-                    if custom_model:
-                        for m in models:
-                            if custom_model.lower() in m.lower():
-                                selected_model = m
-                                break
-
-                    # 2. Se prioriza sem censura, busca especificamente variantes do Dolphin 2.9
-                    if not selected_model and prefer_uncensored:
-                        dolphin_candidates = ["dolphin-llama3", "dolphin-2.9", "dolphin", "uncensored"]
-                        for pref in dolphin_candidates:
-                            for m in models:
-                                if pref in m.lower():
-                                    selected_model = m
-                                    break
-                            if selected_model:
-                                break
-
-                    # 3. Modelos multilíngues de alta qualidade para PT-BR
-                    if not selected_model:
-                        best_pt_models = ["dolphin-llama3", "dolphin", "qwen2.5", "llama3.1", "mistral", "gemma2", "llama3.2", "llama3"]
-                        for pref in best_pt_models:
-                            for m in models:
-                                if pref in m.lower():
-                                    selected_model = m
-                                    break
-                            if selected_model:
-                                break
-
-                    if not selected_model:
-                        selected_model = models[0]
+                    selected_model = ollama_client.pick_model(models, custom_model, prefer_uncensored)
 
                     # Executa aquecimento (warm-up) e ativa keep_alive: 60m para pré-carregar o modelo na VRAM
                     print(f"[*] Conectado ao Ollama em '{host}'. Modelo selecionado: '{selected_model}'")
                     try:
-                        warm_req = urllib.request.Request(
-                            f"{host}/api/chat",
-                            data=json.dumps({
-                                "model": selected_model,
-                                "messages": [{"role": "user", "content": "oi"}],
-                                "stream": False,
-                                "keep_alive": "60m"
-                            }).encode('utf-8'),
-                            headers={'Content-Type': 'application/json'}
-                        )
-                        with urllib.request.urlopen(warm_req, timeout=120) as warm_resp:
-                            pass
+                        ollama_client.chat([{"role": "user", "content": "oi"}], selected_model, host,
+                                           num_predict=1, cfg=load_config(), timeout=300)
                         print(f"[+] Modelo '{selected_model}' ativo com sucesso!")
                     except Exception as we:
                         print(f"[*] Aviso no warm-up do Ollama: {we}")
 
+                    ollama_client.remember_status(host, custom_model, prefer_uncensored, True, selected_model)
                     return True, selected_model
         return False, None
     except Exception:
@@ -3794,24 +3761,10 @@ def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434
                     break
         return False, None
 
-def query_ollama_chat(messages, model_name, host="http://localhost:11434", temperature=0.0, num_predict=1024, timeout=75):
-    """Executa requisição à API do Ollama."""
-    host = host.rstrip('/')
-    url = f"{host}/api/chat"
-    payload = {
-        "model": model_name,
-        "messages": messages,
-        "stream": False,
-        "keep_alive": "60m",
-        "options": {
-            "temperature": temperature,
-            "num_predict": num_predict
-        }
-    }
-    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        res = json.loads(resp.read().decode('utf-8'))
-        return res.get("message", {}).get("content", "").strip()
+def query_ollama_chat(messages, model_name, host="http://localhost:11434", temperature=0.0, num_predict=1024, timeout=None, cfg=None):
+    """Executa requisição à API do Ollama (contexto e tempo de espera vêm da config: ollama_num_ctx / ollama_timeout)."""
+    return ollama_client.chat(messages, model_name, host, temperature=temperature, num_predict=num_predict,
+                              cfg=cfg if cfg is not None else load_config(), timeout=timeout)
 
 def _pick_ready_groq_key_and_model(groq_keys, primary_model, fallback_model):
     """Seleciona a melhor combinação (chave, modelo) Groq verificando modelo principal primeiro e fallbacks de 200k TPD separados depois."""
@@ -3843,6 +3796,24 @@ def init_ai_translation_engine(cfg, is_adult=True):
     fallback_model = cfg.get("openrouter_fallback_model", "google/gemma-4-31b-it:free")
     init_exhausted = set()
     init_reasons = []
+
+    # 0. Automático: IA local (Ollama no Colab/Kaggle ou já ligada no PC) vem primeiro, porque não tem cota
+    if provider == "auto":
+        host0 = cfg.get("ollama_host", "http://localhost:11434")
+        try:
+            ollama_up = bool(ollama_client.list_models(host0, timeout=4))
+        except Exception:
+            ollama_up = False
+        if ollama_up:
+            ok0, model0 = check_ollama_available(prefer_uncensored=is_adult, host=host0, custom_model=cfg.get("ollama_model", ""))
+            if ok0:
+                print(f"[+] Automático: IA local ligada em '{host0}' -> usando '{model0}' primeiro (sem cota).")
+                return "ollama", model0, {
+                    "host": host0, "temperature": cfg.get("temperature", 0.0), "cfg": cfg, "active_engine": "ollama",
+                    "groq_api_keys": list(cfg.get("groq_api_keys", []) or []),
+                    "openrouter_api_keys": keys, "openrouter_fallback_model": fallback_model,
+                    "exhausted_engines": set(), "_fallback_reasons": []
+                }
 
     # 1. Groq Cloud (Ultra-Rápido, 100% Nuvem, Zero Censura)
     groq_keys = list(cfg.get("groq_api_keys", []) or [])
@@ -3940,7 +3911,9 @@ def init_ai_translation_engine(cfg, is_adult=True):
 
     # 3. Ollama (Remoto na Nuvem / Colab ou Local)
     host = cfg.get("ollama_host", "http://localhost:11434")
-    model_pref = cfg.get("ollama_model", "dolphin-llama3:latest")
+    model_pref = cfg.get("ollama_model", "")  # vazio = escolha automática (ollama_client.pick_model)
+    if model_pref == "dolphin-llama3:latest":  # padrão antigo salvo na config: tratar como automático
+        model_pref = ""
     print(f"[*] Verificando conexão com Ollama em '{host}'...")
     ollama_ok, selected_model = check_ollama_available(prefer_uncensored=is_adult, host=host, custom_model=model_pref)
     if ollama_ok:
@@ -4992,6 +4965,21 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
         else:
             exhausted.add("openrouter")
 
+    # 2b. GEMINI COMO TRADUTOR (cota grátis separada; recusa de conteúdo +18 não queima a chave)
+    if "gemini" not in exhausted and gemini_text.key_pool(cfg):
+        try:
+            resp = gemini_text.chat(messages, cfg, engine_opts, max_tokens=max(1024, max_tokens * 2),
+                                    temperature=max(0.2, temp), json_mode=bool(is_batch))
+            if resp:
+                engine_opts["_last_provider_used"] = f"gemini:{gemini_text.text_model(cfg)}"
+                return resp
+        except gemini_text.GeminiBlocked as gb:
+            fb_reasons.append(f"Gemini recusou o conteúdo ({gb})")
+        except Exception as ge:
+            exhausted.add("gemini")
+            fb_reasons.append(f"Gemini: {ge}")
+            print(f"\n[!] Gemini indisponível ({ge}).")
+
     # 3. TENTA OLLAMA SE AINDA NÃO ESGOTADO
     if "ollama" not in exhausted:
         host = cfg.get("ollama_host", "http://localhost:11434")
@@ -5008,6 +4996,13 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                 print(f"\n[!] Ollama indisponível ({o_err}).")
         else:
             exhausted.add("ollama")
+
+    # 3b. SEM COTA EM NENHUMA IA: espera e tenta de novo (padrão), em vez de traduzir literal
+    if quota_wait.should_wait(cfg, engine_opts):
+        quota_wait.wait_for_quota(engine_opts, " | ".join(fb_reasons[-2:]))
+        return execute_translation_request(messages, engine_opts=engine_opts, is_adult=is_adult, max_tokens=max_tokens,
+                                           is_batch=is_batch, dialogue_map=dialogue_map, src_lang=src_lang,
+                                           raise_on_oversize=raise_on_oversize)
 
     # 4. FALLBACK FINAL AUTOMÁTICO: GOOGLE TRANSLATOR (não grava em memoria_traducoes.json)
     engine_opts["_last_used_fallback"] = True
@@ -5348,6 +5343,14 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
                     print(f"    [RAG] {rag_block.count(chr(10) + '- ')} exemplo(s) da memória anexados ao lote {chunk_idx}")
             except Exception:
                 pass
+        # Contexto: falas já traduzidas das páginas anteriores e dos lotes anteriores desta página
+        try:
+            ctx_block = chapter_context.build_block(engine_opts, engine_opts.get("cfg") or {}, current_page=page_num,
+                                                    same_page_pairs=list(results.items()))
+            if ctx_block:
+                chunk_sys_prompt = chunk_sys_prompt + ctx_block
+        except Exception:
+            pass
         messages = [
             {"role": "system", "content": chunk_sys_prompt},
             {"role": "user", "content": json.dumps(dossier_payload, ensure_ascii=False, separators=(",", ":"))}
@@ -5406,6 +5409,11 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
                 engine_opts.setdefault("_fallback_originals", set()).add(orig)
                 results[orig] = google_translate_free(orig, source_lang=src_lang)
 
+    try:
+        ordered_pairs = [(b["orig_raw"], results.get(b["orig_raw"], "")) for b in needed_bubbles]
+        chapter_context.remember_page(engine_opts, page_num, ordered_pairs)
+    except Exception:
+        pass
     return results
 
 def translate_with_ollama(text, model_name, is_adult=True):
@@ -8743,9 +8751,30 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             ficha_ctx = None
     ficha_atual = ficha_ctx["ficha"] if ficha_ctx else None
 
+    # Aviso na tela enquanto espera a cota renovar (o progress_cb também atende o botão Parar/Pausar)
+    if engine_opts is None:
+        engine_opts = {}
+    engine_opts.setdefault("cfg", config)
+    _quota_page = {"n": 1}
+
+    def _quota_hook(msg):
+        if progress_cb:
+            progress_cb("translation", _quota_page["n"], len(pages_data), msg)
+    engine_opts["_progress_hook"] = _quota_hook
+
+    # O Gemini lê e traduz o capítulo inteiro de uma vez (o laço abaixo só faz o que sobrar)
+    try:
+        chapter_translator.translate_chapter(
+            pages_data, cache, config, engine_opts, sys.modules[__name__], is_adult=is_adult, glossary=glossary,
+            src_lang=src_lang, ficha=ficha_atual, ficha_module=ficha_obra,
+            progress=(lambda m: progress_cb("translation", 1, len(pages_data), m)) if progress_cb else None)
+    except Exception as e:
+        print(f"[!] [Capítulo] Etapa ignorada por erro: {e}")
+
     # Traduz página por página com coerência narrativa e suporte a glossário
     try:
         for p in tqdm(pages_data, desc="Tradução Contextual", unit="pág"):
+            _quota_page["n"] = p.get("page", 1)
             if progress_cb:
                 try: progress_cb("translation", p["page"], len(pages_data), f"Dupla de IAs: Mapeando e adaptando cena da pág {p['page']} de {len(pages_data)}")
                 except Exception: pass

@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.0 Beta` (`0.8.0-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.1 Beta` (`0.8.1-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -68,6 +68,20 @@ O sistema é dividido em submódulos cooperativos:
 * **Interface:** `studio/templates/index.html` só monta a página; as telas ficam em `studio/templates/partials/*.html`, o estilo em `studio/static/css/*.css` (cores em `base.css`, modo escuro por `data-theme`/sistema) e a lógica em `studio/static/js/*.js` (scripts clássicos, funções globais, carregados em ordem no fim do `<body>`). Todo ID usado pelo JS precisa existir no HTML (`tests/test_library_search.py` confere). Fonte dos títulos: `studio/static/fonts/animeace2_reg.ttf` (sem Google Fonts: o .exe roda sem internet).
 * **Pastas (`app_paths.py`):** `CODE_DIR` (código e recursos) e `DATA_DIR` (config, memória, regras, glossário, envios, caches, `models/`). Pelo código as duas são a pasta do projeto; no .exe, `DATA_DIR = %APPDATA%\MangaStudio` (ou `MANGA_STUDIO_DATA`) e a 1ª execução copia os dados de uma instalação antiga ("SISTEMA DE TRADUÇÃO"/"SKILL-TRADUCAO-MANGA" em Documentos) sem sobrescrever nada.
 * **.exe:** `manga_studio_app.py` (entrada; `--pick-folder` abre o seletor de pastas, `--self-test` confere o pacote), `manga_studio.spec` (PyInstaller, pasta com o .exe), `requirements-desktop.txt` (RapidOCR fixo em 1.2.3) e `.github/workflows/build-exe.yml` (windows-latest: monta, roda o autoteste e publica `MangaStudio-vX.Y.Z-windows.zip` em Releases a cada push no `main`). `POST /api/shutdown` encerra o servidor (só local, sem tradução rodando).
+
+### A3. Tradução sem depender das cotas (v0.8.1)
+* **`quota_wait.py`:** com `"quota_fallback": "wait"` (padrão), quando todas as IAs ficam sem cota o roteador (`execute_translation_request`) espera 10 min e tenta de novo, até 12 h. O aviso passa pelo `progress_cb`, então Parar e Pausar continuam valendo. Com `"google"`, mantém o comportamento antigo (Google literal).
+* **`chapter_context.py`:** cada lote do Agente 2 recebe as últimas falas traduzidas (original => tradução) das `context_pages` páginas anteriores (padrão 2) e dos lotes anteriores da mesma página, com no máximo 1.400 caracteres.
+* **`gemini_text.py` e `chapter_translator.py`:**
+  * O Gemini virou provedor de texto no roteador, depois do OpenRouter e antes do Ollama. Uma recusa por conteúdo não queima a chave.
+  * Com `gemini_chapter` (padrão ligado) e uma chave Gemini, o capítulo inteiro vai em lotes de até 120 balões (sem cortar página), cada balão com o campo `pag`, e o resultado preenche o cache antes do laço por página.
+* **`ollama_client.py`:**
+  * Os pedidos levam `num_ctx` (`ollama_num_ctx`, padrão 16384), `think: false` e espera `ollama_timeout` (padrão 240 s).
+  * O estado do servidor fica em cache por 5 min.
+  * Escolha de modelo: qwen3 > translategemma > gemma3 > qwen2.5 > … O `dolphin-llama3:latest` antigo vale como automático.
+  * `POST /api/test_ollama` mede tokens/s.
+* **Provedor `auto`** (padrão na tela Traduzir): o Ollama vem primeiro se o servidor já responder, sem iniciar o servidor sozinho.
+* **Notebook `Colab_IA_Local.ipynb`:** roda no Colab e no Kaggle, com `OLLAMA_CONTEXT_LENGTH`, teste PT-BR e URL do túnel em destaque.
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

@@ -209,7 +209,7 @@ function setOption(type, value) {
     const index = type === 'ocr' ? ['auto', 'rapidocr', 'mokuro', 'korean', 'ai_vision'].indexOf(value) :
                   type === 'adult' ? (value ? 0 : 1) :
                   type === 'colorize' ? (value ? 1 : 0) :
-                  ['groq', 'ollama', 'openrouter'].indexOf(value);
+                  ['auto', 'groq', 'ollama', 'openrouter'].indexOf(value);
     if (index >= 0 && container.children[index]) {
       container.children[index].classList.add('active');
     }

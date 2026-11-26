@@ -164,7 +164,7 @@ async function retranslateAfterAudit() {
       is_adult: true,
       force_ocr: false,
       retranslate: false,
-      provider: 'groq'
+      provider: 'auto'
     };
     const res = await fetch('/api/start', {
       method: 'POST',

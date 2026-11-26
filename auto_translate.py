@@ -3729,6 +3729,10 @@ def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434
                         ollama_client.chat([{"role": "user", "content": "oi"}], selected_model, host,
                                            num_predict=1, cfg=load_config(), timeout=300)
                         print(f"[+] Modelo '{selected_model}' ativo com sucesso!")
+                        placement = ollama_client.describe_placement(
+                            selected_model, ollama_client.gpu_share(host, selected_model))
+                        if placement:
+                            print(placement)
                     except Exception as we:
                         print(f"[*] Aviso no warm-up do Ollama: {we}")
 
@@ -3762,9 +3766,10 @@ def check_ollama_available(prefer_uncensored=False, host="http://localhost:11434
         return False, None
 
 def query_ollama_chat(messages, model_name, host="http://localhost:11434", temperature=0.0, num_predict=1024, timeout=None, cfg=None):
-    """Executa requisição à API do Ollama (contexto e tempo de espera vêm da config: ollama_num_ctx / ollama_timeout)."""
+    """Executa requisição à API do Ollama (contexto e tempo de espera vêm da config: ollama_num_ctx / ollama_timeout).
+    O registro mostra o andamento: a IA local é bem mais lenta que a nuvem e antes parecia travada."""
     return ollama_client.chat(messages, model_name, host, temperature=temperature, num_predict=num_predict,
-                              cfg=cfg if cfg is not None else load_config(), timeout=timeout)
+                              cfg=cfg if cfg is not None else load_config(), timeout=timeout, label=model_name)
 
 def _pick_ready_groq_key_and_model(groq_keys, primary_model, fallback_model):
     """Seleciona a melhor combinação (chave, modelo) Groq verificando modelo principal primeiro e fallbacks de 200k TPD separados depois."""
@@ -5399,6 +5404,9 @@ def translate_page_dialogue(bubbles_to_trans, engine_type=None, model_name=None,
                     print(f"[+] [Agente 2: Contextualizador] Cena da pág {page_num} contextualizada e traduzida com sucesso.")
             except Exception:
                 pass
+        elif resp_clean.strip() and not used_fb_batch:
+            print(f"[!] [Agente 2] A resposta do lote {chunk_idx} da pág {page_num} veio fora do formato; "
+                  "traduzindo esses balões um por um.")
 
     # Fallback para qualquer balão ausente ou cortado
     for b in needed_bubbles:

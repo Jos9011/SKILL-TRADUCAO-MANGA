@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.2 Beta` (`0.8.2-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.3 Beta` (`0.8.3-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -95,6 +95,17 @@ O sistema é dividido em submódulos cooperativos:
 * **Onde grava:** no config da pasta do projeto, se houver. No `%APPDATA%\MangaStudio\config.json` só se ele já existir ou se o script estiver junto do .exe, para não atrapalhar a migração da 1ª execução.
 * **`-Simular`:** só detecta e mostra o plano. O GitHub Actions roda esse modo no Windows.
 * **`ollama_priority`:** `"first"` (padrão) põe a IA local antes da nuvem no modo Automático. `"fallback"` deixa a nuvem primeiro, e o roteador tenta o Ollama antes de esperar a cota.
+
+### A5. Andamento da IA local (v0.8.3)
+* **Sintoma:** com a cota da nuvem esgotada, o registro parava em "Modelo 'qwen3:4b' ativo com sucesso!" e parecia travado.
+* **Causa:** o pedido ao Ollama era sem streaming e sem nenhum log até a resposta. Num modelo parcial na CPU, uma página leva minutos.
+* **`ollama_client.chat(..., label=modelo)`:**
+  * usa streaming; o timeout vale por trecho recebido;
+  * escreve "traduzindo...", um aviso a cada `HEARTBEAT_SECS` (30 s) e um resumo no fim (segundos, `prompt_eval_count`, `eval_count`, tokens/s);
+  * um `{"error": ...}` no meio do stream vira RuntimeError.
+* **`gpu_share()` + `describe_placement()`:** lê `/api/ps` (`size_vram`/`size`) depois do aquecimento e avisa quanto do modelo ficou no processador.
+* **Cache de status:** com `ollama_model` fixo, ignora o modo adulto na chave, para não aquecer duas vezes.
+* **Lote fora do formato JSON:** `translate_page_dialogue` avisa no registro antes de traduzir balão por balão.
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

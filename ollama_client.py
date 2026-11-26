@@ -20,6 +20,7 @@ import urllib.request
 DEFAULT_NUM_CTX = 16384
 DEFAULT_TIMEOUT = 240
 STATUS_TTL = 300  # segundos que o resultado de "servidor ligado + modelo escolhido" vale
+HEARTBEAT_SECS = 30  # de quanto em quanto tempo o registro avisa que a IA local ainda está trabalhando
 
 # Ordem de preferência para tradução (o nome escolhido em Configurações sempre vence)
 PREFERRED_MODELS = ("qwen3", "translategemma", "gemma3", "qwen2.5", "mistral-small", "llama3.1", "gemma2",
@@ -79,9 +80,15 @@ def list_models(host, timeout=8):
     return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
 
 
+def _status_key(host, custom_model, prefer_uncensored):
+    custom = (custom_model or "").strip().lower()
+    # Com o modelo fixo em Configurações, o modo adulto não muda a escolha: um aquecimento só
+    return host.rstrip("/"), custom, bool(prefer_uncensored) and not custom
+
+
 def cached_status(host, custom_model="", prefer_uncensored=False):
     """(ok, modelo) guardado há menos de STATUS_TTL segundos, ou None."""
-    key = (host.rstrip("/"), (custom_model or "").lower(), bool(prefer_uncensored))
+    key = _status_key(host, custom_model, prefer_uncensored)
     with _cache_lock:
         hit = _status_cache.get(key)
     if hit and time.time() - hit[0] < STATUS_TTL:
@@ -90,7 +97,7 @@ def cached_status(host, custom_model="", prefer_uncensored=False):
 
 
 def remember_status(host, custom_model, prefer_uncensored, ok, model):
-    key = (host.rstrip("/"), (custom_model or "").lower(), bool(prefer_uncensored))
+    key = _status_key(host, custom_model, prefer_uncensored)
     with _cache_lock:
         _status_cache[key] = (time.time(), ok, model)
 
@@ -134,12 +141,95 @@ def _post(host, payload, timeout):
         raise
 
 
-def chat(messages, model, host, temperature=0.0, num_predict=1024, cfg=None, timeout=None):
-    """Resposta de texto do modelo, sem blocos <think>."""
-    data = _post(host, _payload(messages, model, temperature, num_predict, num_ctx_from(cfg)),
-                 timeout or timeout_from(cfg))
-    content = (data.get("message") or {}).get("content", "")
+def _open(host, payload, timeout):
+    """Abre o pedido em streaming. O tempo de espera vale por trecho recebido, não pela resposta inteira."""
+    req = urllib.request.Request(f"{host.rstrip('/')}/api/chat", data=json.dumps(payload).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        if e.code == 400 and "think" in body.lower() and "think" in payload:
+            return _open(host, {k: v for k, v in payload.items() if k != "think"}, timeout)
+        raise
+
+
+def _read_stream(resp):
+    """Junta os trechos da resposta. Devolve (texto, último objeto com as estatísticas)."""
+    parts, final = [], {}
+    with resp:
+        for raw in resp:
+            line = raw.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if obj.get("error"):
+                raise RuntimeError(f"Ollama: {obj['error']}")
+            parts.append((obj.get("message") or {}).get("content", ""))
+            final = obj
+            if obj.get("done"):
+                break
+    return "".join(parts), final
+
+
+def _heartbeat(stop, label, t0):
+    while not stop.wait(HEARTBEAT_SECS):
+        print(f"    [IA local] {label} ainda trabalhando ({int(time.time() - t0)} s)...", flush=True)
+
+
+def _summary(label, final, secs):
+    n_out = final.get("eval_count") or 0
+    dur = (final.get("eval_duration") or 0) / 1e9
+    speed = f" a {n_out / dur:.1f} tokens/s" if dur else ""
+    return (f"    [IA local] {label} respondeu em {secs:.0f} s (leu {final.get('prompt_eval_count') or 0} tokens, "
+            f"escreveu {n_out}{speed}).")
+
+
+def chat(messages, model, host, temperature=0.0, num_predict=1024, cfg=None, timeout=None, label=""):
+    """Resposta de texto do modelo, sem blocos <think>. Com 'label', escreve o andamento no registro."""
+    payload = _payload(messages, model, temperature, num_predict, num_ctx_from(cfg))
+    payload["stream"] = True
+    t0 = time.time()
+    stop = threading.Event()
+    if label:
+        print(f"    [IA local] {label} traduzindo... (sem placa de vídeo pode levar alguns minutos)", flush=True)
+        threading.Thread(target=_heartbeat, args=(stop, label, t0), daemon=True).start()
+    try:
+        content, final = _read_stream(_open(host, payload, timeout or timeout_from(cfg)))
+    finally:
+        stop.set()
+    if label:
+        print(_summary(label, final, time.time() - t0), flush=True)
     return _THINK_RE.sub("", content).strip()
+
+
+def gpu_share(host, model, timeout=5):
+    """Parte do modelo (0 a 1) que está na memória da placa de vídeo, ou None se não der para saber."""
+    try:
+        with urllib.request.urlopen(f"{host.rstrip('/')}/api/ps", timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    for m in data.get("models", []):
+        if model in (m.get("name"), m.get("model")):
+            size = m.get("size") or 0
+            return (m.get("size_vram") or 0) / size if size else None
+    return None
+
+
+def describe_placement(model, share):
+    """Linha para o registro dizendo se o modelo roda na placa de vídeo ou no processador."""
+    if share is None:
+        return ""
+    if share >= 0.99:
+        return f"[+] IA local '{model}' rodando 100% na placa de vídeo."
+    cpu = round((1 - share) * 100)
+    return (f"[!] IA local '{model}': {cpu}% do modelo ficou no processador, então cada página pode levar minutos. "
+            "Feche jogos e programas pesados, ou rode Instalar_IA_Local.bat de novo.")
 
 
 def speed_test(host, model, cfg=None):

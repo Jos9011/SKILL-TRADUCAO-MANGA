@@ -1,0 +1,77 @@
+/* settings.css - Configurações (índice lateral + seções), chaves de API e janelas modais. */
+
+.settings-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 36px; align-items: start; }
+.settings-index { position: sticky; top: 84px; display: flex; flex-direction: column; gap: 2px; }
+.settings-index a {
+  padding: 6px 10px; border-radius: var(--radius); color: var(--tone); text-decoration: none; font-size: 13.5px;
+  border-left: 2px solid transparent;
+}
+.settings-index a:hover { color: var(--ink); background: var(--sheet); }
+.settings-sections { display: flex; flex-direction: column; }
+.settings-section { padding: 26px 0; border-top: 1px solid var(--rule); scroll-margin-top: 84px; }
+.settings-section:first-child { border-top: 0; padding-top: 0; }
+.settings-section > h2 { font-size: 17px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.settings-section > p, .settings-section .lede { color: var(--tone); font-size: 13.5px; margin: 6px 0 16px; max-width: 72ch; }
+.settings-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.settings-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; }
+.settings-field + .settings-field { margin-top: 16px; }
+.save-bar { position: sticky; top: 72px; z-index: 12; display: flex; justify-content: flex-end; gap: 10px; align-items: center; padding-bottom: 10px; background: var(--desk); }
+#profile-sync-msg, #ollama-test-result, #dataset-export-status { font-size: 13px; color: var(--tone); }
+
+/* Chaves de API */
+.key-list { display: flex; flex-direction: column; border: 1px solid var(--rule); border-radius: 8px; background: var(--sheet); margin-bottom: 10px; }
+.key-list:empty { display: none; }
+.key-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--rule); }
+.key-item:first-child { border-top: 0; }
+.key-meta { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.key-code { font-family: var(--font-mono); font-size: 12.5px; color: var(--tone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.key-empty { color: var(--tone); font-size: 13px; padding: 10px 12px; }
+.add-key-form input { font-family: var(--font-mono); font-size: 12.5px; }
+.add-key-form button { flex-shrink: 0; }
+
+.about-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 12px; }
+.about-grid h4 { margin-bottom: 4px; }
+.about-grid p { color: var(--tone); font-size: 13px; }
+.about-foot { margin-top: 16px; font-size: 12.5px; color: var(--tone); }
+
+/* ---------- Janelas modais ---------- */
+.drive-modal-overlay, #audit-modal-overlay {
+  position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(15, 17, 21, 0.55);
+}
+.drive-modal-overlay.open { display: flex; }
+.drive-modal-card, .audit-modal-card {
+  width: 100%; max-width: 560px; max-height: 88dvh; overflow-y: auto; background: var(--sheet);
+  border: 1px solid var(--rule); border-radius: 10px; padding: 20px 22px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.25);
+}
+.audit-modal-card { max-width: 660px; }
+.modal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 14px; }
+.modal-head h3 { font-size: 17px; display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.modal-close { background: none; border: 0; color: var(--tone); font-size: 24px; width: 34px; height: 34px; border-radius: var(--radius); cursor: pointer; flex-shrink: 0; }
+.modal-close:hover { background: var(--sheet-2); color: var(--ink); }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+.modal-foot { border-top: 1px solid var(--rule); padding-top: 14px; margin-top: 14px; }
+.drive-list-box { max-height: 46dvh; overflow-y: auto; margin: 12px 0; border: 1px solid var(--rule); border-radius: 8px; }
+.drive-list-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--rule); cursor: pointer; }
+.drive-list-item:first-child { border-top: 0; }
+.drive-list-item:hover { background: var(--sheet-2); }
+.drive-item-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-item-path { font-size: 12px; color: var(--tone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-empty { padding: 16px; color: var(--tone); font-size: 13px; }
+
+/* Avaliação da tradução */
+#audit-stars-row { display: flex; gap: 6px; font-size: 30px; cursor: pointer; }
+.star-btn { color: var(--rule); line-height: 1; user-select: none; }
+.star-btn.active, .star-btn.on { color: var(--warn); }
+#audit-rating-desc { display: block; font-size: 13px; color: var(--tone); margin-top: 4px; }
+#audit-feedback-input { height: 80px; resize: vertical; }
+#audit-results-box { display: none; margin-top: 16px; border: 1px solid var(--rule); border-radius: 8px; padding: 16px; background: var(--sheet-2); }
+.audit-cats { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+#audit-issues-list { max-height: 230px; overflow-y: auto; font-size: 13px; }
+.audit-issue { padding: 8px 0; border-top: 1px solid var(--rule); }
+.audit-issue:first-child { border-top: 0; }
+.audit-issue .why { font-weight: 600; }
+.audit-issue del { color: var(--redpen); }
+.audit-issue ins { color: var(--ok); text-decoration: none; font-weight: 600; }
+.field-block { margin-bottom: 16px; }

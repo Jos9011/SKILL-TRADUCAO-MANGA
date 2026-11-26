@@ -6,6 +6,7 @@ no formato padrão ShareGPT / Alpaca para treino com Unsloth / LLaMA-Factory.
 Regra: Arquivo modular, desacoplado e menor que 300 linhas de código.
 """
 
+import app_paths
 import json
 import os
 import re
@@ -48,7 +49,7 @@ def collect_translation_pairs(
         if os.path.exists(default_drive) and default_drive not in candidates:
             candidates.append(default_drive)
 
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = app_paths.DATA_DIR
         local_output = os.path.join(base_dir, "output")
         if os.path.exists(local_output) and local_output not in candidates:
             candidates.append(local_output)
@@ -118,7 +119,7 @@ def export_training_dataset(
     if not pairs:
         return {"ok": False, "error": "Nenhum par de tradução encontrado para exportação.", "total_pairs": 0}
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = app_paths.DATA_DIR
     if not output_path:
         output_path = os.path.join(base_dir, "dataset_manga_ptbr.jsonl")
 

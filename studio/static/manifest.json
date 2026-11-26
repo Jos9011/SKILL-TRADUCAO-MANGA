@@ -4,8 +4,8 @@
   "description": "Estúdio Profissional de Tradução e Diagramação de Mangás e Manhwas com IA",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#121212",
-  "theme_color": "#121212",
+  "background_color": "#F2F3F5",
+  "theme_color": "#1F6F99",
   "icons": [
     {
       "src": "/static/logo.png",

@@ -20,6 +20,7 @@ import webbrowser
 import subprocess
 import traceback
 import tempfile
+import uuid
 from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, redirect
 from PIL import Image
 
@@ -61,10 +62,15 @@ except Exception:
 
 # Inclui diretório principal no path e define como cwd
 SYS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-os.chdir(SYS_DIR)
 if SYS_DIR not in sys.path:
     sys.path.insert(0, SYS_DIR)
-STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+import app_paths  # código x dados: no .exe os dados ficam em %APPDATA%\MangaStudio
+if app_paths.FROZEN:  # no .exe, __file__ deste módulo não fica dentro de "studio/"
+    SYS_DIR = app_paths.CODE_DIR
+DATA_DIR = app_paths.DATA_DIR
+os.makedirs(DATA_DIR, exist_ok=True)
+os.chdir(DATA_DIR)
+STUDIO_DIR = os.path.join(SYS_DIR, "studio") if app_paths.FROZEN else os.path.dirname(os.path.abspath(__file__))
 if STUDIO_DIR not in sys.path:
     sys.path.insert(0, STUDIO_DIR)
 
@@ -74,8 +80,8 @@ import job_control
 
 job_ctrl = job_control.JobController()
 
-TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+TEMPLATE_DIR = os.path.join(STUDIO_DIR, "templates")
+STATIC_DIR = os.path.join(STUDIO_DIR, "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -85,8 +91,8 @@ app.jinja_env.auto_reload = True
 try:
     from version import __version__, __version_name__, get_version_info
 except Exception:
-    __version__ = "0.7.12-beta"
-    __version_name__ = "v0.7.12 Beta"
+    __version__ = "0.8.0-beta"
+    __version_name__ = "v0.8.0 Beta"
 
 APP_VERSION = __version__
 APP_VERSION_NAME = __version_name__
@@ -187,7 +193,7 @@ def inject_version():
     }
 
 BASE_MANGAS_DIR = r"C:\Users\ja329\OneDrive\Documentos\MANGAS"
-THUMB_CACHE_DIR = os.path.join(SYS_DIR, ".thumb_cache")
+THUMB_CACHE_DIR = os.path.join(DATA_DIR, ".thumb_cache")
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
 
 # Mapeamento para leitura e download web seguro
@@ -407,15 +413,15 @@ def index():
 
 @app.route("/manifest.json")
 def manifest():
-    return send_from_directory(os.path.join(app.root_path, "static"), "manifest.json", mimetype="application/manifest+json")
+    return send_from_directory(STATIC_DIR, "manifest.json", mimetype="application/manifest+json")
 
 @app.route("/sw.js")
 def service_worker():
-    return send_from_directory(os.path.join(app.root_path, "static"), "sw.js", mimetype="application/javascript")
+    return send_from_directory(STATIC_DIR, "sw.js", mimetype="application/javascript")
 
 @app.route("/favicon.ico")
 def favicon():
-    return send_from_directory(os.path.join(app.root_path, "static"), "favicon.ico", mimetype="image/x-icon")
+    return send_from_directory(STATIC_DIR, "favicon.ico", mimetype="image/x-icon")
 
 def check_single_groq_key(idx, key, models_to_check=None, deep=False):
     key = str(key).strip()
@@ -1120,13 +1126,24 @@ def pick_folder_native(title="Selecione a Pasta", init_dir=""):
         "print(d or '')\n"
     )
     try:
+        if app_paths.FROZEN:
+            # No .exe, sys.executable é o próprio programa: ele abre o seletor com --pick-folder
+            # (manga_studio_app.py) e grava a escolha num arquivo, porque sem console não há stdout
+            out_file = os.path.join(tempfile.gettempdir(), f"manga_studio_pick_{uuid.uuid4().hex}.txt")
+            subprocess.run([sys.executable, "--pick-folder", title, init_dir or "", out_file], timeout=300)
+            try:
+                with open(out_file, encoding="utf-8") as f:
+                    return f.read().strip()
+            finally:
+                if os.path.exists(out_file):
+                    os.remove(out_file)
         proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
         return proc.stdout.strip()
     except Exception as e:
         print(f"[!] Erro ao abrir seletor de pastas: {e}")
         return ""
 
-UPLOAD_DIR = os.path.join(SYS_DIR, "uploads")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 if os.path.exists("/content"):
     UPLOAD_DIR = "/content/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -1837,7 +1854,7 @@ def api_test_key():
 
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
-    cfg_path = os.path.join(SYS_DIR, "config.json")
+    cfg_path = os.path.join(DATA_DIR, "config.json")
     if request.method == "POST":
         new_cfg = request.json or {}
         try:
@@ -1899,6 +1916,7 @@ def api_delete_manga():
         os.path.abspath("C:\\Windows"),
         os.path.abspath("C:\\Users"),
         os.path.abspath(SYS_DIR),
+        os.path.abspath(DATA_DIR),
         os.path.abspath("/content"),
         os.path.abspath("/content/drive"),
         os.path.abspath("/content/drive/MyDrive"),
@@ -1941,7 +1959,7 @@ def api_dataset_export():
 
 @app.route("/api/aprendizado", methods=["GET", "POST"])
 def api_aprendizado():
-    fpath = os.path.join(SYS_DIR, "aprendizado.txt")
+    fpath = os.path.join(DATA_DIR, "aprendizado.txt")
     if request.method == "POST":
         content = request.json.get("content", "")
         with open(fpath, "w", encoding="utf-8") as f:
@@ -1956,7 +1974,7 @@ def api_aprendizado():
 
 @app.route("/api/glossary", methods=["GET", "POST"])
 def api_glossary():
-    fpath = os.path.join(SYS_DIR, "glossary.json")
+    fpath = os.path.join(DATA_DIR, "glossary.json")
     if request.method == "POST":
         data = request.json.get("data", {})
         with open(fpath, "w", encoding="utf-8") as f:
@@ -1980,7 +1998,7 @@ def api_rate_manga():
     if not path or not os.path.exists(path):
         return jsonify({"success": False, "error": "Caminho do mangá não encontrado."}), 400
 
-    reviews_file = os.path.join(SYS_DIR, "manga_reviews.json")
+    reviews_file = os.path.join(DATA_DIR, "manga_reviews.json")
     reviews = []
     if os.path.exists(reviews_file):
         try:
@@ -2073,7 +2091,7 @@ def kill_existing_on_port(port=5050):
         import psutil
         curr_pid = os.getpid()
         for p in psutil.process_iter(['pid', 'name']):
-            if p.info['pid'] != curr_pid and 'python' in (p.info['name'] or '').lower():
+            if p.info['pid'] != curr_pid and any(n in (p.info['name'] or '').lower() for n in ('python', 'mangastudio')):
                 try:
                     for c in p.net_connections():
                         if c.laddr.port == port:
@@ -2083,22 +2101,39 @@ def kill_existing_on_port(port=5050):
     except Exception:
         pass
 
+def _is_local_request():
+    return request.remote_addr in ("127.0.0.1", "::1") and not any(h in request.headers for h in _TUNNEL_HEADERS)
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def api_shutdown():
+    """Encerra o servidor (botão "Encerrar Manga Studio"). Só no próprio computador e sem tradução rodando."""
+    if not _is_local_request():
+        return jsonify({"success": False, "error": "Só pode ser encerrado no próprio computador."}), 403
+    with job_lock:
+        running = job_state.get("status") in ("running", "paused")
+    if running and not (request.get_json(silent=True) or {}).get("force"):
+        return jsonify({"success": False, "running": True, "error": "Há uma tradução em andamento."}), 409
+    threading.Timer(0.6, lambda: os._exit(0)).start()
+    return jsonify({"success": True})
+
+
+def run_desktop(port=5050):
+    """Sobe o servidor local e abre a janela do app (usado pelo .bat e pelo .exe)."""
+    url = f"http://127.0.0.1:{port}"
+    # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
+    if is_server_running(port):
+        open_chrome_app(url, port)
+        return
+    kill_existing_on_port(port)
+    time.sleep(0.5)
+    threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+
+
 if __name__ == "__main__":
     try:
-        port = 5050
-        url = f"http://127.0.0.1:{port}"
-
-        # Se o servidor já estiver rodando, apenas abre a janela do app sem recriar sockets
-        if is_server_running(port):
-            open_chrome_app(url, port)
-            sys.exit(0)
-
-        # Se a porta estiver presa por processo zumbi, limpa
-        kill_existing_on_port(port)
-        time.sleep(0.5)
-
-        threading.Timer(1.2, lambda: open_chrome_app(url, port)).start()
-        app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+        run_desktop(5050)
     except Exception as e:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"), "w", encoding="utf-8") as f:
+        with open(os.path.join(DATA_DIR, "crash.log"), "w", encoding="utf-8") as f:
             f.write(traceback.format_exc())

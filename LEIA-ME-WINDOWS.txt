@@ -1,0 +1,28 @@
+MANGA STUDIO PARA WINDOWS
+=========================
+
+Como abrir
+- Clique duas vezes em MangaStudio.exe. O programa abre numa janela própria
+  (usa o Chrome ou o Edge que já estão no seu computador).
+- Na primeira vez o Windows pode mostrar "O Windows protegeu o computador":
+  clique em "Mais informações" e depois em "Executar assim mesmo".
+
+Como fechar
+- Use "Encerrar Manga Studio" no rodapé da barra lateral.
+  Fechar só a janela deixa o programa rodando em segundo plano
+  (clicar de novo no MangaStudio.exe reabre a janela na hora).
+
+Onde ficam seus dados
+- %APPDATA%\MangaStudio  (cole isso na barra de endereço do Explorador de Arquivos)
+  config.json (chaves de IA), memoria_traducoes.json, aprendizado.txt, glossary.json,
+  modelos baixados e a pasta logs.
+- Se você já usava o Manga Studio pelo código (pasta "SISTEMA DE TRADUÇÃO" ou
+  "SKILL-TRADUCAO-MANGA" em Documentos), esses arquivos são copiados na primeira vez.
+- As chaves salvas no Google Drive (pasta .manga_studio) continuam funcionando.
+
+Atualizar
+- Baixe o .zip novo na página de Releases do GitHub e extraia por cima ou em outra pasta.
+  Seus dados não ficam na pasta do programa, então nada se perde.
+
+Algo deu errado?
+- Veja %APPDATA%\MangaStudio\logs\manga_studio.log e %APPDATA%\MangaStudio\crash.log

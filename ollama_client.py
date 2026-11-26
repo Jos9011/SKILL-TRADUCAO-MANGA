@@ -111,10 +111,33 @@ def forget_status(host=None):
                 _status_cache.pop(k, None)
 
 
+def _no_think(messages, model):
+    """Qwen3 híbrido pensa em voz alta mesmo com "think": false em algumas versões do Ollama.
+    "/no_think" na mensagem de sistema (ou na última do usuário) é a chave oficial do Qwen3 para desligar."""
+    if "qwen3" not in (model or "").lower():
+        return messages
+    out = [dict(m) for m in messages]
+    idx = next((i for i, m in enumerate(out) if m.get("role") == "system"), None)
+    if idx is None:
+        idx = next((i for i in range(len(out) - 1, -1, -1) if out[i].get("role") == "user"), None)
+    if idx is not None and "/no_think" not in str(out[idx].get("content", "")):
+        out[idx]["content"] = f"{out[idx].get('content', '')}\n/no_think"
+    return out
+
+
+def clean_answer(text):
+    """Tira o raciocínio do Qwen3; se ele ficou pela metade (limite de tokens), não sobra tradução."""
+    text = _THINK_RE.sub("", text or "")
+    cut = text.lower().find("<think>")
+    if cut >= 0:
+        text = text[:cut]
+    return text.strip()
+
+
 def _payload(messages, model, temperature, num_predict, num_ctx):
     return {
         "model": model,
-        "messages": messages,
+        "messages": _no_think(messages, model),
         "stream": False,
         "think": False,
         "keep_alive": "60m",
@@ -204,7 +227,7 @@ def chat(messages, model, host, temperature=0.0, num_predict=1024, cfg=None, tim
         stop.set()
     if label:
         print(_summary(label, final, time.time() - t0), flush=True)
-    return _THINK_RE.sub("", content).strip()
+    return clean_answer(content)
 
 
 def gpu_share(host, model, timeout=5):
@@ -242,7 +265,7 @@ def speed_test(host, model, cfg=None):
     n_tok = data.get("eval_count") or 0
     dur_ns = data.get("eval_duration") or 0
     tok_s = (n_tok / (dur_ns / 1e9)) if dur_ns else (n_tok / secs if secs else 0)
-    sample = _THINK_RE.sub("", (data.get("message") or {}).get("content", "")).strip()
+    sample = clean_answer((data.get("message") or {}).get("content", ""))
     return {"ok": bool(sample), "tok_s": round(tok_s, 1), "seconds": round(secs, 1), "sample": sample[:120]}
 
 

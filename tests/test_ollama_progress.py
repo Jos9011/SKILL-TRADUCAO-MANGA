@@ -117,5 +117,27 @@ class TestOllamaProgress(unittest.TestCase):
         self.assertIsNone(ollama_client.cached_status(self.host, "", False))
 
 
+class TestQwen3NoThinking(unittest.TestCase):
+    """Qwen3 ignorava "think": false e gastava os 350 tokens do balão raciocinando (1 min por balão)."""
+
+    def test_qwen3_gets_no_think_switch_without_touching_caller_messages(self):
+        msgs = [{"role": "system", "content": "Regras"}, {"role": "user", "content": "{}"}]
+        sent = ollama_client._payload(msgs, "qwen3:4b", 0.0, 350, 8192)["messages"]
+        self.assertTrue(sent[0]["content"].endswith("/no_think"))
+        self.assertEqual(sent[1]["content"], "{}")
+        self.assertEqual(msgs[0]["content"], "Regras")  # lista original intacta
+        only_user = ollama_client._payload([{"role": "user", "content": "oi"}], "qwen3:8b", 0.0, 1, 8192)["messages"]
+        self.assertTrue(only_user[-1]["content"].endswith("/no_think"))
+
+    def test_other_models_unchanged(self):
+        msgs = [{"role": "system", "content": "Regras"}]
+        self.assertEqual(ollama_client._payload(msgs, "gemma3:4b", 0.0, 1, 8192)["messages"], msgs)
+
+    def test_unfinished_thinking_is_dropped(self):
+        self.assertEqual(ollama_client.clean_answer("<think>Okay, let me tackle this"), "")
+        self.assertEqual(ollama_client.clean_answer("<think>\n\n</think>\n\nEu te disse!"), "Eu te disse!")
+        self.assertEqual(ollama_client.clean_answer("Eu te disse!"), "Eu te disse!")
+
+
 if __name__ == "__main__":
     unittest.main()

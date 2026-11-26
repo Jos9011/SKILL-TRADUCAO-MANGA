@@ -106,6 +106,9 @@ O sistema é dividido em submódulos cooperativos:
 * **`gpu_share()` + `describe_placement()`:** lê `/api/ps` (`size_vram`/`size`) depois do aquecimento e avisa quanto do modelo ficou no processador.
 * **Cache de status:** com `ollama_model` fixo, ignora o modo adulto na chave, para não aquecer duas vezes.
 * **Lote fora do formato JSON:** `translate_page_dialogue` avisa no registro antes de traduzir balão por balão.
+* **Qwen3 pensando em voz alta:** confirmado no PC do usuário (Ollama ignorava `"think": false`). Cada balão batia nos 350 tokens de raciocínio (~64 s a 5,4 tok/s), a tradução saía cortada e era refeita.
+  * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
+  * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.8.0 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.8.1 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.8.0--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.8.1--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -53,6 +53,8 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 3. Pronto! As traduções serão enviadas para a nuvem da OpenRouter com o modelo Dolphin e o seu computador não esquentará nem consumirá memória.
 
 ### Opção 2: Google Colab com GPU Gratuita (100% Gratuito)
+
+> **v0.8.1:** use o notebook [`Colab_IA_Local.ipynb`](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_IA_Local.ipynb) (Qwen3, contexto de 16 mil tokens, também roda no Kaggle) e cole a URL em Configurações > IA local.
 1. Abra o arquivo incluído `Colab_Dolphin_Server.ipynb` no [Google Colab](https://colab.research.google.com/).
 2. Ative a GPU T4 (**Ambiente de execução** > **Alterar tipo de ambiente de execução** > **T4 GPU**).
 3. Clique no botão de Play na célula. Ele instalará o Ollama, baixará o `dolphin-llama3:8b` e gerará uma URL pública Cloudflare (ex: `https://xxxx.trycloudflare.com`).
@@ -95,6 +97,12 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Quadros de narração estreitos (`typography_ptbr.py`):** quadros altos e estreitos aceitam mais de 8 linhas, e o último recurso nunca passa da largura do quadro (antes o texto podia sair numa linha só, minúscula, atravessando a página).
 * **Busca na Biblioteca:** campo de busca fixo no topo da aba Biblioteca que procura nas obras traduzidas e nas originais, ignorando maiúsculas, acentos e pontuação e aceitando as palavras em qualquer ordem ("gal kuro" ou "toshiue ch1" encontram "Toshiue no Kuro Gal ... Ch.1"). Mostra quantas obras foram encontradas, avisa quando nada foi encontrado e tem botão ✕ (ou ESC) para limpar. A janela de escolher obra do Google Drive usa a mesma busca.
 * **Texto solto sobre o desenho e créditos (v0.7.10):** texto fora de balão com contorno branco por cima da arte (ex.: "HERE! PJS!") não vira mais um retângulo branco: as letras são apagadas, o desenho é recomposto (inpainting) e a tradução é escrita no mesmo lugar com contorno branco. Créditos de scan ("TRANSLATED BY DOUJINS.COM", "discord.gg", "Traduzido por ...") ficam intactos, sem tradução. Palavras compostas quebradas na linha ("STATE-OF-" / "THE-ART") mantêm o hífen.
+* **Tradução com contexto e sem depender das cotas (v0.8.1):**
+  * **Cotas acabaram:** quando todas as IAs ficam sem cota, o sistema espera a cota renovar e continua, em vez de cair no Google Tradutor literal. Dá para mudar em Configurações > Tradução.
+  * **Contexto entre páginas:** cada pedido leva as últimas falas já traduzidas das páginas anteriores.
+  * **Capítulo inteiro no Gemini:** com chave Gemini, ele traduz o capítulo inteiro de uma vez, lendo a história toda e gastando poucos pedidos. Páginas recusadas por conteúdo +18 seguem o caminho normal. O Gemini também passou a ser uma IA de tradução, não só de leitura de imagem.
+  * **IA local:** contexto de 16 mil tokens (antes o Ollama cortava o texto em silêncio), modelos atuais (Qwen3), teste de velocidade e o notebook `Colab_IA_Local.ipynb`, que funciona no Colab e no Kaggle.
+  * **Motor "Automático":** usa a IA local se estiver ligada, depois Gemini, Groq e OpenRouter.
 * **Interface nova e versão .exe (v0.8.0):** visual de mesa de desenho (papel, nanquim e lápis azul) com modo escuro; Traduzir em três etapas com atalhos para os capítulos da pasta de originais; Biblioteca com capas e menu "Mais"; Cotas por conta com barras de uso; Configurações com índice lateral e botão Salvar sempre visível; botão "Encerrar Manga Studio". O programa também sai como `MangaStudio.exe` para Windows.
 * **Limpeza do balão inteiro e balões coloridos (v0.7.12):** a varredura completa do balão agora roda na maioria dos balões (antes, uma trava recusava balões altos com pouco texto e balões com duas falas; na página de teste, 25 de 37). Balões coloridos (rosa, azul, amarelo, cinza médio) também são reconhecidos e limpos por inteiro, inclusive letras que o OCR não leu. Reticências soltas numa linha ("...") que o OCR não lê voltam para o texto traduzido em vez de sumir. Com a área real do balão, o texto fica maior; quadros em degrau ou com recorte não são mais invadidos.
 * **Acabamento dos balões (v0.7.11):** sem "sombra" do texto original em balões brancos (a borda antisserrilhada das letras também é limpa); em quadros pequenos, o texto tenta caber com palavras inteiras antes de hifenizar, e o hífen respeita as sílabas ("MU-DARAM", nunca "MUD-ARAM" ou "ESTÃ-O"); quadros de narração encostados não empurram mais o texto para fora do quadro.

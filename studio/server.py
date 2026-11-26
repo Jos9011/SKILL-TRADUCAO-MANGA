@@ -91,8 +91,8 @@ app.jinja_env.auto_reload = True
 try:
     from version import __version__, __version_name__, get_version_info
 except Exception:
-    __version__ = "0.8.0-beta"
-    __version_name__ = "v0.8.0 Beta"
+    __version__ = "0.8.1-beta"
+    __version_name__ = "v0.8.1 Beta"
 
 APP_VERSION = __version__
 APP_VERSION_NAME = __version_name__
@@ -1420,7 +1420,7 @@ def api_start_translation():
     is_adult = bool(data.get("is_adult", True))
     force_ocr = bool(data.get("force_ocr", False))
     retranslate = bool(data.get("retranslate", False))
-    provider = data.get("provider", "groq")
+    provider = data.get("provider", "auto")
     colorize = bool(data.get("colorize", False))
     colorize_only = bool(data.get("colorize_only", False))
     color_reference = data.get("reference") or data.get("color_reference") or None
@@ -2100,6 +2100,32 @@ def kill_existing_on_port(port=5050):
                     pass
     except Exception:
         pass
+
+@app.route("/api/test_ollama", methods=["POST"])
+def api_test_ollama():
+    """Testa o endereço do Ollama digitado em Configurações: modelos, modelo escolhido e velocidade real."""
+    import ollama_client
+    data = request.get_json(silent=True) or {}
+    cfg = auto_translate.load_config()
+    host = (data.get("host") or cfg.get("ollama_host") or "http://localhost:11434").strip().rstrip("/")
+    if not host.startswith(("http://", "https://")):
+        return jsonify({"ok": False, "error": "O endereço precisa começar com http:// ou https://"}), 400
+    cfg = dict(cfg, ollama_num_ctx=data.get("num_ctx") or cfg.get("ollama_num_ctx"))
+    try:
+        models = ollama_client.list_models(host)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Nenhum servidor respondendo: {e}"})
+    if not models:
+        return jsonify({"ok": False, "models": [], "error": "Servidor ligado, mas sem modelos baixados (ollama pull ...)."})
+    model = ollama_client.pick_model(models, data.get("model") or cfg.get("ollama_model", ""), True)
+    try:
+        speed = ollama_client.speed_test(host, model, cfg)
+    except Exception as e:
+        return jsonify({"ok": False, "models": models, "model": model, "error": f"O modelo não respondeu: {e}"})
+    ollama_client.forget_status(host)
+    speed["speed_label"] = ollama_client.describe_speed(speed["tok_s"])
+    return jsonify(dict(speed, models=models, model=model, host=host))
+
 
 def _is_local_request():
     return request.remote_addr in ("127.0.0.1", "::1") and not any(h in request.headers for h in _TUNNEL_HEADERS)

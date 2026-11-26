@@ -8,6 +8,7 @@
   <div class="settings-layout">
     <nav class="settings-index" aria-label="Seções das configurações">
       <a href="#set-backup">Chaves e backup</a>
+      <a href="#set-translation">Tradução</a>
       <a href="#set-folders">Pastas</a>
       <a href="#set-groq">Groq</a>
       <a href="#set-openrouter">OpenRouter</a>
@@ -28,6 +29,35 @@
           <button class="btn-quiet" onclick="document.getElementById('import-profile-input').click()">Importar backup</button>
           <input type="file" id="import-profile-input" accept=".json" hidden onchange="importProfileJson(event)">
         </div>
+      </section>
+
+      <section class="settings-section" id="set-translation">
+        <h2>Tradução</h2>
+        <p>Como o sistema usa as IAs para traduzir com contexto, e o que fazer quando as cotas grátis acabam.</p>
+        <div class="settings-grid-2">
+          <div>
+            <label class="option-label" for="cfg-quota-fallback">Quando todas as cotas acabarem</label>
+            <select id="cfg-quota-fallback">
+              <option value="wait">Esperar a cota renovar e continuar (recomendado)</option>
+              <option value="google">Usar o Google Tradutor (rápido, mas literal e sem contexto)</option>
+            </select>
+            <span class="field-hint">Esperando, a tradução pausa e tenta de novo a cada 10 minutos. Você pode Parar e continuar depois.</span>
+          </div>
+          <div>
+            <label class="option-label" for="cfg-context-pages">Páginas anteriores enviadas como contexto</label>
+            <select id="cfg-context-pages">
+              <option value="0">Nenhuma</option>
+              <option value="1">1 página</option>
+              <option value="2">2 páginas (recomendado)</option>
+              <option value="3">3 páginas</option>
+            </select>
+            <span class="field-hint">A IA vê as últimas falas já traduzidas e mantém o tom e os nomes.</span>
+          </div>
+        </div>
+        <label class="check-row" style="margin-top: 16px;">
+          <input type="checkbox" id="cfg-gemini-chapter">
+          <span><b>Gemini traduz o capítulo inteiro de uma vez</b> (precisa de chave Gemini). A IA lê a história toda antes de traduzir e gasta poucos pedidos. Páginas que o Gemini recusar (+18) seguem pelo caminho normal.</span>
+        </label>
       </section>
 
       <section class="settings-section" id="set-folders">
@@ -136,11 +166,23 @@
 
       <section class="settings-section" id="set-ollama">
         <h2>IA local (Ollama)</h2>
-        <p>Usa uma IA rodando no seu PC ou no Colab, sem cota.</p>
+        <p>Usa uma IA rodando no seu PC, no Colab ou no Kaggle, sem cota e sem bloqueio de conteúdo. No Colab/Kaggle, rode o notebook <code>Colab_IA_Local.ipynb</code> e cole aqui a URL que ele mostrar.</p>
         <div class="settings-grid-2">
           <div>
             <label class="option-label" for="cfg-ollama-host">Endereço</label>
             <input type="text" id="cfg-ollama-host" value="http://localhost:11434" class="mono">
+          </div>
+          <div>
+            <label class="option-label" for="cfg-ollama-model">Modelo de tradução</label>
+            <input type="text" id="cfg-ollama-model" placeholder="Automático (ex.: qwen3:14b, qwen3:8b)">
+          </div>
+          <div>
+            <label class="option-label" for="cfg-ollama-num-ctx">Contexto (memória da IA)</label>
+            <select id="cfg-ollama-num-ctx">
+              <option value="8192">8 mil tokens (GPU pequena)</option>
+              <option value="16384">16 mil tokens (recomendado)</option>
+              <option value="32768">32 mil tokens (GPU grande)</option>
+            </select>
           </div>
           <div>
             <label class="option-label" for="cfg-ollama-vision-model">Modelo de leitura por imagem (opcional)</label>
@@ -148,7 +190,7 @@
           </div>
         </div>
         <div class="settings-row" style="margin-top: 14px;">
-          <button class="btn-secondary" onclick="testOllamaHost()">Testar conexão</button>
+          <button class="btn-secondary" onclick="testOllamaHost()">Testar conexão e velocidade</button>
           <span id="ollama-test-result"></span>
         </div>
       </section>
@@ -164,14 +206,14 @@
       </section>
 
       <section class="settings-section" id="set-about">
-        <h2>Sobre <span class="tag">{{ app_version | default('v0.8.0 Beta') }}</span></h2>
+        <h2>Sobre <span class="tag">{{ app_version | default('v0.8.1 Beta') }}</span></h2>
         <p>Manga Studio traduz mangás, manhwas e PDFs para português do Brasil: lê o texto, traduz com contexto da obra, limpa os balões e escreve a tradução no lugar.</p>
         <div class="about-grid">
           <div><h4>Leitura da página</h4><p>Acha os balões, a ordem de leitura e quanto texto cabe em cada um.</p></div>
           <div><h4>Tradução com contexto</h4><p>Lê a página inteira, respeita gênero, apelidos e gírias de scanlation.</p></div>
           <div><h4>Nuvem ou local</h4><p>Groq e OpenRouter na nuvem, ou Ollama no PC e no Colab.</p></div>
         </div>
-        <p class="about-foot">Versão {{ app_version_code | default('0.8.0-beta') }}</p>
+        <p class="about-foot">Versão {{ app_version_code | default('0.8.1-beta') }}</p>
       </section>
     </div>
   </div>

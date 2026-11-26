@@ -50,7 +50,8 @@ def self_test():
     for mod in ("cv2", "numpy", "PIL", "flask", "onnxruntime", "rapidocr_onnxruntime", "pyphen", "wordninja",
                 "deep_translator", "requests", "fitz", "psutil", "pyclipper", "tkinter",
                 "auto_translate", "balloon_assign", "balloon_color", "typography_ptbr", "ocr_text_fix",
-                "ficha_obra", "lider_capitulo", "manga_colorizer", "server"):
+                "ficha_obra", "lider_capitulo", "manga_colorizer", "ollama_client", "gemini_text", "quota_wait",
+                "chapter_context", "chapter_translator", "server"):
         try:
             __import__(mod)
         except Exception as e:  # noqa: BLE001 - queremos listar todos os problemas

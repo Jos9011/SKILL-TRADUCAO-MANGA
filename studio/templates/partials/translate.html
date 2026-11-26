@@ -71,7 +71,8 @@
         <div class="option-card">
           <span class="option-label">Motor de tradução</span>
           <div class="pill-selector" id="provider-selector">
-            <div class="pill-btn active" onclick="setOption('provider', 'groq')">Groq</div>
+            <div class="pill-btn active" onclick="setOption('provider', 'auto')" title="IA local se estiver ligada, depois Gemini, Groq e OpenRouter">Automático</div>
+            <div class="pill-btn" onclick="setOption('provider', 'groq')">Groq</div>
             <div class="pill-btn" onclick="setOption('provider', 'ollama')">IA local (Ollama)</div>
             <div class="pill-btn" onclick="setOption('provider', 'openrouter')">OpenRouter</div>
           </div>

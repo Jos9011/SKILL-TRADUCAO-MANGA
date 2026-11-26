@@ -8,7 +8,7 @@
 }
 .settings-index a:hover { color: var(--ink); background: var(--sheet); }
 .settings-sections { display: flex; flex-direction: column; }
-.settings-section { padding: 26px 0; border-top: 1px solid var(--rule); scroll-margin-top: 84px; }
+.settings-section { padding: 26px 0; border-top: 1px solid var(--rule); scroll-margin-top: 140px; }
 .settings-section:first-child { border-top: 0; padding-top: 0; }
 .settings-section > h2 { font-size: 17px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .settings-section > p, .settings-section .lede { color: var(--tone); font-size: 13.5px; margin: 6px 0 16px; max-width: 72ch; }
@@ -75,3 +75,6 @@
 .audit-issue del { color: var(--redpen); }
 .audit-issue ins { color: var(--ok); text-decoration: none; font-weight: 600; }
 .field-block { margin-bottom: 16px; }
+.check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; color: var(--tone); cursor: pointer; max-width: 72ch; }
+.check-row input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--pencil); flex-shrink: 0; }
+.check-row b { color: var(--ink); font-weight: 600; }

@@ -3,7 +3,7 @@ let currentSelectedManga = null;
 let selectedOptions = {
   ocr: 'auto',
   adult: true,
-  provider: 'groq',
+  provider: 'auto',
   colorize: false
 };
 

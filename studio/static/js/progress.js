@@ -36,8 +36,9 @@ function pollProgress() {
         if (data.stage === 'colorize') {
           liveEngine.innerText = 'Colorizador Neural IA (ONNX / GPU)';
         } else {
-          liveEngine.innerText = selectedOptions.provider === 'groq' ? `Groq Cloud (${formatModelShortName(currentConfig.groq_model || 'qwen/qwen3.8-27b')})` :
-                                 selectedOptions.provider === 'openrouter' ? 'OpenRouter Cloud' : 'IA Local GPU (Ollama)';
+          const names = { auto: 'Automático: IA local, Gemini, Groq e OpenRouter', groq: `Groq (${formatModelShortName(currentConfig.groq_model || 'qwen/qwen3.8-27b')})`,
+                          openrouter: 'OpenRouter', ollama: 'IA local (Ollama)' };
+          liveEngine.innerText = names[selectedOptions.provider] || 'IA';
         }
       }
 

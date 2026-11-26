@@ -57,7 +57,11 @@ class TestNarrowBoxes(unittest.TestCase):
                 (0.625, 138), (0.75, 96), (0.875, 46), (1.0, 46)]
         font, lines, line_h, max_w = self._fit("E MINHA FAMÍLIA SE ESPALOU, NINGUÉM SABE ONDE ESTÃO",
                                                172, 277, band)
-        self.assertLessEqual(max_w, 130)
+        top = (277 - len(lines) * line_h) / 2.0  # bloco centrado, como o desenho
+        for i, ln in enumerate(lines):
+            if top + (i + 1) * line_h > 0.62 * 277:  # parte que afina (138 -> 96 -> 46 px)
+                self.assertLessEqual(auto_translate.measure_manga_line_width(self.draw, ln, font, 0), 130, lines)
+        self.assertLessEqual(max_w, 172)
 
     def test_normal_bubbles_unchanged(self):
         font, lines, _, _ = self._fit("VOCÊ ACORDOU DE UM SONO MUITO LONGO", 140, 120)
@@ -110,6 +114,37 @@ class TestHyphenQuality(unittest.TestCase):
         # Nem "ES-" cabe: mantém a palavra inteira em vez de "ESTÃ-" + "O"
         self.assertEqual(tp._split_word_to_width(self.draw, "ESTÃO", f, 5, auto_translate.measure_manga_line_width,
                                                  split_mode="chars"), ["ESTÃO"])
+
+
+class TestBandPosition(unittest.TestCase):
+    """v0.7.12: a largura de cada linha vem da altura onde ela fica de fato (bloco centrado)."""
+
+    def setUp(self):
+        self.draw = ImageDraw.Draw(Image.new("L", (10, 10)))
+        self.font_path = auto_translate.select_font_for_bubble("TEXTO")
+
+    def _fit(self, text, w, h, band, center=0.5):
+        return tp.fit_text_ptbr(self.draw, text, w, h, self.font_path,
+                                measure_fn=auto_translate.measure_manga_line_width, stroke_width=0,
+                                band_profile=band, page_w=PAGE_W, band_center=center)
+
+    def test_l_shaped_box_lower_lines_stay_in_narrow_part(self):
+        band = [(i / 8.0, 141.0 if i <= 4 else 59.0) for i in range(9)]  # quadro com recorte embaixo
+        h = 272.0
+        font, lines, line_h = self._fit("DE VOLTA À ESCOLA, ELA SEMPRE...", 141, h, band, center=0.34)
+        top = min(max(0.0, 0.34 * h - len(lines) * line_h / 2.0), max(0.0, h - len(lines) * line_h))
+        for i, ln in enumerate(lines):
+            w = auto_translate.measure_manga_line_width(self.draw, ln, font, 0)
+            if top + (i + 1) * line_h > 0.5 * h:  # a linha encosta na parte estreita
+                self.assertLessEqual(w, 59.0, (ln, lines))
+            self.assertLessEqual(w, 141.0)
+
+    def test_short_text_in_tall_oval_uses_the_wide_middle(self):
+        band = [(0.0, 40.0), (0.125, 90.0), (0.25, 114.0), (0.375, 128.0), (0.5, 132.0),
+                (0.625, 128.0), (0.75, 115.0), (0.875, 89.0), (1.0, 38.0)]
+        font, lines, _ = self._fit("QUANTO TEMPO EU FIQUEI DORMINDO?", 132, 309, band)
+        self.assertGreaterEqual(font.size, 16)
+        self.assertTrue(all(auto_translate.measure_manga_line_width(self.draw, l, font, 0) <= 132 for l in lines))
 
 
 if __name__ == "__main__":

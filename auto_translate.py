@@ -55,6 +55,7 @@ except Exception:
     _pyphen_dic = None
 
 import balloon_cavity
+import balloon_assign
 import typography_ptbr
 try:
     import rag_memory  # Memória por semelhança (RAG leve); opcional
@@ -8873,17 +8874,37 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
         id_map_page, balloon_infos_page = balloon_cavity.build_balloon_map(img_cv)
         swept_bids = set()
         bid_usage_count = {}
+        # Balão de cada fala avaliado com TODAS as falas dele (inclui balões coloridos)
+        try:
+            page_bids = balloon_assign.assign_balloon_ids([b["box"] for b in bubbles], id_map_page,
+                                                          balloon_infos_page, img=img_cv)
+        except Exception as e_assign:
+            print(f"    [!] Ligação fala/balão falhou ({e_assign}); usando a checagem antiga.")
+            page_bids = [balloon_cavity.find_box_balloon_id(b["box"], id_map_page, infos=balloon_infos_page)
+                         for b in bubbles]
+        skip_flags = []
         for b in bubbles:
-            trans_txt = b.get("translated_text", "").strip()
-            if not trans_txt or re.fullmatch(r'\.{2,8}|…+', trans_txt) or not is_valid_translation(b["combined_text"], trans_txt):
+            t = b.get("translated_text", "").strip()
+            skip_flags.append(not t or bool(re.fullmatch(r'\.{2,8}|…+', t)) or not is_valid_translation(b["combined_text"], t))
+        # Balão com fala que fica no original ("...", tradução rejeitada) não é varrido inteiro
+        keep_bids = {bid for bid, skip in zip(page_bids, skip_flags) if skip and bid > 0}
+        for b, bid, skip in zip(bubbles, page_bids, skip_flags):
+            if skip:
                 b["_balloon_id"] = 0
                 continue
-            bid = balloon_cavity.find_box_balloon_id(b["box"], id_map_page, infos=balloon_infos_page)
             b["_balloon_id"] = bid
             if bid > 0:
                 bid_usage_count[bid] = bid_usage_count.get(bid, 0) + 1
-            if bid > 0 and bid in balloon_infos_page and bid not in swept_bids:
-                balloon_cavity.sweep_balloon_interior(cleaned, balloon_infos_page[bid], erode_px=2)
+            if bid > 0 and bid in balloon_infos_page and bid not in swept_bids and bid not in keep_bids:
+                # "..." numa linha só, que o OCR não lê, voltaria a sumir com a varredura: recoloca no texto
+                mates = [m for m, mb, ms in zip(bubbles, page_bids, skip_flags) if mb == bid and not ms]
+                line_h = float(np.median([(m["box"][3] - m["box"][1]) / max(1, len(m.get("lines") or [1])) for m in mates]))
+                boxes_in = [r for m in mates for r in (m.get("raw_boxes") or [m["box"]])]
+                for ex, ey in balloon_assign.missed_ellipses(img_cv_gray, balloon_infos_page[bid], boxes_in, line_h):
+                    near = min(mates, key=lambda m: min(abs(ey - m["box"][1]), abs(ey - m["box"][3]))
+                               + max(0.0, m["box"][0] - ex, ex - m["box"][2]))
+                    near["translated_text"] = balloon_assign.add_ellipsis(near.get("translated_text", ""), ey, near["box"])
+                balloon_assign.sweep(cleaned, balloon_infos_page[bid], text_boxes=boxes_in)
                 swept_bids.add(bid)
             r_boxes = b.get("raw_boxes") or [b["box"]]
             modes = [clean_speech_bubble(cleaned, r_box, in_balloon=(bid > 0)) for r_box in r_boxes]
@@ -8999,6 +9020,10 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 safe_max_y = reg["safe_max_y"]
                 is_white_bg = True
                 geom["is_enclosed"] = True
+                # Balão em degrau / com recorte: o texto fica na altura do original (parte larga), não no meio
+                inner_w = [w for f, w in (band_prof or []) if 0.12 <= f <= 0.88]
+                if any(max(w1, w2) > 1.4 * min(w1, w2) for w1, w2 in zip(inner_w, inner_w[1:])):
+                    safe_cy = float(np.clip((b["box"][1] + b["box"][3]) / 2.0, safe_min_y, safe_max_y))
             else:
                 # Margem de segurança na largura considerando os limites da partição e da página
                 max_avail_w = min(
@@ -9015,6 +9040,10 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             ocr_cx = (ob[0] + ob[2]) / 2.0
             if band_prof and abs(safe_cx - ocr_cx) > max(12.0, 0.2 * (ob[2] - ob[0])):
                 safe_cx = ocr_cx
+                # O perfil foi medido em outro eixo: vale a largura livre nas linhas do texto original
+                free_w = balloon_assign.free_width_around(cleaned_gray, ocr_cx, ob[1], ob[3])
+                target_w = max(30.0, min(target_w, free_w - 10.0))
+                band_prof = None
             min_line_w = max(0.0, 2.0 * min(ob[2] - safe_cx, safe_cx - ob[0])) * 0.95
 
             if b.get("_over_art"):
@@ -9043,6 +9072,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 page_w=w_img,
                 is_display=is_display,
                 min_line_w=min_line_w,
+                band_center=float(np.clip((safe_cy - safe_min_y) / max(1.0, safe_max_y - safe_min_y), 0.0, 1.0)),
             )
             if not lines:
                 continue
@@ -9105,7 +9135,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
     
     # 6. Salvar na pasta final
     print(f"[*] Salvando arquivos traduzidos em: {output_dir}...")
-    os.system(f'attrib -h -r -s "{output_dir}\\*.*" >nul 2>&1')
+    if os.name == "nt":  # no Linux/Colab o ">nul" criava um arquivo "nul" solto
+        os.system(f'attrib -h -r -s "{output_dir}\\*.*" >nul 2>&1')
     
     for fname in os.listdir(temp_render_dir):
         src_p = os.path.join(temp_render_dir, fname)

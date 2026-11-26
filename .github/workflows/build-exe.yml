@@ -37,6 +37,10 @@ jobs:
           echo "name=$(python -c 'import version; print(version.__version_name__)')" >> "$GITHUB_OUTPUT"
           echo "tag=v$(python -c "import version; print(version.__version__.split('-')[0])")-windows" >> "$GITHUB_OUTPUT"
 
+      - name: Testar o instalador da IA local (simulação, Windows PowerShell 5.1)
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File instalar_ia_local.ps1 -Simular
+
       - name: Montar o .exe com PyInstaller
         run: pyinstaller manga_studio.spec --noconfirm
 
@@ -52,7 +56,7 @@ jobs:
       - name: Compactar
         shell: pwsh
         run: |
-          Copy-Item "LEIA-ME-WINDOWS.txt" "dist\MangaStudio\"
+          Copy-Item "LEIA-ME-WINDOWS.txt", "Instalar_IA_Local.bat", "instalar_ia_local.ps1" "dist\MangaStudio\"
           Compress-Archive -Path "dist\MangaStudio" -DestinationPath "MangaStudio-${{ steps.ver.outputs.tag }}.zip"
 
       - name: Guardar o .zip na execução

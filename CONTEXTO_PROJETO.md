@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.1 Beta` (`0.8.1-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.2 Beta` (`0.8.2-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -82,6 +82,19 @@ O sistema é dividido em submódulos cooperativos:
   * `POST /api/test_ollama` mede tokens/s.
 * **Provedor `auto`** (padrão na tela Traduzir): o Ollama vem primeiro se o servidor já responder, sem iniciar o servidor sozinho.
 * **Notebook `Colab_IA_Local.ipynb`:** roda no Colab e no Kaggle, com `OLLAMA_CONTEXT_LENGTH`, teste PT-BR e URL do túnel em destaque.
+
+### A4. Instalador da IA local no PC (v0.8.2)
+* **Arquivos:** `Instalar_IA_Local.bat` chama `instalar_ia_local.ps1` (PowerShell 5.1, UTF-8 com BOM, CRLF).
+* **O que o script faz:**
+  * detecta a placa de vídeo dedicada e a VRAM (pelo registro);
+  * escolhe o plano: 14 GB ou mais = qwen3:14b/16k/first; 10 GB = qwen3:8b/16k/first; 6 GB com 12 GB ou mais de RAM = qwen3:8b/8k/fallback; abaixo disso = qwen3:4b/8k/fallback;
+  * instala o Ollama (winget ou OllamaSetup.exe);
+  * em AMD, liga `OLLAMA_VULKAN=1` e `GGML_VK_VISIBLE_DEVICES` com a GPU dedicada (via vulkaninfo);
+  * baixa o modelo, mede tokens/s e troca para o modelo reserva abaixo de 6 tok/s;
+  * grava `ollama_host`, `ollama_model`, `ollama_num_ctx`, `ollama_priority` e `ollama_timeout` no config.json, sem BOM.
+* **Onde grava:** no config da pasta do projeto, se houver. No `%APPDATA%\MangaStudio\config.json` só se ele já existir ou se o script estiver junto do .exe, para não atrapalhar a migração da 1ª execução.
+* **`-Simular`:** só detecta e mostra o plano. O GitHub Actions roda esse modo no Windows.
+* **`ollama_priority`:** `"first"` (padrão) põe a IA local antes da nuvem no modo Automático. `"fallback"` deixa a nuvem primeiro, e o roteador tenta o Ollama antes de esperar a cota.
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

@@ -176,6 +176,15 @@ class TestAutoOrder(unittest.TestCase):
         self.assertEqual((engine, model, eo["active_engine"]), ("ollama", "qwen3:14b", "ollama"))
         groq.assert_not_called()
 
+    def test_small_gpu_uses_local_ai_only_after_cloud(self):
+        cfg = {"provider": "auto", "groq_api_keys": ["gsk_x"], "ollama_priority": "fallback"}
+        with mock.patch.object(at.ollama_client, "list_models", return_value=["qwen3:8b"]) as lm, \
+                mock.patch.object(at, "_pick_ready_groq_key_and_model", return_value=("gsk_x", "qwen/qwen3.8-27b", set(), "")):
+            engine, _, eo = at.init_ai_translation_engine(cfg)
+        self.assertEqual(engine, "groq")
+        lm.assert_not_called()
+        self.assertNotIn("ollama", eo["exhausted_engines"])  # o roteador ainda tenta a IA local antes de esperar
+
     def test_auto_skips_local_ai_when_off(self):
         cfg = {"provider": "auto", "groq_api_keys": ["gsk_x"]}
         with mock.patch.object(at.ollama_client, "list_models", side_effect=OSError("off")), \

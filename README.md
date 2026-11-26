@@ -103,7 +103,7 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
   * **Qwen3 sem "pensar em voz alta":** antes ele gastava cerca de 1 min por balão raciocinando antes de traduzir. Agora responde direto.
   * **Aquecimento:** feito uma vez só por modelo, e a resposta chega em partes (o tempo de espera vale por trecho, não pela resposta inteira).
 * **IA local no seu PC com um clique (v0.8.2):** `Instalar_IA_Local.bat` (também dentro do `.zip` do `.exe`).
-  * **O que faz:** detecta a placa de vídeo, instala o Ollama, baixa o modelo que cabe nela (Qwen3 14B, 8B ou 4B), mede a velocidade (troca para um modelo menor se ficar lento) e liga tudo ao Manga Studio.
+  * **O que faz:** detecta a placa de vídeo, instala o Ollama, baixa o modelo que cabe nela (Qwen3 14B ou 8B, ou Gemma 3 4B nas placas menores), mede a velocidade (troca para um modelo menor se ficar lento) e liga tudo ao Manga Studio.
   * **AMD sem ROCm (ex.: RX 5000):** usa o Vulkan.
   * **Placas de 6 a 8 GB:** a IA local entra quando a nuvem fica sem cota (opção nova em Configurações > IA local).
 * **Tradução com contexto e sem depender das cotas (v0.8.1):**

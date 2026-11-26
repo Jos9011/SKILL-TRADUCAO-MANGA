@@ -87,7 +87,7 @@ O sistema é dividido em submódulos cooperativos:
 * **Arquivos:** `Instalar_IA_Local.bat` chama `instalar_ia_local.ps1` (PowerShell 5.1, UTF-8 com BOM, CRLF).
 * **O que o script faz:**
   * detecta a placa de vídeo dedicada e a VRAM (pelo registro);
-  * escolhe o plano: 14 GB ou mais = qwen3:14b/16k/first; 10 GB = qwen3:8b/16k/first; 6 GB com 12 GB ou mais de RAM = qwen3:8b/8k/fallback; abaixo disso = qwen3:4b/8k/fallback;
+  * escolhe o plano: 14 GB ou mais = qwen3:14b/16k/first; 10 GB = qwen3:8b/16k/first; 6 GB com 12 GB ou mais de RAM = qwen3:8b/8k/fallback; abaixo disso = gemma3:4b/8k/fallback (reserva dos planos 8b também é gemma3:4b; v0.8.3);
   * instala o Ollama (winget ou OllamaSetup.exe);
   * em AMD, liga `OLLAMA_VULKAN=1` e `GGML_VK_VISIBLE_DEVICES` com a GPU dedicada (via vulkaninfo);
   * baixa o modelo, mede tokens/s e troca para o modelo reserva abaixo de 6 tok/s;
@@ -109,6 +109,7 @@ O sistema é dividido em submódulos cooperativos:
 * **Qwen3 pensando em voz alta:** confirmado no PC do usuário (Ollama ignorava `"think": false`). Cada balão batia nos 350 tokens de raciocínio (~64 s a 5,4 tok/s), a tradução saía cortada e era refeita.
   * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
   * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
+  * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

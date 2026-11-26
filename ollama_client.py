@@ -66,11 +66,18 @@ def pick_model(models, custom_model="", prefer_uncensored=False):
             low = m.lower()
             if any(t in low for t in ("abliterated", "uncensored")) and any(p in low for p in order[:4]):
                 return m
+    # qwen3:4b atual (2507) e variantes "-thinking" não desligam o raciocínio: só se não houver outro
+    usable = [m for m in text_models if not _thinking_only(m)] or text_models
     for pref in order:
-        for m in text_models:
+        for m in usable:
             if pref in m.lower():
                 return m
-    return text_models[0]
+    return usable[0]
+
+
+def _thinking_only(model):
+    low = model.lower()
+    return "-thinking" in low or low.split(":latest")[0] in ("qwen3:4b",)
 
 
 def list_models(host, timeout=8):

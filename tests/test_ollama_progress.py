@@ -133,6 +133,13 @@ class TestQwen3NoThinking(unittest.TestCase):
         msgs = [{"role": "system", "content": "Regras"}]
         self.assertEqual(ollama_client._payload(msgs, "gemma3:4b", 0.0, 1, 8192)["messages"], msgs)
 
+    def test_auto_choice_skips_thinking_only_qwen3_4b(self):
+        self.assertEqual(ollama_client.pick_model(["qwen3:4b", "gemma3:4b"]), "gemma3:4b")
+        self.assertEqual(ollama_client.pick_model(["qwen3:4b-thinking-2507-q4_K_M", "gemma3:4b"]), "gemma3:4b")
+        self.assertEqual(ollama_client.pick_model(["qwen3:4b"]), "qwen3:4b")  # único instalado: usa
+        self.assertEqual(ollama_client.pick_model(["qwen3:4b", "qwen3:8b"]), "qwen3:8b")
+        self.assertEqual(ollama_client.pick_model(["qwen3:4b", "gemma3:4b"], "qwen3:4b"), "qwen3:4b")  # escolha do usuário vence
+
     def test_unfinished_thinking_is_dropped(self):
         self.assertEqual(ollama_client.clean_answer("<think>Okay, let me tackle this"), "")
         self.assertEqual(ollama_client.clean_answer("<think>\n\n</think>\n\nEu te disse!"), "Eu te disse!")

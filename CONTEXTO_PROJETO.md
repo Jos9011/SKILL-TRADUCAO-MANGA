@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.3 Beta` (`0.8.3-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.4 Beta` (`0.8.4-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -110,6 +110,15 @@ O sistema é dividido em submódulos cooperativos:
   * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
   * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
   * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
+
+### A6. Colorização: mescla do traço (v0.8.4)
+* **Antes:** `colorize_cv2` trocava o Y (YCrCb) da cor pelo cinza da página. Papel branco (pele no mangá) = Y 255 e a cor estourava para amarelo pálido com manchas rosa nas retículas.
+* **`merge_lineart(color, gray)` (Lab):**
+  * `L = min(L_cor * 0.65 + L_original * 0.35, L_original)`, com `PAPER_BLEND = 0.35`, escolhido comparando 0, 0.35 e 0.6 numa página real;
+  * a/b escalados por `L_novo / L_cor` (no máximo 1), para o traço preto não ficar marrom.
+* **Saída do modelo ONNX:** já vem em [0,1] (entrada cinza [0,1], 4 canais de dica zerados). Normalizar para [-1,1] deixa tudo cinza.
+* **Download:** vai para `.part` e só é renomeado se tiver mais de 10 MB; a falha apaga o `.part`.
+* **Pendente:** DirectML para AMD/Intel no Windows (o `onnxruntime-directml` conflita com o `onnxruntime` exigido pelo rapidocr; precisa de teste em máquina real).
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

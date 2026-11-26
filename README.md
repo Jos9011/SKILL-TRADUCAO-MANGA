@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.8.3 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.8.4 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.8.3--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.8.4--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -97,6 +97,9 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Quadros de narração estreitos (`typography_ptbr.py`):** quadros altos e estreitos aceitam mais de 8 linhas, e o último recurso nunca passa da largura do quadro (antes o texto podia sair numa linha só, minúscula, atravessando a página).
 * **Busca na Biblioteca:** campo de busca fixo no topo da aba Biblioteca que procura nas obras traduzidas e nas originais, ignorando maiúsculas, acentos e pontuação e aceitando as palavras em qualquer ordem ("gal kuro" ou "toshiue ch1" encontram "Toshiue no Kuro Gal ... Ch.1"). Mostra quantas obras foram encontradas, avisa quando nada foi encontrado e tem botão ✕ (ou ESC) para limpar. A janela de escolher obra do Google Drive usa a mesma busca.
 * **Texto solto sobre o desenho e créditos (v0.7.10):** texto fora de balão com contorno branco por cima da arte (ex.: "HERE! PJS!") não vira mais um retângulo branco: as letras são apagadas, o desenho é recomposto (inpainting) e a tradução é escrita no mesmo lugar com contorno branco. Créditos de scan ("TRANSLATED BY DOUJINS.COM", "discord.gg", "Traduzido por ...") ficam intactos, sem tradução. Palavras compostas quebradas na linha ("STATE-OF-" / "THE-ART") mantêm o hífen.
+* **Colorização com pele natural (v0.8.4):** antes o brilho da página P&B substituía o da cor, e a pele (papel branco no mangá) estourava para amarelo pálido com manchas rosa.
+  * **Agora:** a cor do modelo é mantida com as sombras dele, clareada 35% na direção do papel. O traço e a retícula originais continuam por cima, sem nunca clarear o preto.
+  * **Download do modelo:** se a internet cair no meio, não fica mais um arquivo pela metade que quebrava a colorização para sempre.
 * **IA local mostra o andamento (v0.8.3):** antes ela trabalhava em silêncio e parecia travada.
   * **No registro:** "traduzindo...", um aviso a cada 30 s e, no fim, o tempo, os tokens lidos e escritos e a velocidade.
   * **Placa ou processador:** ao ligar, diz se o modelo está 100% na placa de vídeo ou quanto ficou no processador (o que deixa tudo lento).

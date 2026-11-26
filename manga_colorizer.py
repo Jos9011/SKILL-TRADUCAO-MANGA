@@ -16,6 +16,7 @@ from PIL import Image
 
 MODEL_SUBDIR = os.path.join("models", "colorizer")
 MODEL_FILENAME = "manga-colorize-fp16.onnx"
+PAPER_BLEND = 0.35  # escolhido comparando páginas: 0 = cores escuras/laranja, 0.6 = pele pálida
 HF_MODEL_URL = "https://huggingface.co/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx"
 
 _CACHED_SESSION = None
@@ -34,7 +35,16 @@ def download_model_if_needed(target_path=None, verbose=True):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if verbose:
         print("[*] Baixando modelo neural de colorização (~58MB)...")
-    urllib.request.urlretrieve(HF_MODEL_URL, dest)
+    # Baixa num arquivo temporário: se a internet cair, não fica um modelo pela metade "válido" para sempre
+    part = dest + ".part"
+    try:
+        urllib.request.urlretrieve(HF_MODEL_URL, part)
+        if os.path.getsize(part) <= 10 * 1024 * 1024:
+            raise OSError("Download do modelo de colorização incompleto.")
+        os.replace(part, dest)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
     if verbose:
         print("[+] Modelo neural baixado com sucesso!")
     return dest
@@ -127,11 +137,22 @@ def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True, re
             pass
 
     if preserve_lineart:
-        ycrcb = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2YCrCb)
-        ycrcb[:, :, 0] = orig_gray
-        out_bgr = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
+        out_bgr = merge_lineart(out_bgr, orig_gray)
 
     return out_bgr
+
+
+def merge_lineart(color_bgr, gray):
+    """Traço e retícula originais por cima da cor, no modo "escurecer" (Lab).
+    Antes o brilho era trocado pelo da página P&B: a pele (papel branco) estourava para branco-amarelado."""
+    lab = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2Lab).astype(np.float32)
+    ink = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2Lab)[:, :, 0].astype(np.float32)
+    # Clareia 35% na direção do papel original (sem isso, loiro vira laranja) e nunca passa do traço/retícula
+    new_l = np.minimum(lab[:, :, 0] * (1 - PAPER_BLEND) + ink * PAPER_BLEND, ink)
+    keep = np.minimum(new_l / np.maximum(lab[:, :, 0], 1.0), 1.0)[:, :, None]  # cor some junto com o brilho no traço
+    lab[:, :, 1:] = 128.0 + (lab[:, :, 1:] - 128.0) * keep
+    lab[:, :, 0] = new_l
+    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_Lab2BGR)
 
 
 def colorize_image(image_input, output_path=None, session=None, max_size=None, preserve_lineart=True, reference=None):
@@ -224,13 +245,6 @@ def colorize_manga_folder(input_dir, output_dir=None, progress_cb=None, max_size
             print(f"[!] Erro ao colorir {fname}: {ex}")
         finally:
             gc.collect()
-            if "torch" in sys.modules:
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception:
-                    pass
 
     elapsed = time.time() - t_start
     final_msg = f"Colorização concluída com sucesso em {elapsed:.1f}s!"
@@ -270,23 +284,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     target_path = os.path.abspath(args.path)
 
+    common = dict(max_size=args.max_size, preserve_lineart=not args.no_lineart, reference=args.reference)
     if os.path.isdir(target_path):
-        colorize_manga_folder(
-            target_path,
-            output_dir=args.output,
-            max_size=args.max_size,
-            preserve_lineart=not args.no_lineart,
-            reference=args.reference,
-        )
+        colorize_manga_folder(target_path, output_dir=args.output, **common)
     elif os.path.isfile(target_path):
         out = args.output or os.path.splitext(target_path)[0] + "_colorido.jpg"
-        colorize_image(
-            target_path,
-            output_path=out,
-            max_size=args.max_size,
-            preserve_lineart=not args.no_lineart,
-            reference=args.reference,
-        )
+        colorize_image(target_path, output_path=out, **common)
         print(f"[+] Imagem salva em: {out}")
     else:
         print(f"[!] Caminho não encontrado: {target_path}")

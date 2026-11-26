@@ -23,7 +23,7 @@ hiddenimports = [
     "server", "drive_helper", "job_control", "app_launcher",
     "auto_translate", "balloon_assign", "balloon_cavity", "balloon_color", "typography_ptbr",
     "ocr_text_fix", "ficha_obra", "ficha_caminho", "lider_capitulo", "rag_memory", "dialogue_chunk_mapper",
-    "manga_colorizer", "color_reference", "dataset_exporter", "version", "app_paths",
+    "manga_colorizer", "color_merge", "color_reference", "dataset_exporter", "version", "app_paths",
     "ollama_client", "gemini_text", "quota_wait", "chapter_context", "chapter_translator",
     "tkinter", "tkinter.filedialog", "fitz", "pymupdf",
 ]

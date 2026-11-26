@@ -117,6 +117,9 @@ O sistema é dividido em submódulos cooperativos:
   * `L = min(L_cor * (1 - PAPER_BLEND) + L_original * PAPER_BLEND, L_original)`;
   * a/b escalados por `min(L_novo / L_cor, 1) * COLOR_SATURATION`, para o traço preto não ficar marrom;
   * `PAPER_BLEND = 0.5` e `COLOR_SATURATION = 0.7` foram ajustados comparando com a colorização oficial da personagem loira. Com saturação 1, o loiro sai laranja; com 0.35/1.0, a pele fica forte demais.
+* **`color_merge.py`:** reúne `merge_lineart`, `descreen` e as constantes. O `manga_colorizer` reexporta.
+  * `descreen()`: Gaussian com `sigma = 1.5 × maior_lado / 1500`; mantém o original só onde é traço (`gray < 110` e a média em volta `< 150`).
+  * Corrige as manchas de pele molhada (retícula cinza) que viravam hematoma e o granulado do céu de chuva.
 * **Saída do modelo ONNX:** já vem em [0,1] (entrada cinza [0,1], 4 canais de dica zerados). Normalizar para [-1,1] deixa tudo cinza.
 * **Download:** vai para `.part` e só é renomeado se tiver mais de 10 MB; a falha apaga o `.part`.
 * **Pendente:** DirectML para AMD/Intel no Windows (o `onnxruntime-directml` conflita com o `onnxruntime` exigido pelo rapidocr; precisa de teste em máquina real).

@@ -114,8 +114,9 @@ O sistema é dividido em submódulos cooperativos:
 ### A6. Colorização: mescla do traço (v0.8.4)
 * **Antes:** `colorize_cv2` trocava o Y (YCrCb) da cor pelo cinza da página. Papel branco (pele no mangá) = Y 255 e a cor estourava para amarelo pálido com manchas rosa nas retículas.
 * **`merge_lineart(color, gray)` (Lab):**
-  * `L = min(L_cor * 0.65 + L_original * 0.35, L_original)`, com `PAPER_BLEND = 0.35`, escolhido comparando 0, 0.35 e 0.6 numa página real;
-  * a/b escalados por `L_novo / L_cor` (no máximo 1), para o traço preto não ficar marrom.
+  * `L = min(L_cor * (1 - PAPER_BLEND) + L_original * PAPER_BLEND, L_original)`;
+  * a/b escalados por `min(L_novo / L_cor, 1) * COLOR_SATURATION`, para o traço preto não ficar marrom;
+  * `PAPER_BLEND = 0.5` e `COLOR_SATURATION = 0.7` foram ajustados comparando com a colorização oficial da personagem loira. Com saturação 1, o loiro sai laranja; com 0.35/1.0, a pele fica forte demais.
 * **Saída do modelo ONNX:** já vem em [0,1] (entrada cinza [0,1], 4 canais de dica zerados). Normalizar para [-1,1] deixa tudo cinza.
 * **Download:** vai para `.part` e só é renomeado se tiver mais de 10 MB; a falha apaga o `.part`.
 * **Pendente:** DirectML para AMD/Intel no Windows (o `onnxruntime-directml` conflita com o `onnxruntime` exigido pelo rapidocr; precisa de teste em máquina real).

@@ -1,8 +1,8 @@
 """
 test_colorizer_merge.py - Como o traço original volta por cima da cor (v0.8.4).
 Antes o brilho da cor era trocado pelo da página P&B: a pele (papel branco no mangá) estourava para
-branco-amarelado com manchas rosa. Agora a cor do modelo é clareada 35% na direção do papel e nunca
-passa do traço original (Lab): traço preto fica preto, a sombra e o tom de pele do modelo ficam.
+branco-amarelado com manchas rosa. Agora a cor do modelo é clareada na direção do papel, com saturação
+mais contida, e nunca passa do traço original (Lab): traço preto fica preto, a sombra e o tom de pele do modelo ficam.
 Regra de Ouro: Coeso, desacoplado e estritamente < 300 linhas.
 """
 

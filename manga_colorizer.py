@@ -16,7 +16,9 @@ from PIL import Image
 
 MODEL_SUBDIR = os.path.join("models", "colorizer")
 MODEL_FILENAME = "manga-colorize-fp16.onnx"
-PAPER_BLEND = 0.35  # escolhido comparando páginas: 0 = cores escuras/laranja, 0.6 = pele pálida
+# Ajustados comparando com a colorização oficial de uma obra: o modelo cru satura demais (loiro vira laranja)
+PAPER_BLEND = 0.5  # quanto clarear na direção do papel original (0 = cores escuras, 1 = pele estourada)
+COLOR_SATURATION = 0.7  # intensidade final das cores (1 = como o modelo entrega)
 HF_MODEL_URL = "https://huggingface.co/Faridzar/manga-colorization-v2-onnx/resolve/main/manga-colorize-fp16.onnx"
 
 _CACHED_SESSION = None
@@ -147,9 +149,9 @@ def merge_lineart(color_bgr, gray):
     Antes o brilho era trocado pelo da página P&B: a pele (papel branco) estourava para branco-amarelado."""
     lab = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2Lab).astype(np.float32)
     ink = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2Lab)[:, :, 0].astype(np.float32)
-    # Clareia 35% na direção do papel original (sem isso, loiro vira laranja) e nunca passa do traço/retícula
+    # Clareia na direção do papel original e nunca passa do traço/retícula; cor some junto com o brilho no traço
     new_l = np.minimum(lab[:, :, 0] * (1 - PAPER_BLEND) + ink * PAPER_BLEND, ink)
-    keep = np.minimum(new_l / np.maximum(lab[:, :, 0], 1.0), 1.0)[:, :, None]  # cor some junto com o brilho no traço
+    keep = (np.minimum(new_l / np.maximum(lab[:, :, 0], 1.0), 1.0) * COLOR_SATURATION)[:, :, None]
     lab[:, :, 1:] = 128.0 + (lab[:, :, 1:] - 128.0) * keep
     lab[:, :, 0] = new_l
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_Lab2BGR)

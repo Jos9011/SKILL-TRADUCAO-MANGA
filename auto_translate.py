@@ -3797,8 +3797,10 @@ def init_ai_translation_engine(cfg, is_adult=True):
     init_exhausted = set()
     init_reasons = []
 
-    # 0. Automático: IA local (Ollama no Colab/Kaggle ou já ligada no PC) vem primeiro, porque não tem cota
-    if provider == "auto":
+    # 0. Automático: IA local (Ollama no Colab/Kaggle ou já ligada no PC) vem primeiro, porque não tem cota.
+    #    Com "ollama_priority": "fallback" (GPU pequena), ela só entra quando a nuvem fica sem cota
+    #    (o roteador tenta Ollama antes de esperar a cota renovar).
+    if provider == "auto" and str(cfg.get("ollama_priority", "first")).lower() != "fallback":
         host0 = cfg.get("ollama_host", "http://localhost:11434")
         try:
             ollama_up = bool(ollama_client.list_models(host0, timeout=4))

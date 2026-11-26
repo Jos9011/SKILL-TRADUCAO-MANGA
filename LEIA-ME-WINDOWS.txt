@@ -24,5 +24,11 @@ Atualizar
 - Baixe o .zip novo na página de Releases do GitHub e extraia por cima ou em outra pasta.
   Seus dados não ficam na pasta do programa, então nada se perde.
 
+IA local (sem cota, no seu PC)
+- Clique duas vezes em Instalar_IA_Local.bat. Ele vê a sua placa de vídeo, instala o
+  Ollama, baixa o modelo que cabe nela, mede a velocidade e liga tudo ao Manga Studio.
+- Placas de 6 a 8 GB: a IA local entra quando a nuvem (Groq/Gemini) fica sem cota.
+  Placas de 10 GB ou mais: ela é usada primeiro.
+
 Algo deu errado?
 - Veja %APPDATA%\MangaStudio\logs\manga_studio.log e %APPDATA%\MangaStudio\crash.log

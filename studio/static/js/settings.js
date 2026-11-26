@@ -237,6 +237,7 @@ function loadTranslationSettings() {
   set('cfg-context-pages', String(c.context_pages != null ? c.context_pages : 2));
   set('cfg-ollama-model', c.ollama_model === 'dolphin-llama3:latest' ? '' : (c.ollama_model || ''));  // padrão antigo = automático
   set('cfg-ollama-num-ctx', String(c.ollama_num_ctx || 16384));
+  set('cfg-ollama-priority', c.ollama_priority === 'fallback' ? 'fallback' : 'first');
   const chk = document.getElementById('cfg-gemini-chapter');
   if (chk) chk.checked = c.gemini_chapter !== false;
 }
@@ -247,6 +248,7 @@ function readTranslationSettings() {
   if (val('cfg-context-pages') !== null) currentConfig.context_pages = parseInt(val('cfg-context-pages'), 10);
   if (val('cfg-ollama-model') !== null) currentConfig.ollama_model = val('cfg-ollama-model').trim();
   if (val('cfg-ollama-num-ctx')) currentConfig.ollama_num_ctx = parseInt(val('cfg-ollama-num-ctx'), 10);
+  if (val('cfg-ollama-priority')) currentConfig.ollama_priority = val('cfg-ollama-priority');
   const chk = document.getElementById('cfg-gemini-chapter');
   if (chk) currentConfig.gemini_chapter = chk.checked;
 }

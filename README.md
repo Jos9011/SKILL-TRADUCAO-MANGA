@@ -100,6 +100,7 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Colorização com pele natural (v0.8.4):** antes o brilho da página P&B substituía o da cor, e a pele (papel branco no mangá) estourava para amarelo pálido com manchas rosa.
   * **Agora:** a cor do modelo é mantida com as sombras dele, clareada pela metade na direção do papel e com 70% da saturação, valores ajustados comparando com a colorização oficial de uma obra. O traço e a retícula originais continuam por cima, sem nunca clarear o preto.
   * **Retícula e pele molhada:** os pontinhos de retícula viram sombra lisa antes de voltarem por cima da cor. Antes, as marcas de pele molhada da chuva viravam manchas roxas e o céu ficava granulado. As linhas pretas continuam nítidas.
+  * **Uma peça, uma cor:** o modelo pintava o mesmo moletom de rosa, roxo e azul, e a saia jeans em manchas. Agora cada pixel é puxado para as 8 cores principais da página, com transição suave, e as roupas ficam uniformes.
   * **Download do modelo:** se a internet cair no meio, não fica mais um arquivo pela metade que quebrava a colorização para sempre.
 * **IA local mostra o andamento (v0.8.3):** antes ela trabalhava em silêncio e parecia travada.
   * **No registro:** "traduzindo...", um aviso a cada 30 s e, no fim, o tempo, os tokens lidos e escritos e a velocidade.

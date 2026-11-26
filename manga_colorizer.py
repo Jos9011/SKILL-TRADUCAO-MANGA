@@ -14,7 +14,7 @@ import numpy as np
 import cv2
 from PIL import Image
 
-from color_merge import descreen, merge_lineart  # noqa: F401 (traço original por cima da cor)
+from color_merge import consolidate_colors, descreen, merge_lineart  # noqa: F401 (cor por peça + traço por cima)
 
 MODEL_SUBDIR = os.path.join("models", "colorizer")
 MODEL_FILENAME = "manga-colorize-fp16.onnx"
@@ -125,6 +125,7 @@ def colorize_cv2(img_bgr, session=None, max_size=None, preserve_lineart=True, re
     out_bgr = np.clip(out_rgb * 255.0, 0, 255).astype(np.uint8)
     del out_rgb
     out_bgr = cv2.cvtColor(out_bgr, cv2.COLOR_RGB2BGR)
+    out_bgr = consolidate_colors(out_bgr)
 
     if scale != 1.0:
         out_bgr = cv2.resize(out_bgr, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)

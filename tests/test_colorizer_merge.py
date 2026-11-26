@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import cv2
 import numpy as np
 
 import manga_colorizer
@@ -56,6 +57,37 @@ class TestLineartMerge(unittest.TestCase):
         color = np.full((80, 1500, 3), (150, 190, 235), np.uint8)
         out = manga_colorizer.merge_lineart(color, gray)
         self.assertLess(int(out[20:40, 30:32].max()), 25)
+
+
+class TestChromaConsolidation(unittest.TestCase):
+    """Moletom rosa->roxo->azul e saia jeans com manchas de várias cores: uma peça, uma cor."""
+
+    def test_blotchy_garment_becomes_one_color(self):
+        rng = np.random.default_rng(7)
+        lab = np.zeros((300, 600, 3), np.float32)
+        lab[:, :, 0] = 150
+        lab[:, :300, 1:] = (150, 110)  # moletom roxo
+        lab[:, 300:, 1:] = (140, 150)  # pele
+        noise = cv2.GaussianBlur(rng.normal(0, 1, (300, 600, 2)).astype(np.float32), (0, 0), 6)
+        noise *= 10.0 / noise.std()  # manchas largas com ~10 de desvio em a/b
+        lab[:, :, 1:] += noise  # o modelo espalha tons rosados/azulados dentro da mesma área
+        img = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_Lab2BGR)
+        out = manga_colorizer.consolidate_colors(img)
+        ab_in = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)[:, 20:280, 1:].reshape(-1, 2).astype(float)
+        ab_out = cv2.cvtColor(out, cv2.COLOR_BGR2Lab)[:, 20:280, 1:].reshape(-1, 2).astype(float)
+        self.assertLess(ab_out.std(axis=0).max(), ab_in.std(axis=0).max() * 0.9)  # na página real: -20 a -27%
+
+    def test_different_colors_stay_separate_and_light_is_kept(self):
+        img = np.zeros((100, 200, 3), np.uint8)
+        img[:, :100] = (60, 60, 220)  # vermelho
+        img[:, 100:] = (220, 120, 40)  # azul
+        img[:50] = (img[:50] * 0.6).astype(np.uint8)  # sombra
+        out = manga_colorizer.consolidate_colors(img)
+        self.assertGreater(int(out[75, 20, 2]), int(out[75, 20, 0]) + 100)
+        self.assertGreater(int(out[75, 180, 0]), int(out[75, 180, 2]) + 100)
+        l_in = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)[:, :, 0].astype(int)
+        l_out = cv2.cvtColor(out, cv2.COLOR_BGR2Lab)[:, :, 0].astype(int)
+        self.assertLess(int(np.abs(l_in - l_out).max()), 3)  # sombras do modelo continuam
 
 
 class TestModelDownload(unittest.TestCase):

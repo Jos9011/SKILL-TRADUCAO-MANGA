@@ -120,6 +120,10 @@ O sistema é dividido em submódulos cooperativos:
 * **`color_merge.py`:** reúne `merge_lineart`, `descreen` e as constantes. O `manga_colorizer` reexporta.
   * `descreen()`: Gaussian com `sigma = 1.5 × maior_lado / 1500`; mantém o original só onde é traço (`gray < 110` e a média em volta `< 150`).
   * Corrige as manchas de pele molhada (retícula cinza) que viravam hematoma e o granulado do céu de chuva.
+* **`consolidate_colors()`:** roda na saída do modelo, antes de aumentar a imagem.
+  * Faz k-means com `PALETTE_SIZE = 8` em a/b e puxa cada pixel 70% para uma média das cores principais, ponderada por `exp(-d²/2·10²)`; o L (sombras) fica.
+  * Na página de teste, a faixa rosa→roxo do moletom caiu de 28 para 19 e o desvio de a/b caiu 20 a 27%.
+  * O que não funcionou: mean shift (quase sem efeito); regiões pelas linhas (o traço do mangá não fecha, e pele e roupa viravam uma região só); K=6 ou atribuição dura (manchas brancas na pele).
 * **Saída do modelo ONNX:** já vem em [0,1] (entrada cinza [0,1], 4 canais de dica zerados). Normalizar para [-1,1] deixa tudo cinza.
 * **Download:** vai para `.part` e só é renomeado se tiver mais de 10 MB; a falha apaga o `.part`.
 * **Pendente:** DirectML para AMD/Intel no Windows (o `onnxruntime-directml` conflita com o `onnxruntime` exigido pelo rapidocr; precisa de teste em máquina real).

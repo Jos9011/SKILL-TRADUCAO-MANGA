@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.3 Beta` (`0.8.3-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.4 Beta` (`0.8.4-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -110,6 +110,23 @@ O sistema é dividido em submódulos cooperativos:
   * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
   * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
   * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
+
+### A6. Colorização: mescla do traço (v0.8.4)
+* **Antes:** `colorize_cv2` trocava o Y (YCrCb) da cor pelo cinza da página. Papel branco (pele no mangá) = Y 255 e a cor estourava para amarelo pálido com manchas rosa nas retículas.
+* **`merge_lineart(color, gray)` (Lab):**
+  * `L = min(L_cor * (1 - PAPER_BLEND) + L_original * PAPER_BLEND, L_original)`;
+  * a/b escalados por `min(L_novo / L_cor, 1) * COLOR_SATURATION`, para o traço preto não ficar marrom;
+  * `PAPER_BLEND = 0.5` e `COLOR_SATURATION = 0.7` foram ajustados comparando com a colorização oficial da personagem loira. Com saturação 1, o loiro sai laranja; com 0.35/1.0, a pele fica forte demais.
+* **`color_merge.py`:** reúne `merge_lineart`, `descreen` e as constantes. O `manga_colorizer` reexporta.
+  * `descreen()`: Gaussian com `sigma = 1.5 × maior_lado / 1500`; mantém o original só onde é traço (`gray < 110` e a média em volta `< 150`).
+  * Corrige as manchas de pele molhada (retícula cinza) que viravam hematoma e o granulado do céu de chuva.
+* **`consolidate_colors()`:** roda na saída do modelo, antes de aumentar a imagem.
+  * Faz k-means com `PALETTE_SIZE = 8` em a/b e puxa cada pixel 70% para uma média das cores principais, ponderada por `exp(-d²/2·10²)`; o L (sombras) fica.
+  * Na página de teste, a faixa rosa→roxo do moletom caiu de 28 para 19 e o desvio de a/b caiu 20 a 27%.
+  * O que não funcionou: mean shift (quase sem efeito); regiões pelas linhas (o traço do mangá não fecha, e pele e roupa viravam uma região só); K=6 ou atribuição dura (manchas brancas na pele).
+* **Saída do modelo ONNX:** já vem em [0,1] (entrada cinza [0,1], 4 canais de dica zerados). Normalizar para [-1,1] deixa tudo cinza.
+* **Download:** vai para `.part` e só é renomeado se tiver mais de 10 MB; a falha apaga o `.part`.
+* **Pendente:** DirectML para AMD/Intel no Windows (o `onnxruntime-directml` conflita com o `onnxruntime` exigido pelo rapidocr; precisa de teste em máquina real).
 
 ### B. OCR IA Vision Híbrido
 * Combina um **detector geométrico local (RapidOCR / PP-OCR)** para traçar as caixas com uma **IA Vision Multimodal** para transcrever o texto original direto da imagem (reconhecendo fontes estilizadas e onomatopeias).

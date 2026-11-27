@@ -4783,6 +4783,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
     cfg = engine_opts.get("cfg", {})
     temp = engine_opts.get("temperature", 0.0)
     active_engine = engine_opts.get("active_engine", "groq")
+    quota_wait.maybe_recheck(engine_opts)  # chaves "sem cota" voltam a ser tentadas a cada 5 min
 
     # 0. SE O MOTOR PRIORITÁRIO CONFIGURADO FOR OLLAMA OU OPENROUTER EXPLÍCITO, RESPEITA ESSA PRIORIDADE PRIMEIRO
     if active_engine == "ollama" and "ollama" not in exhausted:
@@ -4884,6 +4885,8 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                             print(f"\n[*] Chave Groq ({masked_k}) em pausa momentânea de TPM. Tentando próxima chave Groq...")
                         continue
                     exhausted_keys.add(groq_k)
+                    if g_err.is_auth:
+                        engine_opts.setdefault("groq_auth_failed", set()).add(groq_k)
                     fb_reasons.append(f"Groq ({masked_k}): {g_err}")
                     print(f"\n[!] Chave Groq ({masked_k}) esgotada/indisponível ({g_err}).")
                 except Exception as g_err:
@@ -4933,7 +4936,8 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                 rem_after = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
                 if not rem_after:
                     exhausted.add("groq")
-                    print(f"\n[!] Todas as {len(all_groq_keys)} chaves cadastradas do Groq Cloud atingiram as cotas diárias.")
+                    print(f"\n[!] As {len(all_groq_keys)} chaves do Groq estão sem cota agora. Nova tentativa em "
+                          f"{quota_wait.RECHECK_SECS // 60} min (a cota do Groq volta aos poucos).")
                     print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando OpenRouter...")
         else:
             exhausted.add("groq")

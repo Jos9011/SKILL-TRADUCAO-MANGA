@@ -15,6 +15,9 @@ import time
 INTERVAL = 600      # 10 minutos entre tentativas
 MAX_HOURS = 12.0
 STEP = 30           # de quanto em quanto tempo o aviso é atualizado (e o botão Parar é conferido)
+RECHECK_SECS = 300  # IA marcada "sem cota" volta a ser tentada depois de 5 min (o Groq libera aos poucos)
+_EXHAUSTION_KEYS = ("exhausted_engines", "exhausted_groq_keys", "exhausted_groq_models", "gemini_text_exhausted",
+                    "openrouter_exhausted_keys", "exhausted_keys")
 
 
 def mode(cfg):
@@ -38,21 +41,52 @@ def should_wait(cfg, engine_opts):
     return started is None or (time.time() - started) < MAX_HOURS * 3600
 
 
-def reset_engines(engine_opts):
+def reset_engines(engine_opts, forget_local=True):
     """Libera as IAs marcadas como esgotadas para a próxima tentativa (as que ainda estiverem sem cota
-    respondem 429 de novo em um pedido e voltam a ser marcadas)."""
-    for key in ("exhausted_engines", "exhausted_groq_keys", "exhausted_groq_models", "gemini_text_exhausted",
-                "openrouter_exhausted_keys", "exhausted_keys"):
+    respondem 429 de novo em um pedido e voltam a ser marcadas). Chaves recusadas (401/403) continuam fora."""
+    for key in _EXHAUSTION_KEYS:
         val = engine_opts.get(key)
         if isinstance(val, (set, list, dict)):
             val.clear()
+    bad_keys = engine_opts.get("groq_auth_failed")
+    if bad_keys:
+        engine_opts.setdefault("exhausted_groq_keys", set()).update(bad_keys)
     engine_opts.get("groq_model_cooldowns", {}).clear()
     engine_opts.pop("_google_announced", None)
-    try:
-        import ollama_client
-        ollama_client.forget_status()
-    except Exception:
-        pass
+    engine_opts.pop("_exhausted_since", None)
+    if forget_local:
+        try:
+            import ollama_client
+            ollama_client.forget_status()
+        except Exception:
+            pass
+
+
+def _has_exhaustion(engine_opts):
+    bad = engine_opts.get("groq_auth_failed") or set()
+    for key in _EXHAUSTION_KEYS:
+        val = engine_opts.get(key)
+        if key == "exhausted_groq_keys" and val:
+            val = set(val) - set(bad)
+        if val:
+            return True
+    return False
+
+
+def maybe_recheck(engine_opts, now=None):
+    """Sem isto, uma IA marcada "sem cota" ficava fora até o fim do capítulo. Com a IA local ligada,
+    a espera de cota (que limpa as marcas) nunca acontecia e todo o resto ia para a IA local, lenta,
+    enquanto as chaves já tinham cota de novo. Devolve True quando liberou as IAs para nova tentativa."""
+    now = time.time() if now is None else now
+    if not _has_exhaustion(engine_opts):
+        engine_opts.pop("_exhausted_since", None)
+        return False
+    since = engine_opts.setdefault("_exhausted_since", now)
+    if now - since < RECHECK_SECS:
+        return False
+    reset_engines(engine_opts, forget_local=False)
+    print(f"\n[*] Passaram {RECHECK_SECS // 60} min: conferindo de novo as chaves de IA marcadas sem cota...")
+    return True
 
 
 def wait_for_quota(engine_opts, reasons="", sleep=time.sleep, interval=INTERVAL, step=STEP):

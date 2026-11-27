@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.4 Beta` (`0.8.4-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.5 Beta` (`0.8.5-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -110,6 +110,18 @@ O sistema é dividido em submódulos cooperativos:
   * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
   * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
   * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
+
+### A7. Chaves sem cota voltam a ser tentadas (v0.8.5)
+* **Sintoma:** "Todas as 3 chaves do Groq atingiram as cotas diárias", mas a tela de Cotas mostrava bastante cota.
+* **Causa:**
+  * TPD do Groq é janela móvel. Um pedido maior que o restante leva 429 "try again in 2m10s".
+  * `query_groq_chat` marcava `chave:modelo` em `exhausted_groq_models` e o roteador marcava a chave em `exhausted_groq_keys` até o fim da tarefa.
+  * Só `quota_wait.wait_for_quota` limpava as marcas, e ela nunca rodava com o Ollama ligado, que vem antes da espera: o resto do capítulo ia para a IA local.
+* **`quota_wait.maybe_recheck(engine_opts)`** (início de `execute_translation_request`):
+  * conta o tempo desde a primeira marca (`_exhausted_since`);
+  * depois de `RECHECK_SECS` = 300, chama `reset_engines(forget_local=False)`;
+  * chaves com 401/403 (`groq_auth_failed`) voltam para `exhausted_groq_keys`.
+* **APK:** não tem o problema; `mobile_vision_api` tenta todas as chaves de novo em cada página.
 
 ### A6. Colorização: mescla do traço (v0.8.4)
 * **Antes:** `colorize_cv2` trocava o Y (YCrCb) da cor pelo cinza da página. Papel branco (pele no mangá) = Y 255 e a cor estourava para amarelo pálido com manchas rosa nas retículas.

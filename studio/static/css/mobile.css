@@ -59,7 +59,7 @@
   .steps li { padding-right: 16px; font-size: 12px; }
   .steps li:not(:last-child)::after { display: none; }
 
-  .selection-panel { flex-direction: column; padding: 16px; gap: 16px; }
+  .selection-panel { flex-direction: column; align-items: stretch; padding: 16px; gap: 16px; }  /* sem stretch, caminho longo vazava a tela */
   .manga-cover-preview { width: 110px; }
   .options-grid, .settings-grid-2 { grid-template-columns: 1fr; }
   .selection-actions .btn-large { flex: 1 1 100%; }

@@ -91,8 +91,8 @@ app.jinja_env.auto_reload = True
 try:
     from version import __version__, __version_name__, get_version_info
 except Exception:
-    __version__ = "0.8.5-beta"
-    __version_name__ = "v0.8.5 Beta"
+    __version__ = "0.8.6-beta"
+    __version_name__ = "v0.8.6 Beta"
 
 APP_VERSION = __version__
 APP_VERSION_NAME = __version_name__
@@ -1670,8 +1670,9 @@ def api_test_key():
                 auto_translate.record_groq_response_headers(key, test_model, resp.headers, used_tokens=used_tok, source="ping")
 
             if deep:
+                # Sem force: a sondagem gasta ~2 mil tokens da cota; um resultado de menos de 5 min vale
                 ok_probe, probe_msg, snap = auto_translate.probe_groq_page_capacity(
-                    key, test_model, target_tokens=1950, force=True
+                    key, test_model, target_tokens=1950, force=False
                 )
             else:
                 snap = auto_translate.get_groq_quota_snapshot(key, test_model)

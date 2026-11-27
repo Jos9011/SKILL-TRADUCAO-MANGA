@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.5 Beta` (`0.8.5-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.6 Beta` (`0.8.6-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -110,6 +110,21 @@ O sistema é dividido em submódulos cooperativos:
   * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
   * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
   * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
+
+### A8. Falha passageira não marca a chave como sem cota (v0.8.6, `key_health.py`)
+* **Sintoma:** chaves Groq (cada uma de uma conta diferente) "esgotavam" rápido e o capítulo ia para o Google, mas a tela de Cotas mostrava saldo.
+* **Causa (reproduzida):**
+  * O `except Exception` do roteador (`execute_translation_request`) punha a chave em `exhausted_groq_keys` em qualquer erro: timeout, 503, 400. `query_groq_chat` repassava o erro cru (`raise last_err`) e marcava o modelo esgotado em códigos inesperados e em qualquer 400.
+  * Simulação: timeout em 2 chaves = 2/2 marcadas e 13 pedidos; 503 em 3 chaves = 3/3 marcadas e 19 pedidos, para um lote só.
+  * `gemini_text.chat` marcava a chave em 5xx ("model overloaded") e em falha de rede.
+  * Agravantes de gasto: o Groq Vision revezava a chave a cada pedido (as imagens gastavam todas juntas); `translate_single_dialogue` fazia 2 pedidos quando a IA devolvia a fala igual (nome, "OK"); o teste de chave da tela usava `probe_groq_page_capacity(force=True)` (~2 mil tokens por clique).
+  * A tela mostra "Pedidos hoje" (RPD) e "Por minuto" (TPM), os únicos limites que o Groq manda nos cabeçalhos. O TPD só é conhecido depois do primeiro 429.
+* **`key_health.py`:** `GroqTransientError`, `is_transient`, `is_timeout`, `is_model_gone` (só 404 ou mensagem clara de modelo inexistente/desativado), descanso por chave (`bench_key`, 20 s; a chave vai para o fim da fila) e a espera curta (`SHORT_WAIT` = 60 s, no máximo `MAX_SHORT_WAITS` = 3 seguidas).
+  * `query_groq_chat`: timeout não repete no mesmo modelo (o Groq pode ter cobrado); 5xx/códigos inesperados/400 comum dão `MODEL_COOLDOWN`; depois de 2 modelos com falha passageira, levanta `GroqTransientError`.
+  * Roteador: só 429 diário e 401/403 marcam a chave. Se o Groq só estava instável e nenhuma outra IA respondeu, `quota_wait.wait_for_quota(..., transient=True)` espera 1 min sem contar para `MAX_HOURS` e sem apagar as marcas de cota real.
+  * `gemini_text.GeminiTransient`: 5xx e rede não marcam a chave.
+  * Groq Vision fica na mesma chave até ela cansar; `needs_neutral_retry` só refaz com o prompt neutro quando a IA respondeu algo diferente da fala; a tela de Cotas avisa sobre o TPD desconhecido.
+* **Pendente:** piso de 1.100 tokens de resposta do gpt-oss; OpenRouter ainda trata erro genérico como esgotado; portar para o `MANGA-STUDIO-ANDROID`.
 
 ### A7. Chaves sem cota voltam a ser tentadas (v0.8.5)
 * **Sintoma:** "Todas as 3 chaves do Groq atingiram as cotas diárias", mas a tela de Cotas mostrava bastante cota.

@@ -30,6 +30,9 @@ function renderGroqModel(mName, mi, isPrimary, deepChecked) {
   let html = `<div class="q-model"><div class="q-row"><span><b>${escapeHtml(formatModelShortName(mName))}</b>${isPrimary ? ' (em uso)' : ''}</span></div>`;
   if (hasReq) html += quotaMeter('Pedidos hoje', `${mi.rem_req} de ${mi.lim_req}`, mi.lim_req > 0 ? (mi.rem_req / mi.lim_req) * 100 : 0, kind);
   else html += `<div class="q-note ${ready ? '' : kind}">${ready ? 'Disponível' : escapeHtml(mi.limit_type || 'Bloqueado')}</div>`;
+  if (!hasTpd && ready) {
+    html += `<div class="q-note">Tokens por dia: o Groq só informa quando o limite é atingido. "Pedidos hoje" e "Por minuto" cheios não garantem que ainda há tokens no dia.</div>`;
+  }
   if (hasTpd) {
     const tk = mi.tpd_exhausted ? 'err' : 'ok';
     html += `<div style="margin-top: 8px;">${quotaMeter(`Tokens hoje ${deepChecked ? '(conferido)' : '(estimado)'}`,

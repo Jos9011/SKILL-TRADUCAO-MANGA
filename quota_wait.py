@@ -52,6 +52,7 @@ def reset_engines(engine_opts, forget_local=True):
     if bad_keys:
         engine_opts.setdefault("exhausted_groq_keys", set()).update(bad_keys)
     engine_opts.get("groq_model_cooldowns", {}).clear()
+    engine_opts.get("groq_key_cooldowns", {}).clear()
     engine_opts.pop("_google_announced", None)
     engine_opts.pop("_exhausted_since", None)
     if forget_local:
@@ -89,24 +90,35 @@ def maybe_recheck(engine_opts, now=None):
     return True
 
 
-def wait_for_quota(engine_opts, reasons="", sleep=time.sleep, interval=INTERVAL, step=STEP):
+def wait_for_quota(engine_opts, reasons="", sleep=time.sleep, interval=INTERVAL, step=STEP, transient=False):
     """Espera `interval` segundos avisando na tela; levanta a exceção do botão Parar se ele for usado.
-    Depois libera as IAs para nova tentativa. Devolve o total de esperas feitas."""
-    engine_opts.setdefault("_quota_wait_started", time.time())
-    waits = engine_opts.get("_quota_waits", 0) + 1
+    Depois libera as IAs para nova tentativa. Devolve o total de esperas feitas.
+    transient=True: as chaves só falharam por rede/servidor (key_health.py); a espera é curta, não conta
+    para o limite de MAX_HOURS e não apaga as marcas de cota esgotada de verdade."""
+    if transient:
+        print(f"\n[*] Groq instável agora ({reasons or 'rede/servidor'}). As chaves continuam com cota; "
+              f"tentando de novo em {math.ceil(interval)} s.")
+        label = "Groq instável (não é falta de cota): tentando de novo em"
+    else:
+        engine_opts.setdefault("_quota_wait_started", time.time())
+        label = "Cotas de IA esgotadas: tentando de novo em"
+    waits = engine_opts.get("_quota_waits", 0) + (0 if transient else 1)
     engine_opts["_quota_waits"] = waits
     hook = engine_opts.get("_progress_hook")
-    if waits == 1:
+    if waits == 1 and not transient:
         print(f"\n[*] Cotas de IA esgotadas ({reasons or 'todas as IAs'}). Esperando para continuar com contexto, "
               f"em vez de traduzir literal. (Configurações > Tradução muda isso.)")
     remaining = interval
     while remaining > 0:
         if hook:
-            hook(f"Cotas de IA esgotadas: tentando de novo em {math.ceil(remaining / 60)} min. "
-                 f"Pode Parar e continuar depois, nada se perde.")
+            hook(f"{label} {math.ceil(remaining / 60)} min. Pode Parar e continuar depois, nada se perde.")
         chunk = min(step, remaining)
         sleep(chunk)
         remaining -= chunk
+    if transient:
+        engine_opts.get("groq_key_cooldowns", {}).clear()
+        engine_opts.get("groq_model_cooldowns", {}).clear()
+        return waits
     reset_engines(engine_opts)
     print(f"[*] Tentando as IAs de novo (espera {waits}).")
     return waits

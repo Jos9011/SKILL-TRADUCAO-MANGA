@@ -59,6 +59,8 @@ import balloon_assign
 import ollama_client  # IA local (Ollama): contexto maior, sem "pensar" em voz alta, status em cache
 import gemini_text  # Gemini como tradutor de texto (cota grátis grande)
 import quota_wait  # sem cota: esperar e continuar em vez de traduzir literal
+import key_health  # falha passageira (rede/5xx) não marca a chave como sem cota
+from key_health import GroqTransientError
 import chapter_context  # falas das páginas anteriores no prompt
 import chapter_translator  # Gemini traduz o capítulo inteiro de uma vez
 import typography_ptbr
@@ -2732,7 +2734,7 @@ def record_groq_error(api_key, model_name, http_code, err_body="", headers=None,
             entry["auth_error"] = True
             entry["last_error"] = f"Chave inválida ou sem autorização (HTTP {code_int})"
             _append_quota_event_unlocked(state, "groq", "error", entry["last_error"], masked, model_name)
-        elif code_int == 404 or (code_int == 400 and "model" in str(err_body or "").lower()):
+        elif key_health.is_model_gone(code_int, err_body):
             entry["last_error"] = f"Modelo indisponível no Groq (HTTP {code_int})"
         elif details.get("is_oversize"):
             entry["last_oversize_at"] = now
@@ -3274,7 +3276,10 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
 
     last_err = None
     saw_tpm_wait = None
+    transient_models = 0
     for m in ready_models:
+        if transient_models >= key_health.MAX_TRANSIENT_MODELS:
+            break
         m_low = m.lower()
         eff_max_tokens = max(int(max_tokens or 600), 1100) if "gpt-oss" in m_low else max(int(max_tokens or 600), 650)
         payload = {
@@ -3357,28 +3362,32 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
                         payload.pop("reasoning_effort", None)
                         continue
                     record_groq_error(api_key_clean, m, e.code, err_body, e.headers)
-                    print(f"\n[!] Modelo '{m}' indisponível no Groq (HTTP {e.code}). Alternando...")
-                    _mark_model_exhausted(m)
-                    break
-                elif e.code in (500, 502, 503, 504):
-                    if attempt < max_retries - 1:
-                        time.sleep(1.5)
-                        continue
-                    cooldown_map[f"{key_sig}:{m}"] = time.time() + 15.0
+                    if key_health.is_model_gone(e.code, err_body):
+                        print(f"\n[!] Modelo '{m}' indisponível no Groq (HTTP {e.code}). Alternando...")
+                        _mark_model_exhausted(m)
+                    else:
+                        # 400 deste pedido (não é falta de cota nem modelo sumido): não queima o modelo
+                        cooldown_map[f"{key_sig}:{m}"] = time.time() + key_health.MODEL_COOLDOWN
                     break
                 else:
-                    _mark_model_exhausted(m)
+                    # 5xx, 498 (capacidade) e códigos inesperados: instabilidade, a cota continua lá
+                    if e.code >= 500 and attempt < max_retries - 1:
+                        time.sleep(1.5)
+                        continue
+                    cooldown_map[f"{key_sig}:{m}"] = time.time() + key_health.MODEL_COOLDOWN
+                    transient_models += 1
                     break
             except GroqRateLimitError:
                 raise
             except Exception as e:
                 last_err = e
-                if attempt < max_retries - 1:
+                # Timeout: o Groq pode ter processado (e cobrado) o pedido, então não repete no mesmo modelo
+                if attempt < max_retries - 1 and not key_health.is_timeout(e):
                     time.sleep(1.5)
                     continue
-                else:
-                    cooldown_map[f"{key_sig}:{m}"] = time.time() + 12.0
-                    break
+                cooldown_map[f"{key_sig}:{m}"] = time.time() + key_health.MODEL_COOLDOWN
+                transient_models += 1
+                break
 
     rem_candidates = [m for m in target_models if not _is_model_exhausted(m)]
     if saw_tpm_wait is not None and rem_candidates:
@@ -3398,9 +3407,11 @@ def query_groq_chat(messages, model_name, api_key, temperature=0.0, max_tokens=6
     if not rem_candidates:
         raise GroqRateLimitError("Todos os modelos Groq para esta chave atingiram a cota diária.", is_daily=True)
 
+    if last_err is not None and key_health.is_transient(last_err):
+        raise GroqTransientError(f"Groq instável agora ({last_err})")
     if last_err:
         raise last_err
-    raise RuntimeError("Falha na consulta ao Groq.")
+    raise GroqTransientError("Falha na consulta ao Groq.")
 
 def check_openrouter_key_status(api_key, model_name=None):
     """
@@ -4784,6 +4795,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
     temp = engine_opts.get("temperature", 0.0)
     active_engine = engine_opts.get("active_engine", "groq")
     quota_wait.maybe_recheck(engine_opts)  # chaves "sem cota" voltam a ser tentadas a cada 5 min
+    engine_opts.pop("_groq_transient", None)
 
     # 0. SE O MOTOR PRIORITÁRIO CONFIGURADO FOR OLLAMA OU OPENROUTER EXPLÍCITO, RESPEITA ESSA PRIORIDADE PRIMEIRO
     if active_engine == "ollama" and "ollama" not in exhausted:
@@ -4848,6 +4860,10 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
 
         exhausted_keys = engine_opts.setdefault("exhausted_groq_keys", set())
         avail_keys = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
+        # Chaves com falha passageira há poucos segundos ficam para o fim da fila (não saem dela)
+        avail_keys = ([k for k in avail_keys if not key_health.is_benched(engine_opts, k)]
+                      + [k for k in avail_keys if key_health.is_benched(engine_opts, k)])
+        transient_keys = []
 
         if avail_keys:
             pref_model = engine_opts.get("preferred_model") or engine_opts.get("model_name") or cfg.get("groq_model", "qwen/qwen3.8-27b")
@@ -4871,6 +4887,7 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                     )
                     if resp:
                         engine_opts["_last_provider_used"] = f"groq:{active_by_key.get(groq_k[:12], model_for_key)}"
+                        key_health.note_success(engine_opts)
                         return resp
                 except GroqRateLimitError as g_err:
                     masked_k = _quota_mask_key(groq_k)
@@ -4890,10 +4907,13 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                     fb_reasons.append(f"Groq ({masked_k}): {g_err}")
                     print(f"\n[!] Chave Groq ({masked_k}) esgotada/indisponível ({g_err}).")
                 except Exception as g_err:
-                    exhausted_keys.add(groq_k)
+                    # Rede, timeout, 5xx ou 400 deste pedido: a chave continua com cota, só descansa um pouco
+                    key_health.bench_key(engine_opts, groq_k)
+                    transient_keys.append(groq_k)
                     masked_k = _quota_mask_key(groq_k)
-                    fb_reasons.append(f"Groq ({masked_k}): {g_err}")
-                    print(f"\n[!] Chave Groq ({masked_k}) falhou ({g_err}).")
+                    fb_reasons.append(f"Groq ({masked_k}) instável: {g_err}")
+                    print(f"\n[*] Chave Groq ({masked_k}) falhou agora ({g_err}). Ela continua com cota; "
+                          f"tentando a próxima.")
 
             if saw_oversize_err is not None and raise_on_oversize:
                 raise saw_oversize_err
@@ -4932,13 +4952,15 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                         fb_reasons.append(f"Groq ({_quota_mask_key(best_k)}): {g2}")
                 except Exception:
                     pass
-            elif saw_oversize_err is None:
+            elif saw_oversize_err is None and not transient_keys:
                 rem_after = [k.strip() for k in all_groq_keys if k and k.strip() and k.strip() not in exhausted_keys]
                 if not rem_after:
                     exhausted.add("groq")
                     print(f"\n[!] As {len(all_groq_keys)} chaves do Groq estão sem cota agora. Nova tentativa em "
                           f"{quota_wait.RECHECK_SECS // 60} min (a cota do Groq volta aos poucos).")
                     print(f"[+] ALTERNANDO MOTOR DEFINITIVAMENTE -> Verificando OpenRouter...")
+            if transient_keys:
+                engine_opts["_groq_transient"] = True
         else:
             exhausted.add("groq")
 
@@ -4986,6 +5008,9 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                 return resp
         except gemini_text.GeminiBlocked as gb:
             fb_reasons.append(f"Gemini recusou o conteúdo ({gb})")
+        except gemini_text.GeminiTransient as gt:
+            fb_reasons.append(str(gt))
+            print(f"\n[*] {gt}. A chave continua com cota.")
         except Exception as ge:
             exhausted.add("gemini")
             fb_reasons.append(f"Gemini: {ge}")
@@ -5007,6 +5032,15 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
                 print(f"\n[!] Ollama indisponível ({o_err}).")
         else:
             exhausted.add("ollama")
+
+    # 3a. GROQ SÓ ESTAVA INSTÁVEL (rede/servidor), NÃO SEM COTA: espera curta e tenta de novo
+    if engine_opts.pop("_groq_transient", False) and key_health.can_short_wait(engine_opts):
+        key_health.note_short_wait(engine_opts)
+        quota_wait.wait_for_quota(engine_opts, " | ".join(fb_reasons[-2:]), interval=key_health.SHORT_WAIT,
+                                  transient=True)
+        return execute_translation_request(messages, engine_opts=engine_opts, is_adult=is_adult, max_tokens=max_tokens,
+                                           is_batch=is_batch, dialogue_map=dialogue_map, src_lang=src_lang,
+                                           raise_on_oversize=raise_on_oversize)
 
     # 3b. SEM COTA EM NENHUMA IA: espera e tenta de novo (padrão), em vez de traduzir literal
     if quota_wait.should_wait(cfg, engine_opts):
@@ -5048,6 +5082,12 @@ def execute_translation_request(messages, engine_opts=None, is_adult=True, max_t
         except Exception:
             return clean_target
 
+def needs_neutral_retry(raw_resp, cleaned, original, engine_opts):
+    """True só quando a IA respondeu algo diferente da fala (ex.: recusa) e não foi o Google de emergência."""
+    if engine_opts.get("_last_used_fallback") or not str(raw_resp or "").strip():
+        return False
+    return (cleaned or "").strip().lower() != (original or "").strip().lower()
+
 def translate_single_dialogue(text, engine_type=None, model_name=None, engine_opts=None, is_adult=True, src_lang="auto"):
     """Traduz uma única fala com roteamento resiliente e fallback instantâneo."""
     clean_t = clean_ocr_scan_noise(text.strip(), src_lang=src_lang)
@@ -5072,6 +5112,13 @@ def translate_single_dialogue(text, engine_type=None, model_name=None, engine_op
             if engine_opts.get("_last_used_fallback"):
                 engine_opts.setdefault("_fallback_originals", set()).add(text.strip())
             return cleaned
+        # O prompt neutro só serve quando a IA RECUSOU a fala. Resposta vazia, fala devolvida igual
+        # (nome, "OK") ou Google de emergência: repetir só gasta mais um pedido da cota.
+        if not needs_neutral_retry(res, cleaned, clean_t, engine_opts):
+            engine_opts.setdefault("_fallback_originals", set()).add(text.strip())
+            if engine_opts.get("_last_used_fallback") and cleaned:
+                return cleaned
+            return google_translate_free(clean_t, source_lang=src_lang)
 
     # 2. Fallback neutro (apenas se o motor anterior não caiu direto para o Google ou se o resultado adulto foi rejeitado)
     sys_prompt = build_translation_system_prompt(is_adult=False, is_batch=False, src_lang=src_lang)
@@ -7698,7 +7745,9 @@ def query_groq_vision(b64_img, prompt, cfg, engine_opts=None, max_tokens=720, ti
                             raise VisionSafetyBlockedError(f"Groq Vision bloqueou resposta ({fin_reason}).")
                         msg = ch0.get("message") or {}
                         raw_out = _strip_think_tags(msg.get("content") or "")
-                        engine_opts["groq_vision_rr_idx"] = (idx_k + 1) % n_keys
+                        # Fica na mesma chave até ela cansar (antes revezava a cada pedido e as imagens
+                        # gastavam todas as chaves ao mesmo tempo; agora sobram chaves inteiras para traduzir)
+                        engine_opts["groq_vision_rr_idx"] = idx_k
                         if raw_out.strip():
                             return raw_out.strip()
                         last_err = RuntimeError(f"Groq Vision '{m_name}' retornou conteúdo vazio.")

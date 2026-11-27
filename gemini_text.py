@@ -28,6 +28,10 @@ class GeminiQuotaExhausted(Exception):
     """Todas as chaves Gemini sem cota ou inválidas."""
 
 
+class GeminiTransient(Exception):
+    """Servidor cheio (5xx), timeout ou rede: a chave continua com cota, só falhou agora."""
+
+
 def key_pool(cfg):
     raw = list((cfg or {}).get("gemini_api_keys") or [])
     single = (cfg or {}).get("gemini_api_key")
@@ -96,6 +100,7 @@ def chat(messages, cfg, state=None, max_tokens=8192, temperature=0.2, json_mode=
     open_fn = opener or urllib.request.urlopen
     body = json.dumps(to_gemini_payload(messages, max_tokens, temperature, json_mode)).encode("utf-8")
     last = "nenhuma chave Gemini cadastrada"
+    transient = False
     for idx, key in enumerate(keys):
         if idx in exhausted:
             continue
@@ -121,9 +126,18 @@ def chat(messages, cfg, state=None, max_tokens=8192, temperature=0.2, json_mode=
                 elif code == 404:
                     raise RuntimeError(f"modelo '{model}' não existe para esta chave")
                 else:
+                    # 5xx ("model overloaded") e outros: não é falta de cota, a chave não é marcada
                     last = f"erro HTTP {code}"
+                    transient = True
+                    break
                 exhausted.add(idx)
                 break
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                last = f"falha de rede ({e})"
+                transient = True
+                break
+    if transient:
+        raise GeminiTransient(f"Gemini instável agora: {last}")
     raise GeminiQuotaExhausted(f"Gemini indisponível: {last}")
 
 

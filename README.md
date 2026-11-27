@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.8.5 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.8.6 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.8.5--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.8.6--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -97,6 +97,10 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Quadros de narração estreitos (`typography_ptbr.py`):** quadros altos e estreitos aceitam mais de 8 linhas, e o último recurso nunca passa da largura do quadro (antes o texto podia sair numa linha só, minúscula, atravessando a página).
 * **Busca na Biblioteca:** campo de busca fixo no topo da aba Biblioteca que procura nas obras traduzidas e nas originais, ignorando maiúsculas, acentos e pontuação e aceitando as palavras em qualquer ordem ("gal kuro" ou "toshiue ch1" encontram "Toshiue no Kuro Gal ... Ch.1"). Mostra quantas obras foram encontradas, avisa quando nada foi encontrado e tem botão ✕ (ou ESC) para limpar. A janela de escolher obra do Google Drive usa a mesma busca.
 * **Texto solto sobre o desenho e créditos (v0.7.10):** texto fora de balão com contorno branco por cima da arte (ex.: "HERE! PJS!") não vira mais um retângulo branco: as letras são apagadas, o desenho é recomposto (inpainting) e a tradução é escrita no mesmo lugar com contorno branco. Créditos de scan ("TRANSLATED BY DOUJINS.COM", "discord.gg", "Traduzido por ...") ficam intactos, sem tradução. Palavras compostas quebradas na linha ("STATE-OF-" / "THE-ART") mantêm o hífen.
+* **Falha de rede não conta mais como "sem cota" (v0.8.6):** uma demora de 45 s ou um erro 503 (servidor cheio) do Groq marcava TODAS as chaves como sem cota, e o capítulo ia para o Google literal com a tela de Cotas mostrando saldo.
+  * **Agora:** só o limite diário (429) e a chave recusada (401/403) tiram a chave da fila. Instabilidade deixa a chave uns 20 s de lado e, se todas falharem, o sistema espera 1 min e tenta de novo (até 3 vezes). O mesmo vale para o erro "model overloaded" do Gemini.
+  * **Menos cota gasta:** pedido que demora não é repetido no mesmo modelo; a leitura de imagem (OCR) usa uma chave até ela cansar, em vez de gastar todas ao mesmo tempo; uma fala devolvida igual (nome, "OK") gasta 1 pedido extra, não 2; o botão de testar chave reaproveita a sondagem dos últimos 5 min (cada uma gasta ~2 mil tokens).
+  * **Tela de Cotas:** avisa que o Groq não informa os tokens do dia antes de o limite ser atingido.
 * **Chaves "sem cota" voltam a ser usadas (v0.8.5):** quando o Groq respondia "tente de novo em 2 min", a chave ficava fora até o fim do capítulo.
   * **Efeito:** com a IA local ligada, o resto do capítulo ia todo para ela, lenta, enquanto a tela de Cotas mostrava bastante cota.
   * **Agora:** a cada 5 min as IAs marcadas sem cota são tentadas de novo. Chaves recusadas (401/403) continuam fora.

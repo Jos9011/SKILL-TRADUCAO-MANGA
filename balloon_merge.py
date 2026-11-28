@@ -29,10 +29,42 @@ def read_page(path):
         return None
 
 
+def order_columns(items, box_of=lambda b: b["box"]):
+    """Colunas japonesas na ordem de leitura. Uma nuvem pode ter DUAS frases: uma em cima e outra embaixo
+    (pág 13: "いやー 楓さんみたいな人が…" e "よほど マイケル君との…"). Ordenar só da direita para a esquerda
+    misturava as colunas das duas. Aqui as colunas que se sobrepõem na vertical formam uma faixa; as faixas
+    vão de cima para baixo e, dentro de cada uma, da direita para a esquerda."""
+    items = list(items)
+    n = len(items)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    boxes = [[float(v) for v in box_of(it)] for it in items]
+    for i in range(n):
+        for j in range(i + 1, n):
+            ov = min(boxes[i][3], boxes[j][3]) - max(boxes[i][1], boxes[j][1])
+            shorter = max(1.0, min(boxes[i][3] - boxes[i][1], boxes[j][3] - boxes[j][1]))
+            if ov >= 0.35 * shorter:
+                parent[find(i)] = find(j)
+    bands = {}
+    for i in range(n):
+        bands.setdefault(find(i), []).append(i)
+    ordered_bands = sorted(bands.values(), key=lambda idxs: (min(boxes[k][1] for k in idxs),
+                                                             -max(boxes[k][2] for k in idxs)))
+    out = []
+    for idxs in ordered_bands:
+        out.extend(items[k] for k in sorted(idxs, key=lambda k: (-boxes[k][2], boxes[k][1])))
+    return out
+
+
 def _reading_order(group):
-    """Colunas verticais: da direita para a esquerda. Linhas horizontais: de cima para baixo."""
+    """Colunas verticais: faixas de cima para baixo, da direita para a esquerda. Linhas horizontais: de cima para baixo."""
     if all(b.get("is_vertical") for b in group):
-        return sorted(group, key=lambda b: (-float(b["box"][2]), float(b["box"][1])))
+        return order_columns(group)
     return sorted(group, key=lambda b: (float(b["box"][1]), float(b["box"][0])))
 
 
@@ -91,6 +123,41 @@ def lobe_clusters(info, boxes):
             if (i, j) not in separated:
                 labels[find(i)] = find(j)
     return [find(i) for i in range(n)]
+
+
+def main_lobe_info(info, box):
+    """Balão em "8" (ou com uma "mordida" de outro balão por cima) com UMA fala: o texto ia para o pescoço
+    estreito entre os lobos e saía com 11 px ("A VOZ... SEGURA UM POUCO...", pág 14). Devolve uma cópia do
+    balão só com o lobo que tem a maior parte do texto original (o maior, se empatar); sem lobos, o próprio.
+    A busca roda numa cópia reduzida (lado maior 96 px): na resolução real deixava a diagramação 7x mais lenta."""
+    full = (info["local_mask"] > 0).astype(np.uint8)
+    px0, py0 = info["local_origin"]
+    lh, lw = full.shape
+    sc = min(1.0, 96.0 / max(lh, lw))
+    mask = cv2.resize(full, (max(1, int(lw * sc)), max(1, int(lh * sc))), interpolation=cv2.INTER_NEAREST)
+    sh, sw = mask.shape
+    total = float(mask.sum())
+    for r in range(2, int(min(sh, sw) * 0.45), 2):
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        n_c, comp, stats, _ = cv2.connectedComponentsWithStats(cv2.erode(mask, kern))
+        if n_c <= 1:
+            break
+        big = [i for i in range(1, n_c) if stats[i, cv2.CC_STAT_AREA] >= 0.12 * float(stats[1:, cv2.CC_STAT_AREA].sum())]
+        if len(big) < 2:
+            continue
+        x0, y0, x1, y1 = [int(round((v - o) * sc)) for v, o in zip(box, (px0, py0, px0, py0))]
+        lobes = []
+        for i in big:
+            lobe = cv2.dilate((comp == i).astype(np.uint8), kern) & mask
+            in_box = int(lobe[max(0, y0):max(0, y1), max(0, x0):max(0, x1)].sum())
+            lobes.append((in_box, int(lobe.sum()), lobe))
+        best = max(lobes, key=lambda t: (t[0], t[1]))
+        if best[1] < 0.25 * total:
+            return info
+        out = dict(info)
+        out["local_mask"] = cv2.resize(best[2], (lw, lh), interpolation=cv2.INTER_NEAREST) & full
+        return out
+    return info
 
 
 def merge_same_balloon(bubbles, img):

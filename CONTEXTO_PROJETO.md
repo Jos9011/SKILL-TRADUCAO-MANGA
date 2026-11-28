@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.7 Beta` (`0.8.7-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.8 Beta` (`0.8.8-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -111,6 +111,18 @@ O sistema é dividido em submódulos cooperativos:
   * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
   * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
 
+### A10. Ajustes medidos nas páginas originais (v0.8.8, `ocr_recover.py`)
+* **Método:** o usuário mandou as págs. 11-15 originais (japonês) e a tradução dele (v0.8.6). Rodamos `process_manga` com o OCR real (PP-OCRv6_manga) e tradução fixa, comparando original x antes x agora.
+* **"HUG!!" laranja sobre a janela** virava retângulo branco (v0.8.6) e, depois, letra meio apagada com mancha. `ocr_text_fix.is_latin_display`: em obra ja/ko/zh, texto só em letras latinas com até 2 palavras sai de `pages_data` (nem traduz, nem apaga).
+* **`is_text_over_art`:** além de "entorno claro", exige papel liso. Arte = desvio do claro em volta > 9 e < 45% de branco puro (>= 245) dentro da caixa. Medido: HUG 10,8 / 33%; falas em balão 0-11,6 / 56-91%. Só o HUG mudou de categoria nas 5 páginas.
+* **"どーしても" sem caixa:** o detector achou só "見たいの!!". `ocr_recover.find_uncovered_columns`: em balão fechado que já tem fala, tinta (cinza < 150 ou cor saturada) fora das caixas, longe do contorno, em forma de coluna, vai só para o reconhecedor (rot90). Aceita com confiança >= 0,80 e 2+ caracteres japoneses. Nas 5 páginas: 1 coluna achada, 0 falso positivo. Só no OCR japonês.
+* **Nuvem com duas frases (pág 13):** a costura de fragmentos verticais (`_extract_page_blocks_tuned`) emendava "楓さんみたいな人が" com "マイケル君との" (mesmo x, vão branco). Agora não emenda quando colunas vizinhas terminam antes do vão E outras começam depois (dois blocos). `balloon_merge.order_columns`: colunas que se sobrepõem na vertical formam faixas; faixas de cima para baixo, colunas da direita para a esquerda (usado em `smart_group_bubbles` e `merge_group`).
+* **Gotinhas de suor:** `is_noise_text` marca "っっ"/"つつ" (2-3 marcas, sem pontuação) e kana + letra latina de 2 caracteres ("いc"). "ッ!!", "っ…" e "っ" sozinho continuam sendo fala.
+* **"SÉRIO... TÁ TUDO BEM...?" com 9 px:** `free_width_around` (menor largura livre nas linhas) caía para 30 px por um resto de traço; a largura agora tem piso de 95% da largura do texto original (fonte 14).
+* **`balloon_merge.main_lobe_info`:** balão em "8" com uma fala só escreve no lobo que tem a maior parte do texto original. Busca numa cópia de 96 px (na resolução real a diagramação ficava 7x mais lenta).
+* **Precisa de "forçar OCR" em capítulo já lido:** costura, resgate de coluna e ordem das colunas (rodam na hora do OCR). O resto vale na retradução normal.
+* **Pendente:** "...SIM, ATÉ ENTÃO..." (pág 13, balão sobreposto por outro) e "A VOZ... SEGURA UM POUCO..." (pág 14, balão duplo de pescoço largo) ainda saem com 11 px; texto longo em nuvem pode encostar no contorno.
+
 ### A9. Fala inteira no balão certo (v0.8.7, `balloon_merge.py`)
 * **Sintoma (págs. 11-15 de um capítulo japonês):** falas em pedaços ("KAEDE" / "ESSA AQUI É", "MAS" fora da frase, "I" solto, "ES...?" / "ISSO É..."), cada pedaço miúdo no lugar da sua coluna; sussurro pequeno num balão grande escrito com 9-11 px ("EU TAMBÉM, IGUAL, W").
 * **Causa:**
@@ -123,7 +135,7 @@ O sistema é dividido em submódulos cooperativos:
   * `balloon_merge.lobe_clusters`: balão duplo ligado ("8") é afinado aos poucos (erosão); falas que caem em lobos diferentes não são juntadas (nem no OCR, nem na tradução).
   * `balloon_assign.layout_balloon_ids`: balão só para ESCREVER quando a fala está dentro dele, perto do centro (30%), e ele tem até 6% da página. Não varre (a Trava 5 continua valendo para a limpeza); a limpeza da caixa usa o modo de balão (não recompõe desenho).
   * Teste completo (`process_manga` com OCR e tradução simulados) reproduziu "MAS" / "KAEDE" / sussurro miúdo e confirmou a correção.
-* **Pendente (precisa das páginas originais para calibrar):** retângulo branco sobre arte clara ("ABRAÇO!" sobre a janela: `is_text_over_art` só olha se o entorno é claro, não se é liso); manchas do contorno branco de efeitos sonoros na recomposição; "どーしても" azul vertical sem tradução. Balões de fala pequena não são varridos: restos cinza do texto antigo podem sobrar.
+* **Pendente:** resolvido na v0.8.8 (A10) o "HUG" e o "どーしても". Balões de fala pequena não são varridos: restos cinza do texto antigo podem sobrar.
 
 ### A8. Falha passageira não marca a chave como sem cota (v0.8.6, `key_health.py`)
 * **Sintoma:** chaves Groq (cada uma de uma conta diferente) "esgotavam" rápido e o capítulo ia para o Google, mas a tela de Cotas mostrava saldo.

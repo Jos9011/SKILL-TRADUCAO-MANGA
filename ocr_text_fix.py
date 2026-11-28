@@ -93,12 +93,31 @@ def is_noise_text(text):
     errado; traduzir e apagar estraga o desenho.
     """
     s = str(text or "")
+    core_ja = re.sub(r"\s", "", s)
+    # Gotinhas de suor desenhadas ("っっ", "つつ") e kana com letra solta ("いc"). Um "ッ!!" ou "っ…" sozinho
+    # é fala (susto) e continua sendo traduzido.
+    if 2 <= len(core_ja) <= 3 and set(core_ja) <= set("っッつツ"):
+        return True
+    if len(core_ja) == 2 and re.search(r"[A-Za-z]", core_ja) and _CJK_RE.search(core_ja):
+        return True
     if _CJK_RE.search(s):
         return False
     core = re.sub(r"[^0-9A-Za-zÀ-ÖØ-öø-ÿ]", "", s)
     if not 1 <= len(core) <= 4:
         return False
     return bool(re.search(r"\d", core)) and bool(re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", core))
+
+
+def is_latin_display(text, src_lang):
+    """Efeito sonoro já em letras latinas numa obra japonesa/coreana/chinesa ("HUG!!", "OK!", "WOW").
+    Fica como no original: o leitor entende, e apagar letra desenhada sobre a arte deixava mancha
+    ("ABRAÇO!" escrito por cima do "HUG" meio apagado, pág 11)."""
+    if not str(src_lang or "").lower().startswith(("ja", "ko", "zh")):
+        return False
+    s = str(text or "").strip()
+    if not s or _CJK_RE.search(s) or not re.fullmatch(r"[A-Za-z!?.,'~\-\s♥♡]+", s):
+        return False
+    return len(re.findall(r"[A-Za-z]", s)) >= 2 and len(s.split()) <= 2
 
 
 # ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ except Exception:
 
 import balloon_cavity
 import balloon_assign
+import ocr_recover  # resgata colunas que o detector do OCR não achou
 import balloon_merge  # junta os pedaços da mesma fala (mesmo balão) antes da tradução
 import ollama_client  # IA local (Ollama): contexto maior, sem "pensar" em voz alta, status em cache
 import gemini_text  # Gemini como tradutor de texto (cota grátis grande)
@@ -1566,7 +1567,7 @@ def smart_group_bubbles(blocks, img_gray=None):
         
         if is_vertical:
             # Leitura oriental: Direita para Esquerda (X descrescente), Topo para Baixo
-            comp_blocks.sort(key=lambda b: (-b["box"][2], b["box"][1]))
+            comp_blocks = balloon_merge.order_columns(comp_blocks)  # 2 frases numa nuvem: faixa de cima primeiro
         else:
             # Leitura ocidental: de cima para baixo; mesma fileira só com sobreposição vertical real (ocr_text_fix.py)
             if ocr_text_fix is not None:
@@ -1633,7 +1634,15 @@ def is_text_over_art(gray_img, box, ctx_pad=22, min_bright_ring=0.5):
     ring_px = ctx[ring]
     if ring_px.size < 40:
         return False
-    return float(np.mean(ring_px >= 215)) < min_bright_ring
+    if float(np.mean(ring_px >= 215)) < min_bright_ring:
+        return True
+    # Arte CLARA (janela iluminada atrás do "HUG!!"): o entorno é claro, mas não é liso como papel, e a caixa
+    # tem pouco branco puro (letra colorida sobre desenho). Medido nas págs 11-15: HUG = desvio 10,8 e 33% de
+    # branco na caixa; falas em balão = desvio 0-6 (até 11,6 em balão sobre janela) e 56-91% de branco.
+    bright = ring_px[ring_px >= 215].astype(np.float32)
+    inner = gray_img[max(0, y0):min(ih, y1), max(0, x0):min(iw, x1)]
+    inner_white = float(np.mean(inner >= 245)) if inner.size else 1.0
+    return bool(bright.size >= 40 and float(bright.std()) > 9.0 and inner_white < 0.45)
 
 
 def clean_speech_bubble(img, box, balloon_mask=None, in_balloon=True):
@@ -6897,6 +6906,24 @@ def _extract_page_blocks_tuned(engine, img_cv, is_korean=False, is_japanese=Fals
                         strip = gray[sy0:sy1, sx0:sx1]
                         if float(np.max(np.mean(strip < 105, axis=1))) >= 0.72:
                             blocked = True
+                if not blocked and gap_y >= 12.0:
+                    # Duas frases empilhadas na mesma nuvem (pág 13): a coluna de cima e a de baixo têm o mesmo x.
+                    # Se colunas vizinhas TERMINAM antes do vão e outras COMEÇAM depois dele, são dois blocos.
+                    g0, g1 = min(b1[3], b2[3]), max(b1[1], b2[1])
+                    reach = max_bw * 3.2
+                    ux0n, ux1n = min(b1[0], b2[0]) - reach, max(b1[2], b2[2]) + reach
+                    ends_above = starts_below = False
+                    for k in range(nc):
+                        if k in (i, j):
+                            continue
+                        bk = cand_items[k][1]
+                        if bk[2] < ux0n or bk[0] > ux1n:
+                            continue
+                        if g0 - 200.0 <= bk[3] <= g0 + 15.0 and bk[1] < g0:
+                            ends_above = True
+                        if g1 - 15.0 <= bk[1] <= g1 + 200.0 and bk[3] > g1:
+                            starts_below = True
+                    blocked = ends_above and starts_below
                 if not blocked:
                     v_adj[i].append(j)
                     v_adj[j].append(i)
@@ -7043,6 +7070,18 @@ def _extract_page_blocks_tuned(engine, img_cv, is_korean=False, is_japanese=Fals
             continue
 
         kept.append({"box": b["box"], "text": t})
+
+    # Coluna que o detector não achou dentro de um balão com fala ("どーしても" ao lado de "見たいの!!")
+    if is_japanese and kept:
+        try:
+            rescued = ocr_recover.recover_blocks(img_cv, kept, lambda crop: _recognize_bg_padded_crop(
+                engine, np.rot90(crop, k=1), pad_x=8, pad_y=4, min_h=48))
+            if rescued:
+                print(f"    [OCR] {len(rescued)} coluna(s) resgatada(s) que o detector não achou: "
+                      f"{[r['text'] for r in rescued]}")
+                kept.extend(rescued)
+        except Exception as e_rec:
+            print(f"    [!] Resgate de colunas falhou ({e_rec}).")
 
     grouped = smart_group_bubbles(kept, img_gray=gray)
     return grouped
@@ -8777,6 +8816,14 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             
     # 3. Detectar idioma e traduzir com cache
     src_lang = detect_language_from_samples(all_raw_texts)
+    if ocr_text_fix is not None:
+        n_kept = 0
+        for p in pages_data:
+            keep = [b for b in p["bubbles"] if not ocr_text_fix.is_latin_display(b.get("combined_text"), src_lang)]
+            n_kept += len(p["bubbles"]) - len(keep)
+            p["bubbles"] = keep
+        if n_kept:
+            print(f"[*] {n_kept} efeito(s) sonoro(s) já em letras latinas (ex.: 'HUG!!') ficam como no original.")
     print(f"[+] Idioma predominante detectado: '{src_lang.upper()}'")
     
     cache = {}
@@ -9135,7 +9182,12 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             # Se a fala está dentro de um balão fechado exclusivo, usa a cavidade real sem rabichos
             bid = b.get("_layout_bid", 0) or b.get("_balloon_id", 0)
             if bid > 0 and bid in balloon_infos_page and bid_usage_count.get(bid, 0) == 1:
-                reg = balloon_cavity.compute_safe_text_region(balloon_infos_page[bid], pad_x=14, pad_y=12)
+                info_txt = balloon_infos_page[bid]
+                try:
+                    info_txt = balloon_merge.main_lobe_info(info_txt, b["box"])  # balão em "8": lobo principal
+                except Exception:
+                    pass
+                reg = balloon_cavity.compute_safe_text_region(info_txt, pad_x=14, pad_y=12)
                 safe_cx = reg["safe_cx"]
                 safe_cy = reg["safe_cy"]
                 target_w = reg["target_w"]
@@ -9167,7 +9219,8 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 safe_cx = ocr_cx
                 # O perfil foi medido em outro eixo: vale a largura livre nas linhas do texto original
                 free_w = balloon_assign.free_width_around(cleaned_gray, ocr_cx, ob[1], ob[3])
-                target_w = max(30.0, min(target_w, free_w - 10.0))
+                # Piso: a largura que o texto original ocupava (um resto de traço numa linha derrubava para 30 px)
+                target_w = max(30.0, min(target_w, max(free_w - 10.0, 0.95 * (ob[2] - ob[0]))))
                 band_prof = None
             min_line_w = max(0.0, 2.0 * min(ob[2] - safe_cx, safe_cx - ob[0])) * 0.95
 

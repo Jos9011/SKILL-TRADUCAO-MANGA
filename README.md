@@ -6,9 +6,9 @@ source: local
 date_added: "2026-09-21"
 ---
 
-# Manga Studio v0.8.6 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
+# Manga Studio v0.8.7 Beta - Tradutor & Editor de Mangás (PT-BR) 🚀
 
-[![Versão](https://img.shields.io/badge/versão-v0.8.6--beta-brightgreen.svg)](#)
+[![Versão](https://img.shields.io/badge/versão-v0.8.7--beta-brightgreen.svg)](#)
 [![Abrir Web App Mobile no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Manga_WebUI.ipynb)
 [![Colorir Mangás com GPU no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Colorir_Manga.ipynb)
 [![Treinar IA Própria (Unsloth) no Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Jos9011/SKILL-TRADUCAO-MANGA/blob/main/Colab_Treinar_Qwen_Manga.ipynb)
@@ -97,6 +97,9 @@ Para traduzir obras adultas (+18), ecchi ou com violência sem censura e **sem e
 * **Quadros de narração estreitos (`typography_ptbr.py`):** quadros altos e estreitos aceitam mais de 8 linhas, e o último recurso nunca passa da largura do quadro (antes o texto podia sair numa linha só, minúscula, atravessando a página).
 * **Busca na Biblioteca:** campo de busca fixo no topo da aba Biblioteca que procura nas obras traduzidas e nas originais, ignorando maiúsculas, acentos e pontuação e aceitando as palavras em qualquer ordem ("gal kuro" ou "toshiue ch1" encontram "Toshiue no Kuro Gal ... Ch.1"). Mostra quantas obras foram encontradas, avisa quando nada foi encontrado e tem botão ✕ (ou ESC) para limpar. A janela de escolher obra do Google Drive usa a mesma busca.
 * **Texto solto sobre o desenho e créditos (v0.7.10):** texto fora de balão com contorno branco por cima da arte (ex.: "HERE! PJS!") não vira mais um retângulo branco: as letras são apagadas, o desenho é recomposto (inpainting) e a tradução é escrita no mesmo lugar com contorno branco. Créditos de scan ("TRANSLATED BY DOUJINS.COM", "discord.gg", "Traduzido por ...") ficam intactos, sem tradução. Palavras compostas quebradas na linha ("STATE-OF-" / "THE-ART") mantêm o hífen.
+* **Fala inteira no balão certo (v0.8.7):** o japonês vem em colunas estreitas, e cada coluna era tratada como uma fala separada. A IA traduzia pedaços soltos ("KAEDE" / "ESSA AQUI É", um "MAS" fora da frase, um "I" sozinho) e cada pedaço saía miúdo no lugar da sua coluna.
+  * **Agora:** os pedaços do mesmo balão viram uma fala só antes da tradução, na ordem de leitura, e o texto usa o balão inteiro. Vale também para capítulos já lidos (não precisa forçar o OCR). Balão duplo ligado (dois lobos) continua com uma fala em cada lobo.
+  * **Fala pequena em balão grande** (sussurro, "OI, SUMIRE-SAN"): antes a letra saía com 9 a 11 px, do tamanho da caixa do original; agora usa o tamanho normal das falas. A varredura completa desses balões continua desligada por segurança.
 * **Falha de rede não conta mais como "sem cota" (v0.8.6):** uma demora de 45 s ou um erro 503 (servidor cheio) do Groq marcava TODAS as chaves como sem cota, e o capítulo ia para o Google literal com a tela de Cotas mostrando saldo.
   * **Agora:** só o limite diário (429) e a chave recusada (401/403) tiram a chave da fila. Instabilidade deixa a chave uns 20 s de lado e, se todas falharem, o sistema espera 1 min e tenta de novo (até 3 vezes). O mesmo vale para o erro "model overloaded" do Gemini.
   * **Menos cota gasta:** pedido que demora não é repetido no mesmo modelo; a leitura de imagem (OCR) usa uma chave até ela cansar, em vez de gastar todas ao mesmo tempo; uma fala devolvida igual (nome, "OK") gasta 1 pedido extra, não 2; o botão de testar chave reaproveita a sondagem dos últimos 5 min (cada uma gasta ~2 mil tokens).

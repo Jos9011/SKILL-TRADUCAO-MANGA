@@ -56,6 +56,7 @@ except Exception:
 
 import balloon_cavity
 import balloon_assign
+import balloon_merge  # junta os pedaços da mesma fala (mesmo balão) antes da tradução
 import ollama_client  # IA local (Ollama): contexto maior, sem "pensar" em voz alta, status em cache
 import gemini_text  # Gemini como tradutor de texto (cota grátis grande)
 import quota_wait  # sem cota: esperar e continuar em vez de traduzir literal
@@ -1507,18 +1508,31 @@ def smart_group_bubbles(blocks, img_gray=None):
     if img_gray is not None and img_gray.size > 0:
         try:
             id_map, b_infos = balloon_cavity.build_balloon_map(img_gray)
-            bids = [balloon_cavity.find_box_balloon_id(b["box"], id_map, infos=b_infos) for b in blocks]
+            # Compara o balão com TODAS as linhas dele juntas (balloon_assign). Antes cada coluna vertical
+            # japonesa era comparada sozinha, a Trava 5 recusava (balão > 2,5x mais largo que a coluna) e a
+            # fala saía em pedaços traduzidos separados ("KAEDE" / "ESSA AQUI É", "MAS", um "I" solto).
+            bids = balloon_assign.assign_balloon_ids([b["box"] for b in blocks], id_map, b_infos)
+            # Balão duplo ligado ("8"): cada lobo é uma fala; o rótulo do lobo entra no ID
+            for bid in {x for x in bids if x > 0}:
+                idxs = [k for k, x in enumerate(bids) if x == bid]
+                if len(idxs) > 1 and bid in b_infos:
+                    lobes = balloon_merge.lobe_clusters(b_infos[bid], [blocks[k]["box"] for k in idxs])
+                    if len(set(lobes)) > 1:
+                        for k, lb in zip(idxs, lobes):
+                            bids[k] = (bid, lb)
         except Exception:
             bids = [0] * n
 
     for i in range(n):
         for j in range(i + 1, n):
             bi, bj = bids[i], bids[j]
-            if bi > 0 and bi == bj:
+            bi = bi if isinstance(bi, tuple) or bi > 0 else 0
+            bj = bj if isinstance(bj, tuple) or bj > 0 else 0
+            if bi and bi == bj:
                 # Mesmo balão branco fechado -> funde sempre em uma única fala
                 adj[i].append(j)
                 adj[j].append(i)
-            elif (bi > 0 or bj > 0) and bi != bj:
+            elif (bi or bj) and bi != bj:
                 # Nunca mistura fala dentro de balão com narração/texto externo
                 continue
             elif should_merge_lines(blocks[i], blocks[j], img_gray=img_gray):
@@ -8744,6 +8758,15 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                     "is_vertical": b["is_vertical"]
                 })
             
+        # Pedaços de texto no MESMO balão viram uma fala só (colunas japonesas saíam traduzidas separadas)
+        if len(bubbles) > 1:
+            try:
+                bubbles, n_joined = balloon_merge.merge_same_balloon(
+                    bubbles, balloon_merge.read_page(os.path.join(manga_dir, fname)))
+                if n_joined:
+                    print(f"    [Balão] Pág {idx + 1}: {n_joined} pedaço(s) de fala juntado(s) ao balão certo.")
+            except Exception as e_merge:
+                print(f"    [!] Junção de falas por balão falhou na pág {idx + 1} ({e_merge}).")
         pages_data.append({
             "page": idx + 1,
             "img": fname,
@@ -8976,19 +8999,27 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             print(f"    [!] Ligação fala/balão falhou ({e_assign}); usando a checagem antiga.")
             page_bids = [balloon_cavity.find_box_balloon_id(b["box"], id_map_page, infos=balloon_infos_page)
                          for b in bubbles]
+        # Fala pequena num balão grande: o balão vale para escrever (tamanho da letra), não para varrer
+        try:
+            layout_bids = balloon_assign.layout_balloon_ids([b["box"] for b in bubbles], id_map_page,
+                                                            balloon_infos_page, page_bids, img_cv.shape)
+        except Exception:
+            layout_bids = [0] * len(bubbles)
         skip_flags = []
         for b in bubbles:
             t = b.get("translated_text", "").strip()
             skip_flags.append(not t or bool(re.fullmatch(r'\.{2,8}|…+', t)) or not is_valid_translation(b["combined_text"], t))
         # Balão com fala que fica no original ("...", tradução rejeitada) não é varrido inteiro
         keep_bids = {bid for bid, skip in zip(page_bids, skip_flags) if skip and bid > 0}
-        for b, bid, skip in zip(bubbles, page_bids, skip_flags):
+        for b, bid, skip, lay in zip(bubbles, page_bids, skip_flags, layout_bids):
             if skip:
                 b["_balloon_id"] = 0
+                b["_layout_bid"] = 0
                 continue
             b["_balloon_id"] = bid
-            if bid > 0:
-                bid_usage_count[bid] = bid_usage_count.get(bid, 0) + 1
+            b["_layout_bid"] = bid or lay
+            if b["_layout_bid"] > 0:
+                bid_usage_count[b["_layout_bid"]] = bid_usage_count.get(b["_layout_bid"], 0) + 1
             if bid > 0 and bid in balloon_infos_page and bid not in swept_bids and bid not in keep_bids:
                 # "..." numa linha só, que o OCR não lê, voltaria a sumir com a varredura: recoloca no texto
                 mates = [m for m, mb, ms in zip(bubbles, page_bids, skip_flags) if mb == bid and not ms]
@@ -9001,7 +9032,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
                 balloon_assign.sweep(cleaned, balloon_infos_page[bid], text_boxes=boxes_in)
                 swept_bids.add(bid)
             r_boxes = b.get("raw_boxes") or [b["box"]]
-            modes = [clean_speech_bubble(cleaned, r_box, in_balloon=(bid > 0)) for r_box in r_boxes]
+            modes = [clean_speech_bubble(cleaned, r_box, in_balloon=(b["_layout_bid"] > 0)) for r_box in r_boxes]
             b["_over_art"] = "art" in modes
                 
         # 4.2 Desenhar texto traduzido com geometria anti-extravasamento e escala consistente
@@ -9102,7 +9133,7 @@ def process_manga(manga_dir, target_lang="pt-BR", ocr_mode="auto", force_ocr=Fal
             band_prof = geom["band_profile"]
 
             # Se a fala está dentro de um balão fechado exclusivo, usa a cavidade real sem rabichos
-            bid = b.get("_balloon_id", 0)
+            bid = b.get("_layout_bid", 0) or b.get("_balloon_id", 0)
             if bid > 0 and bid in balloon_infos_page and bid_usage_count.get(bid, 0) == 1:
                 reg = balloon_cavity.compute_safe_text_region(balloon_infos_page[bid], pad_x=14, pad_y=12)
                 safe_cx = reg["safe_cx"]

@@ -91,6 +91,35 @@ def assign_balloon_ids(boxes, id_map, infos, img=None):
     return bids
 
 
+def layout_balloon_ids(boxes, id_map, infos, bids, page_shape):
+    """Balão só para ESCREVER (não para varrer): fala pequena num balão grande (sussurro "w", "OI, SUMIRE-SAN").
+    A Trava 5 recusa esses balões para a varredura, e o texto saía do tamanho da caixa OCR (9-11 px).
+    As Travas 1-4 do mapa (fechado, compacto, poucos furos, borda escura) já valem; aqui só se exige que
+    as falas fiquem dentro do balão, perto do centro, e que o balão não seja uma área enorme da página."""
+    out = [0] * len(boxes)
+    raw = [raw_balloon_id(b, id_map) for b in boxes]
+    groups = {}
+    for i, (box, rid) in enumerate(zip(boxes, raw)):
+        if rid > 0 and rid in infos and not bids[i] and not infos[rid].get("kind"):
+            groups.setdefault(rid, []).append(i)
+    page_area = float(page_shape[0] * page_shape[1])
+    for rid, idxs in groups.items():
+        if any(bids[j] == rid for j in range(len(boxes))):
+            continue
+        info = infos[rid]
+        bx0, by0, bx1, by1 = [float(v) for v in info["bbox"]]
+        ux0, uy0, ux1, uy1 = _union([boxes[i] for i in idxs])
+        tol = 6.0
+        inside = ux0 >= bx0 - tol and uy0 >= by0 - tol and ux1 <= bx1 + tol and uy1 <= by1 + tol
+        bw, bh = max(1.0, bx1 - bx0), max(1.0, by1 - by0)
+        near_center = (abs((ux0 + ux1) / 2.0 - (bx0 + bx1) / 2.0) <= 0.30 * bw
+                       and abs((uy0 + uy1) / 2.0 - (by0 + by1) / 2.0) <= 0.30 * bh)
+        if inside and near_center and info.get("area", bw * bh) <= 0.06 * page_area:
+            for i in idxs:
+                out[i] = rid
+    return out
+
+
 def missed_ellipses(img_gray, info, text_boxes, line_h):
     """Reticências soltas ("...") dentro do balão que o OCR não leu (linha só de pontos).
     A varredura completa apagaria esses pontos; devolve [(cx, cy)] para recolocá-los no texto."""

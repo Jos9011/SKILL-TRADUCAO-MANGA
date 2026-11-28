@@ -7,7 +7,7 @@
 ## 1. Identificação Geral do Projeto
 
 * **Nome do Sistema:** **Manga Studio (PT-BR)**
-* **Versão Oficial Atual:** **`v0.8.6 Beta` (`0.8.6-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
+* **Versão Oficial Atual:** **`v0.8.7 Beta` (`0.8.7-beta`)** / APK Android: **`v1.0.14-mobile` (versionCode 15)**
 * **Autor / Proprietário:** **Jos9011**
 * **Objetivo:** Plataforma completa de scanlation automatizado de alta fidelidade para mangás (japonês), manhwas (coreano), manhuas (chinês) e quadrinhos em inglês/espanhol com destino em **Português do Brasil (PT-BR)**.
 * **Repositórios Oficiais no GitHub:**
@@ -110,6 +110,20 @@ O sistema é dividido em submódulos cooperativos:
   * `_no_think()` acrescenta `/no_think` (chave oficial do Qwen3) à mensagem de sistema, ou à última do usuário, só em modelos qwen3, sem alterar a lista original.
   * `clean_answer()` remove `<think>…</think>` e descarta raciocínio sem fechamento.
   * O `qwen3:4b` atual do Ollama é o Qwen3-4B-Thinking-2507 (context length 262144, `thinking default true`): nem `think: false` nem `/no_think` desligam. O instalador agora usa `gemma3:4b`, e `pick_model` só escolhe `qwen3:4b`/`*-thinking*` se não houver outro modelo (a escolha do usuário em Configurações sempre vence).
+
+### A9. Fala inteira no balão certo (v0.8.7, `balloon_merge.py`)
+* **Sintoma (págs. 11-15 de um capítulo japonês):** falas em pedaços ("KAEDE" / "ESSA AQUI É", "MAS" fora da frase, "I" solto, "ES...?" / "ISSO É..."), cada pedaço miúdo no lugar da sua coluna; sussurro pequeno num balão grande escrito com 9-11 px ("EU TAMBÉM, IGUAL, W").
+* **Causa:**
+  * `smart_group_bubbles` usava `find_box_balloon_id` com a Trava 5 em CADA linha. Uma coluna vertical japonesa é estreita, o balão é > 2,5x mais largo e era recusado; as colunas viravam falas separadas. A limpeza (`balloon_assign`, v0.7.12) já comparava com a união das falas, mas o agrupamento não.
+  * Na diagramação, balão com mais de uma fala (`bid_usage_count > 1`) não usa a cavidade: vale a caixa OCR de cada pedaço.
+  * `balloon_fits_text` recusa balão muito maior que o texto (área > 90 mil px², 2,5x mais largo); sem balão, `fit_text_ptbr` cai no último recurso (11 -> 9 px).
+* **Solução:**
+  * `smart_group_bubbles` usa `balloon_assign.assign_balloon_ids` (união das linhas).
+  * `balloon_merge.merge_same_balloon` roda em `process_manga` antes da tradução (também corrige o OCR em cache): junta os pedaços do mesmo balão na ordem de leitura (colunas verticais da direita para a esquerda; japonês/chinês sem espaço, coreano com espaço).
+  * `balloon_merge.lobe_clusters`: balão duplo ligado ("8") é afinado aos poucos (erosão); falas que caem em lobos diferentes não são juntadas (nem no OCR, nem na tradução).
+  * `balloon_assign.layout_balloon_ids`: balão só para ESCREVER quando a fala está dentro dele, perto do centro (30%), e ele tem até 6% da página. Não varre (a Trava 5 continua valendo para a limpeza); a limpeza da caixa usa o modo de balão (não recompõe desenho).
+  * Teste completo (`process_manga` com OCR e tradução simulados) reproduziu "MAS" / "KAEDE" / sussurro miúdo e confirmou a correção.
+* **Pendente (precisa das páginas originais para calibrar):** retângulo branco sobre arte clara ("ABRAÇO!" sobre a janela: `is_text_over_art` só olha se o entorno é claro, não se é liso); manchas do contorno branco de efeitos sonoros na recomposição; "どーしても" azul vertical sem tradução. Balões de fala pequena não são varridos: restos cinza do texto antigo podem sobrar.
 
 ### A8. Falha passageira não marca a chave como sem cota (v0.8.6, `key_health.py`)
 * **Sintoma:** chaves Groq (cada uma de uma conta diferente) "esgotavam" rápido e o capítulo ia para o Google, mas a tela de Cotas mostrava saldo.
